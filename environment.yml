@@ -1,0 +1,31 @@
+# Conda development environment for Qorona.
+# Create with:  conda env create -f environment.yml
+# Then update with:  conda env update -f environment.yml --prune
+name: qorona
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy>=1.24
+  - scipy>=1.10
+  - astropy>=6.0
+  - sunpy>=5.0
+  - rich>=13.0
+  - click>=8.0
+  # Full default install. numba (per-line transport + render JIT kernels, qorona/accel/; tbb gives
+  # its prange dynamic load-balancing for the adaptive stragglers — pinned <2.5 numpy is satisfied),
+  # pillow (the on-image provenance stamp), and sunkit-image (the MGN polarized-brightness
+  # enhancement). All three have graceful runtime fallbacks and may be excluded for a leaner
+  # footprint (off-road, see README); the default is everything.
+  - numba>=0.65
+  - tbb
+  - pillow>=10.0
+  - sunkit-image>=0.5
+  # Development tooling
+  - ruff>=0.4
+  - mypy>=1.9
+  - pytest>=8.0
+  - pip
+  - pip:
+      # Install Qorona itself in editable mode.
+      - -e .

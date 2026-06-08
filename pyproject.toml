@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qorona"
+version = "0.1.0"
+description = "Synthetic coronal imagery from global MHD solutions via line-of-sight integration of the magnetic squashing factor."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Rayan Dhib" }]
+dependencies = [
+    # The default install is the full, nicely-working Qorona — every runtime dependency needed to
+    # use every feature. Three of these have graceful runtime fallbacks and MAY be excluded for a
+    # leaner footprint (an off-road choice, never the default): numba (→ NumPy path),
+    # sunkit-image (→ MGN pB enhancement disabled), pillow (→ on-image stamp skipped). See the
+    # README "Minimal install" note; pip extras are additive, so the lean path is --no-deps + core.
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "astropy>=6.0",
+    "sunpy>=5.0",
+    "rich>=13.0",
+    "click>=8.0",
+    "numba>=0.65",
+    "pillow>=10.0",
+    "sunkit-image>=0.5",
+]
+
+[project.scripts]
+qorona = "qorona.cli.main:main"
+
+[project.optional-dependencies]
+# Contributor tooling only — not needed to *use* Qorona, so it stays an opt-in extra.
+dev = ["ruff>=0.4", "mypy>=1.9", "pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "NPY", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["qorona"]
+mypy_path = "src"
+disallow_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+# astropy, scipy, sunpy, sunkit_image, and numba/llvmlite ship no type information (no py.typed
+# marker or bundled stubs); ignore their missing imports rather than vendoring stub packages.
+module = [
+    "astropy", "astropy.*", "scipy", "scipy.*", "sunpy", "sunpy.*",
+    "sunkit_image", "sunkit_image.*", "numba", "numba.*", "llvmlite", "llvmlite.*",
+]
+ignore_missing_imports = true
