@@ -17,6 +17,7 @@ authors:
     orcid: "https://orcid.org/0000-0003-3670-4678"
     affiliation: "Centre for Mathematical Plasma-Astrophysics, KU Leuven, Belgium"
 license: GPL-3.0-or-later
+doi: 10.5281/zenodo.20630699
 repository-code: "https://github.com/RayanDhib/Qorona"
 keywords:
   - solar corona
@@ -28,3 +29,4 @@ keywords:
   - squashing factor
   - quasi-separatrix layers
 version: 0.2.0
+date-released: 2026-06-10

@@ -1,4 +1,9 @@
-![Qorona: eclipse-like synthetic imagery from coronal MHD models](assets/banner.png)
+![Qorona: eclipse-like synthetic imagery from coronal MHD models](https://raw.githubusercontent.com/RayanDhib/Qorona/main/assets/banner.png)
+
+<p align="center">
+  <a href="https://doi.org/10.5281/zenodo.20630699"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20630699-blue" alt="DOI"></a>
+  <a href="https://pypi.org/project/qorona/"><img src="https://img.shields.io/pypi/v/qorona" alt="PyPI"></a>
+</p>
 
 Qorona turns a global coronal **MHD solution** into **eclipse-like synthetic imagery**. Its primary
 product is a line-of-sight integral of the magnetic **squashing factor Q⊥**, the quantity that lights
@@ -18,7 +23,9 @@ conda activate qorona
 
 This creates the `qorona` environment and installs the package (editable) with the `qorona` command.
 The default install is the **full toolset**: every feature works out of the box, including
-numba-accelerated builds and renders and the on-image provenance stamp (Pillow).
+numba-accelerated builds and renders and the on-image provenance stamp (Pillow). Without conda,
+`pip install qorona` gives the same full install (the conda environment additionally provides
+`tbb`, numba's dynamic load-balancing threading layer).
 
 ### Minimal install (advanced, optional)
 
@@ -36,7 +43,7 @@ pip install numpy scipy astropy sunpy rich click   # hard core; add back numba /
 ## Example data
 
 The quickstart uses `hmi_lmax50.CFmesh.xz` (~165 MB), an HMI-driven COCONUT corona MHD solution.
-It is distributed as a [release asset](../../releases/tag/v0.1.0), not committed to the repo: download it
+It is distributed as a [release asset](https://github.com/RayanDhib/Qorona/releases/tag/v0.1.0), not committed to the repo: download it
 into `data/` before running the commands below. Qorona reads the compressed `.xz` directly, with no
 manual decompression step.
 
@@ -134,4 +141,4 @@ A contributor guide is planned.
 
 ## License
 
-GPL-3.0-or-later. See [`LICENSE`](LICENSE).
+GPL-3.0-or-later. See [`LICENSE`](https://github.com/RayanDhib/Qorona/blob/main/LICENSE).
