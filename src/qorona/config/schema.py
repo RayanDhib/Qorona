@@ -1,7 +1,7 @@
 """The typed run-configuration schema: every parameter, its default, and its validation.
 
 A small package of **frozen dataclasses** that is the single source of truth for Qorona's run
-parameters. They mirror the existing call signatures one-to-one (so :mod:`qorona.pipeline` is a thin
+parameters. They mirror the pipeline call signatures one-to-one (so :mod:`qorona.pipeline` is a thin
 adapter and no default or name drifts to a second place), validate eagerly in ``__post_init__`` with
 a friendly message, and each exposes :meth:`to_provenance`, the JSON-safe mapping consumed by the
 on-image stamp, the volume artifact, and the end-of-run summary.
@@ -9,7 +9,7 @@ on-image stamp, the volume artifact, and the end-of-run summary.
 The CLI populates these from ``--flags``; a YAML/TOML loader or light GUI would be just another
 front-end that constructs the same dataclasses, leaving the pipeline and schema untouched.
 
-Defaults are anchored to the existing code (the volume builders and ``render`` already define
+Defaults mirror the engine functions' own (the volume builders and ``render`` define
 ``clamp`` / ``step`` / ``occult`` / ``supersample`` / ``paint_step`` / ``rtol``), so the schema only
 *names* each number, it never re-invents one.
 """
@@ -26,7 +26,7 @@ from qorona import __version__
 #: dispatched on by :mod:`qorona.pipeline`.
 SPACING_LAWS = ("logarithmic", "power", "uniform")
 RESAMPLERS = ("knn-mls", "nearest-cell")
-VOLUME_BUILDERS = ("paint", "boundary", "per-voxel")
+VOLUME_BUILDERS = ("paint", "per-voxel", "reference")
 CLOSED_TREATMENTS = ("neutral", "dominant")
 POLARITY_MODES = ("none", "hue")
 WEIGHTING_PRESETS = ("large-fov", "small-fov")
@@ -40,10 +40,12 @@ FIELDLINE_COLOUR = ("rainbow", "polarity")
 BRIGHTNESS_FRAMES = ("polarized", "total")
 BRIGHTNESS_TREATMENTS = ("raw", "newkirk", "mgn")
 BRIGHTNESS_SCALINGS = ("linear", "log")
+DEVICE_MODES = ("auto", "gpu", "cpu")
+PRECISION_MODES = ("float64", "mixed", "float32")
 
-#: The theoretical Q⊥ floor in log₁₀: the render's default display lower clamp (mirrors
-#: ``qorona.render.los.LOG_FLOOR``, kept here as the canonical constant so the heavy render module
-#: need not be imported just to name a default).
+#: The theoretical Q⊥ floor in log₁₀: the render's default display lower clamp (pinned to
+#: ``qorona.render.los.LOG_FLOOR``, duplicated here so the heavy render module need not be
+#: imported just to name a default).
 _LOG_FLOOR = math.log10(2.0)
 
 
@@ -153,11 +155,19 @@ class VolumeConfig:
     """How the Q⊥ volume is baked: builder, the field→volume grid refinement, and the engine knobs.
 
     The default builder is ``paint``, the cheap high-resolution path that decouples interior
-    resolution from cost, so it is the right default for experimentation; ``boundary`` and
-    ``per-voxel`` are selectable. ``supersample`` and ``paint_step`` are read only by the builders
-    that use them (``per-voxel`` uses neither; ``boundary`` ignores ``paint_step``). ``closed`` is
+    resolution from cost, so it is the right default for experimentation; ``per-voxel`` (every
+    voxel traced to its feet and filled from the boundary maps: complete coverage, cost
+    proportional to the voxel count) and ``reference`` (the full-transport-per-voxel validation
+    ground truth) are selectable. ``supersample`` and ``paint_step`` are read only by the builders
+    that use them (``reference`` uses neither; ``per-voxel`` ignores ``paint_step``). ``closed`` is
     the closed-loop polarity convention baked into the volume's polarity channel (the ``paint`` and
-    ``boundary`` builders carry it; ``per-voxel`` omits polarity).
+    ``per-voxel`` builders carry it; ``reference`` omits polarity). ``device`` selects the compute
+    backend (``auto`` uses the GPU when present, else the multi-core CPU kernel; ``gpu`` forces it
+    and errors if absent; ``cpu`` forces the CPU). ``precision`` selects the CUDA kernel precision
+    (GPU only; the CPU tiers are always float64): ``mixed`` (default) runs the tricubic field
+    interpolation in float32 and everything else (stepper, error control, accumulators) in float64;
+    ``float64`` is the all-double reference; ``float32`` is the experimental fully-float32 paint
+    variant.
     """
 
     builder: str = "paint"
@@ -174,6 +184,8 @@ class VolumeConfig:
     turn_guard_weak_fraction: float = 1.0e-5
     min_turns: int = 1
     workers: int | None = None
+    device: str = "auto"
+    precision: str = "mixed"
 
     def __post_init__(self) -> None:
         _one_of(self.builder, VOLUME_BUILDERS, "builder")
@@ -199,6 +211,8 @@ class VolumeConfig:
             self.workers is None or self.workers >= 1,
             f"workers must be None or >= 1, got {self.workers}",
         )
+        _one_of(self.device, DEVICE_MODES, "device")
+        _one_of(self.precision, PRECISION_MODES, "precision")
 
     def to_provenance(self) -> dict[str, object]:
         return {
@@ -216,6 +230,8 @@ class VolumeConfig:
             "turn_guard_weak_fraction": self.turn_guard_weak_fraction,
             "min_turns": self.min_turns,
             "workers": self.workers,
+            "device": self.device,
+            "precision": self.precision,
         }
 
 
@@ -259,7 +275,7 @@ class ThomsonConfig:
     A composable factor on an axis orthogonal to the geometric preset: its presence in a
     :class:`WeightingConfig` turns the weighting on. ``mode`` picks total-brightness (``K``) or
     polarized (``pB``) emphasis; ``u`` is the limb darkening and ``crossover`` the closed-form →
-    asymptotic coefficient radius (R☉), both locked at their defaults but exposed as parameters.
+    asymptotic coefficient radius (R☉), both exposed as parameters with physical defaults.
     """
 
     mode: str = "K"
@@ -281,7 +297,7 @@ class WeightingConfig:
 
     ``thomson`` is ``None`` by default (the geometric preset alone). A :class:`ThomsonConfig` turns
     on the radiometric weighting as a composable factor multiplied into the render's weighted
-    average: an additive axis that leaves the geometric depth colour and coverage untouched.
+    average: an independent axis that leaves the geometric depth colour and coverage untouched.
     """
 
     preset: str = "large-fov"
@@ -302,7 +318,8 @@ class RenderConfig:
     """The LOS render knobs: display reconstruction, occultation, clamp, and sampling.
 
     Defaults mirror :func:`qorona.render.los.render` exactly. ``workers`` maps to that function's
-    numba thread count (``None`` = all cores).
+    numba thread count (``None`` = all cores). ``device`` is accepted for a uniform surface; the
+    render runs on the CPU regardless (it has no GPU backend).
     """
 
     display: str = "balanced"
@@ -315,6 +332,7 @@ class RenderConfig:
     percentiles: tuple[float, float] = (1.0, 99.5)
     polarity_mode: str = "none"
     workers: int | None = None
+    device: str = "auto"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "clamp", (float(self.clamp[0]), float(self.clamp[1])))
@@ -342,6 +360,7 @@ class RenderConfig:
             self.workers is None or self.workers >= 1,
             f"workers must be None or >= 1, got {self.workers}",
         )
+        _one_of(self.device, DEVICE_MODES, "device")
 
     def to_provenance(self) -> dict[str, object]:
         return {
@@ -355,6 +374,7 @@ class RenderConfig:
             "percentiles": list(self.percentiles),
             "polarity_mode": self.polarity_mode,
             "workers": self.workers,
+            "device": self.device,
         }
 
 
@@ -546,8 +566,10 @@ class OutputConfig:
 class RunConfig:
     """The whole-pipeline configuration: the one-shot ``run`` path composes every sub-config.
 
-    ``workers`` is the single top-level thread-count knob the ``run`` command fans out to the volume
-    build and the render; ``version`` records the Qorona version that produced the run.
+    ``workers`` is the single top-level thread-count knob :func:`qorona.pipeline.run` fans out to
+    both the volume build and the render; ``device`` fans out the same way (the render accepts it
+    for a uniform surface and runs on the CPU regardless); ``version`` records the Qorona version
+    that produced the run.
     """
 
     input: InputConfig
@@ -559,6 +581,7 @@ class RunConfig:
     output: OutputConfig
     version: str = __version__
     workers: int | None = None
+    device: str = "auto"
 
     def to_provenance(self) -> dict[str, object]:
         """Return the nested, JSON-safe provenance mapping (the pipeline augments it with the
@@ -573,4 +596,5 @@ class RunConfig:
             "output": self.output.to_provenance(),
             "version": self.version,
             "workers": self.workers,
+            "device": self.device,
         }

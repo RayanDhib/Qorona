@@ -16,9 +16,8 @@ how the rest of the pipeline holds bulk geometry (:class:`~qorona.field.base.Fie
 keeps the per-line core (``feet`` + ``ends``) small enough to stay a cheap transient even when a
 line-of-sight render streams ~10⁸ points through it.
 
-The container holds geometry only. The squashing factor and the transverse deviation vectors are
-the squashing-factor stage's own result, computed by reusing the *integrator* rather than this
-struct, so no placeholder Q⊥ fields appear here.
+The container holds geometry only; the squashing factor and the transverse deviation vectors are
+the squashing-factor stage's own result.
 """
 
 from __future__ import annotations
@@ -59,7 +58,7 @@ class Endpoint(IntEnum):
 
 @dataclass(frozen=True)
 class TurnGuard:
-    """Parameters of the outer-corona sharp-turn guard (calibrated defaults).
+    """Parameters of the outer-corona sharp-turn guard.
 
     A committed step is a *qualifying* sharp turn at a null when its direction turns by more than
     ``max_turn_angle``, the new point is above ``radius``, and the local ``|B|`` is below
@@ -73,8 +72,7 @@ class TurnGuard:
     Attributes
     ----------
     max_turn_angle
-        Single-step turn threshold in degrees; ``0`` disables the guard (zero overhead, the prior
-        behaviour): the off switch for an A/B comparison.
+        Single-step turn threshold in degrees; ``0`` disables the guard (zero overhead).
     radius
         Count turns only above this radius in R☉ (the outer corona, where the current sheet lives).
     weak_fraction

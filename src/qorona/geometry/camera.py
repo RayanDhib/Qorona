@@ -1,11 +1,11 @@
 """Orthographic plane-of-sky camera: parallel lines of sight through the solution frame.
 
 The corona at 1 AU subtends only ~0.5°, so the projection is essentially parallel; the camera is an
-orthographic plane-of-sky view, the standard eclipse / coronagraph geometry. It is **fully
-parameterised** (a look direction, an up vector, a roll about the look axis, a physical field of
-view, and a pixel count) with **no observer position** (parallel projection needs only a direction)
-and **no hardcoded date- or observer-specific values**: the solar-north roll defaults to 0°, and a
-real observation supplies its own roll, derived from the observer ephemeris by the caller.
+orthographic plane-of-sky view, the standard eclipse / coronagraph geometry. Its parameters are a
+look direction, an up vector, a roll about the look axis, a physical field of view, and a pixel
+count; a parallel projection needs no observer position, only a direction. The solar-north roll
+defaults to 0°, and a real observation supplies its own roll, derived from the observer ephemeris
+by the caller.
 
 Conventions:
 
@@ -161,7 +161,7 @@ class OrthographicCamera:
         return Rays(look=look, right=right, up=up, origins=origins, impact=impact)
 
     def project(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Project world ``points`` onto the image plane: the forward inverse of :meth:`rays`.
+        """Project world ``points`` onto the image plane: the inverse of :meth:`rays`.
 
         The rolled image basis ``(look, right, up)`` is orthonormal, so a point ``P`` decomposes
         into image-right ``x = P·right``, image-up ``y = P·up`` (both R☉ in the plane of sky), and

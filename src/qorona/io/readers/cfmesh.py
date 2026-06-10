@@ -12,8 +12,8 @@ For full MHD the state holds nine variables in COOLFluiD "corona" normalization
 components, pressure, and the GLM divergence-cleaning scalar.
 
 The parse streams the file and averages each prism's six node coordinates to a cell
-centre, reading the tagged inner/outer boundaries and driving the variable layout from
-the file's own ``!NB_EQ``.
+centre, reading the tagged inner/outer boundaries and validating the variable count
+against the file's own ``!NB_EQ``.
 """
 
 from __future__ import annotations

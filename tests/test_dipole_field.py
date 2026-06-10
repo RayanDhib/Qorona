@@ -52,7 +52,7 @@ def test_dipole_field_matches_analytic() -> None:
 
     sample = field.sample(points)
 
-    # B (Cartesian) vs the validation doc's spherical formula, rotated to Cartesian.
+    # B (Cartesian) vs the closed-form PFSS dipole (B_r, B_θ), rotated to Cartesian.
     b_r = (r_sun**3 / radius**3) * (2.0 * r_source**3 + radius**3) / normalization * np.cos(colat)
     b_theta = (r_sun**3 / radius**3) * (r_source**3 - radius**3) / normalization * np.sin(colat)
     b_spherical = np.stack([b_r, b_theta, np.zeros_like(b_r)], axis=-1)
@@ -68,7 +68,7 @@ def test_dipole_field_matches_analytic() -> None:
         jacobian_cs[:, :, j] = _dipole_cartesian_b(shifted, field).imag / 1e-200
     np.testing.assert_allclose(sample.grad_b, jacobian_cs, atol=1e-12)
 
-    # Separatrix colatitude at the seed radius is 50° (doc value, rounded).
+    # Separatrix colatitude at the seed radius is 50° (closed form, rounded).
     assert abs(np.degrees(field.separatrix_colatitude(1.01)) - 50.0) < 0.05
 
     # Domain membership is the caller's boolean predicate (below / above / inside the shell).

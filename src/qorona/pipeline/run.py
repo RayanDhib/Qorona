@@ -2,10 +2,9 @@
 
 Pure functions that take a config (slice) and return the stage product, plus the volume
 (de)serialization and the provenance assembly. No CLI or presentation logic lives here, so this
-layer is callable as a library (it is what a future GUI would call). A time series is run per
-snapshot and combined later.
+layer is callable as a library. A time series is run per snapshot and combined later.
 
-The two cost axes are kept separate exactly as the architecture prescribes:
+The two cost axes are kept separate:
 :func:`build_field` + :func:`build_volume` bake the viewpoint-independent Q⊥ volume once (the
 minutes-scale stage), :func:`render_volume` integrates it for any camera (seconds), and
 :func:`save_volume` / :func:`load_volume` persist the volume between the two as a dependency-free
@@ -20,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -60,9 +60,9 @@ from qorona.resample.grid import (
 from qorona.resample.resampler import KnnMlsResampler, NearestCellResampler, Resampler
 from qorona.squashing.volume import (
     QPerpVolume,
-    build_volume_boundary,
     build_volume_paint,
     build_volume_per_voxel,
+    build_volume_reference,
 )
 from qorona.trace import TurnGuard
 
@@ -80,8 +80,25 @@ _RESAMPLERS: dict[str, type[Resampler]] = {
 }
 _PRESETS: dict[str, WeightingPreset] = {"large-fov": LARGE_FOV, "small-fov": SMALL_FOV}
 
-#: Magic string tagging the volume-artifact metadata so a future format change is detectable.
+#: Magic string tagging the volume-artifact metadata so a format change is detectable.
 _ARTIFACT_FORMAT = "qorona-volume-v1"
+
+
+def _resolved_backend(device: str) -> str:
+    """Resolve a requested device to the concrete backend string stamped in provenance.
+
+    ``"gpu:NVIDIA GeForce RTX 4080"`` when the volume baked on the GPU, else ``"cpu"``. Resolved
+    at stamp time (the ``.qor`` is cached and reused across cameras, so the *resolved* backend,
+    not the requested ``auto``, is the reproducible fact). The hardware tier only; a non-JIT-able
+    field that forced a CPU fallback at the dispatcher is not reflected here (it cannot occur for
+    the gridded production field, which is always JIT-able).
+    """
+    from qorona.accel import gpu_name, resolve_device
+
+    if resolve_device(device) == "gpu":
+        name = gpu_name()
+        return f"gpu:{name}" if name else "gpu"
+    return "cpu"
 
 
 # --- Grid / strategy construction --------------------------------------------------------------
@@ -128,12 +145,18 @@ def _volume_grid(grid_cfg: GridConfig, resolution_factor: int) -> SphericalGrid:
 
 
 def build_field(
-    input_cfg: InputConfig, grid_cfg: GridConfig, *, show_progress: bool = True
+    input_cfg: InputConfig,
+    grid_cfg: GridConfig,
+    *,
+    show_progress: bool = True,
+    timings: dict[str, float] | None = None,
 ) -> SampledField:
     """Read a solution and resample it onto the internal field grid.
 
     Reads the solution (model inferred from the extension unless ``input_cfg.model`` is set), builds
-    the field grid from ``grid_cfg``, and resamples B onto it with the named resampler.
+    the field grid from ``grid_cfg``, and resamples B onto it with the named resampler. When a
+    ``timings`` dict is supplied, the ``"read"`` and ``"resample"`` stage durations (seconds) are
+    recorded into it for the end-of-run summary.
 
     Returns
     -------
@@ -143,24 +166,37 @@ def build_field(
     reader_kwargs: dict[str, object] = {}
     if input_cfg.variables is not None:
         reader_kwargs["variables"] = input_cfg.variables
+    start = time.perf_counter()
     solution = read_solution(
         input_cfg.path, model=input_cfg.model, show_progress=show_progress, **reader_kwargs
     )
+    if timings is not None:
+        timings["read"] = time.perf_counter() - start
     grid = _field_grid(grid_cfg)
     resampler = _RESAMPLERS[grid_cfg.resampler]()
-    return SampledField.from_solution(
+    start = time.perf_counter()
+    field = SampledField.from_solution(
         solution, grid, resampler=resampler, show_progress=show_progress
     )
+    if timings is not None:
+        timings["resample"] = time.perf_counter() - start
+    return field
 
 
 def build_volume(
-    field: Field, volume_cfg: VolumeConfig, grid_cfg: GridConfig, *, show_progress: bool = True
+    field: Field,
+    volume_cfg: VolumeConfig,
+    grid_cfg: GridConfig,
+    *,
+    show_progress: bool = True,
+    timings: dict[str, float] | None = None,
 ) -> QPerpVolume:
     """Bake the viewpoint-independent Q⊥ volume on the refined volume grid.
 
     The volume grid is ``grid_cfg`` scaled by ``volume_cfg.resolution_factor``; the builder is
-    dispatched on ``volume_cfg.builder`` (``paint`` default, ``boundary``/``per-voxel`` selectable),
-    passing only the knobs that builder reads.
+    dispatched on ``volume_cfg.builder`` (``paint`` default, ``per-voxel``/``reference``
+    selectable), passing only the knobs that builder reads. A supplied ``timings`` dict receives
+    the paint builder's per-stage durations (``"boundary"`` / ``"trace"`` / ``"paint"``).
 
     Returns
     -------
@@ -180,6 +216,8 @@ def build_volume(
             min_turns=volume_cfg.min_turns,
         ),
         "workers": volume_cfg.workers,
+        "device": volume_cfg.device,
+        "precision": volume_cfg.precision,
         "show_progress": show_progress,
     }
     if volume_cfg.builder == "paint":
@@ -189,13 +227,14 @@ def build_volume(
             supersample=volume_cfg.supersample,
             paint_step=volume_cfg.paint_step,
             closed=volume_cfg.closed,
+            timings=timings,
             **common,
         )
-    if volume_cfg.builder == "boundary":
-        return build_volume_boundary(
+    if volume_cfg.builder == "per-voxel":
+        return build_volume_per_voxel(
             field, grid, supersample=volume_cfg.supersample, closed=volume_cfg.closed, **common
         )
-    return build_volume_per_voxel(field, grid, **common)
+    return build_volume_reference(field, grid, **common)
 
 
 def render_volume(
@@ -367,14 +406,19 @@ def render_brightness(
 def run(cfg: RunConfig, *, show_progress: bool = True) -> RenderResult:
     """The one-shot chain: read → resample → Q⊥ volume → render, all in memory.
 
-    The library convenience path. The CLI's ``run`` command orchestrates the same three stages
-    directly so it can time each, assemble provenance, and optionally persist the intermediate
-    volume; this function is the minimal end-to-end call for programmatic use. The top-level
+    The library convenience path. The CLI's ``run`` command orchestrates the same three stage
+    functions directly so it can time each, assemble provenance, and optionally persist the
+    intermediate volume; this function is the minimal end-to-end call for programmatic use. The
+    top-level
     ``cfg.workers``, when set, fans out to both the volume build and the render (overriding the
     sub-configs' own ``workers``).
     """
     volume_cfg = cfg.volume if cfg.workers is None else replace(cfg.volume, workers=cfg.workers)
+    if cfg.device != "auto":
+        volume_cfg = replace(volume_cfg, device=cfg.device)
     render_cfg = cfg.render if cfg.workers is None else replace(cfg.render, workers=cfg.workers)
+    if cfg.device != "auto":
+        render_cfg = replace(render_cfg, device=cfg.device)
     field = build_field(cfg.input, cfg.grid, show_progress=show_progress)
     volume = build_volume(field, volume_cfg, cfg.grid, show_progress=show_progress)
     return render_volume(
@@ -394,7 +438,7 @@ def _utc_time(timestamp: str) -> Any:
         return Time(timestamp, scale="utc")
     except Exception as exc:  # astropy raises a variety of types for malformed input
         raise ValueError(
-            f"could not parse --timestamp {timestamp!r} as a UTC ISO-8601 datetime "
+            f"could not parse timestamp {timestamp!r} as a UTC ISO-8601 datetime "
             f"(e.g. '2024-04-08T18:17:00'): {exc}"
         ) from exc
 
@@ -441,8 +485,8 @@ def _interior(volume: QPerpVolume) -> np.ndarray:
 
 
 def covered_fraction(volume: QPerpVolume) -> float:
-    """Return the fraction of interior voxels carrying a finite log₁₀ Q⊥: the paint builder's
-    coverage, recomputed from the volume so it lands in the provenance and summary."""
+    """Return the fraction of interior voxels carrying a finite log₁₀ Q⊥: the volume's coverage
+    (only the paint builder leaves gaps), recomputed so it lands in the provenance and summary."""
     return float(np.isfinite(_interior(volume)).mean())
 
 
@@ -466,8 +510,8 @@ def build_provenance(
     read back by ``render`` for the stamp and summary.
 
     Carries the input path + content hash + derived CR/JD, the field grid + normalization, and the
-    resolved volume parameters + grid + covered fraction. Format-independent, so a future FITS
-    writer can map the same dict to header keywords.
+    resolved volume parameters + grid + covered fraction. Format-independent: flat strings and
+    numbers that map one-to-one onto image-header keywords.
     """
     return {
         "format": _ARTIFACT_FORMAT,
@@ -480,6 +524,7 @@ def build_provenance(
         "field": {**grid_cfg.to_provenance(), "normalization": field.normalization},
         "volume": {
             **volume_cfg.to_provenance(),
+            "backend": _resolved_backend(volume_cfg.device),
             "grid": f"{volume.grid.n_r}x{volume.grid.n_theta}x{volume.grid.n_phi}",
             "covered_fraction": covered_fraction(volume),
             "sub_floor_voxels": sub_floor_voxels(volume),
@@ -515,6 +560,7 @@ def render_provenance(
     prov["weighting"] = weighting_cfg.to_provenance()
     prov["render"] = {
         **render_cfg.to_provenance(),
+        "backend": "cpu",  # the render runs on the CPU (no GPU render backend)
         "preset": result.preset_name,
         "display_mode": result.display_mode,
         "mean_coverage": float(np.mean(covered)) if covered.size else 0.0,
@@ -653,8 +699,8 @@ def save_volume(
 
     The padded ``log_q_perp`` payload is stored ``float32`` by default, lossless relative to the
     engine's ``rtol ≈ 1e-4`` (storing log Q⊥ keeps the precision uniform across the dynamic range,
-    NaN gaps bit-exact), and DEFLATE-compressed by default. ``--cache-dtype float64`` gives a
-    bit-exact checkpoint; ``--no-compress`` skips the one-time compression. The file is written
+    NaN gaps bit-exact), and DEFLATE-compressed by default. ``dtype="float64"`` gives a
+    bit-exact checkpoint; ``compress=False`` skips the one-time compression. The file is written
     through an open handle so the user's exact suffix (``.qor``) is preserved rather than numpy's
     ``.npz`` default.
 

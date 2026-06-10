@@ -9,8 +9,8 @@ Geometry-only checks; the Q⊥ *value* gate lives in ``test_dipole_squashing.py`
   open→closed flip matches the analytic separatrix ``θ_SL = 50° / 130°`` at ``R_seed = 1.01``;
 - **foot-landing**: every clean endpoint lies on its boundary sphere;
 - **stall guard**: the direction-reversal guard is a no-op on the smooth dipole (no false stalls)
-  and the numba and NumPy engines return identical end codes with it active. (The guard's *firing*
-  is exercised by the real-data validation study, not here; the analytic dipole never thrashes.)
+  and the engines return identical end codes with it active. (The analytic dipole never thrashes,
+  so the guard's *firing* is not exercised here.)
 
 Run at ``rtol = 1e-4`` *and* ``1e-5`` to confirm the geometry is converged, not coincidental.
 One tracer test; validation studies stay separate from the unit suite.
@@ -24,7 +24,7 @@ from qorona.field import PfssDipoleField
 from qorona.geometry import spherical_to_cartesian
 from qorona.trace import Endpoint, trace_field_lines
 
-#: Seed radius from the validation doc, where θ_SL = 50.0°. Seeds sit just above the
+#: Seed radius where θ_SL = 50.0°. Seeds sit just above the
 #: inner boundary so both the near foot and the far end of each line are exercised.
 R_SEED = 1.01
 
@@ -80,9 +80,10 @@ def test_dipole_tracer_geometry() -> None:
         assert abs(flip - theta_sl) < 0.5
 
         # Stall guard: a no-op on the clean dipole (no line thrashes, so none is falsely stalled),
-        # and the two engines agree with it active. `sweep` ran on the numba kernel with the guard
-        # on (default); the same seeds with the guard off must give identical geometry, and the
-        # NumPy core (forced by store_path) must return identical end codes.
+        # and the engines agree with it active. `sweep` ran on the accelerated engine (numba or
+        # CUDA, device="auto") with the guard on (default); the same seeds with the guard off must
+        # give identical geometry, and the NumPy core (forced by store_path) must return identical
+        # end codes.
         assert not sweep.is_stalled.any()
         guard_off = trace_field_lines(
             field, _seeds(sweep_deg), rtol=rtol, max_reversals=0, show_progress=False

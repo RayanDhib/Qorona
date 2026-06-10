@@ -20,12 +20,11 @@ These details are load-bearing:
   part ``Σ w`` divides out. Recovering depth needs the raw integral ``Σ w·log₁₀Q⊥`` instead (and the
   per-preset linear/log scaling only makes sense on an integral), so the *image* is built from a
   per-channel display magnitude selected by the ``display`` mode: ``"balanced"`` (default)
-  ``signal · Σ_onpath w`` (the integral rebuilt as the NaN-comparable average x a gap-independent
+  ``signal · Σ_onpath w`` (the integral rebuilt as the NaN-comparable average · a gap-independent
   geometric weight budget), ``"raw"`` ``signal · Σ_valid w`` (gappy rays dim), or ``"coverage"``
   ``signal · Σ_valid w / coverage`` (an approximate completion), then a **per-channel** percentile
   stretch (a pooled stretch crushes the steep channel to ≈0). A separate grayscale measurement image
-  (the channel-mean of ``signal``, linearly stretched) is emitted alongside. The locked ``signal``,
-  ``coverage``, and clamp provenance are untouched.
+  (the channel-mean of ``signal``, linearly stretched) is emitted alongside.
 
 - **The display clamp is the render's, not the volume's.** The volume stores raw, truthful log₁₀ Q⊥
   (including the real-data sub-floor tail); the render clamps to ``[log₁₀2, log_max]`` for an 8-bit
@@ -46,9 +45,9 @@ recipe: the explicit large- and small-field-of-view weightings of Mikić et al. 
 Supplementary Note 2, implemented verbatim, except that Qorona integrates log₁₀ **Q⊥** in place
 of log₁₀ Q. Every constant is overridable: they are display choices, not physics.
 
-The quadrature runs on a numba ``prange``-over-rays kernel when numba is installed (each ray on its
-own lane), with the NumPy implementation kept as the no-numba fallback and the differential parity
-oracle; the two agree to floating-point noise.
+The quadrature runs on a numba ``prange``-over-rays kernel when numba is installed and the grids
+are JIT-able (each ray on its own lane); the NumPy implementation is the no-numba fallback and the
+kernel's reference, and the two agree to floating-point noise.
 """
 
 from __future__ import annotations
@@ -92,8 +91,7 @@ _MM_PER_R_SUN = (1.0 * u.R_sun).to_value(u.Mm)
 #: Number of ray-chunks the kernel render splits the image into, for progress only. Unlike the NumPy
 #: path (whose chunk bounds the materialised neighbourhood memory), the kernel touches one stencil
 #: at a time and needs no memory bound, so it chunks only for the progress bar. A fixed, small count
-#: keeps the bar live while avoiding the per-launch ``prange`` overhead of many tiny chunks
-#: (measured ~20 % slower at one chunk per 500k samples; negligible here).
+#: keeps the bar live while avoiding the per-launch ``prange`` overhead of many tiny chunks.
 _RENDER_PROGRESS_CHUNKS = 64
 
 #: Diverging warm/cool colours for ``--polarity-mode``: inward (-1), neutral (0), outward (+1); the
@@ -214,9 +212,9 @@ class RenderResult:
     signal
         ``(H, W, 3)`` the raw weight-normalised log₁₀ Q⊥ per channel, before intensity scaling;
         ``NaN`` where a pixel has no valid sample. The quantitative product: comparable across
-        pixels regardless of missing fraction (the locked weight-normalised average).
+        pixels regardless of missing fraction (the weight-normalised average).
     polarity
-        ``(H, W)`` per-pixel net magnetic polarity in ``[-1, +1]``: the magnitude-weighted mean
+        ``(H, W)`` per-pixel net magnetic polarity in ``[-1, +1]``: the weight-averaged mean
         footpoint sign along the line of sight (warm ``> 0`` outward / cool ``< 0`` inward), or
         ``None`` unless a polarity-colouring mode was requested; ``NaN`` where no valid sample.
     lower_clamped_fraction, upper_clamped_fraction
@@ -387,7 +385,7 @@ def _display_magnitude(
 ) -> np.ndarray:
     """Per-channel display magnitude: the depth-colour-bearing reconstruction of the LOS integral.
 
-    ``signal`` is the locked weight-normalised average ``Σw·v/Σw``, the quantitative,
+    ``signal`` is the weight-normalised average ``Σw·v/Σw``, the quantitative,
     NaN-comparable product, but grayscale on its own (three averages of the same log₁₀ Q⊥ barely
     differ). The cross-channel magnitude gradient that fakes depth is the raw integral ``Σw·v``,
     recovered here via the per-channel weight budgets without sacrificing comparability:
@@ -528,7 +526,7 @@ def _finalize(
     reconstruction nor the occulter can break their parity.
 
     The depth-coloured ``image`` comes from ``signal · weight-budget`` per the ``display`` mode (the
-    locked ``signal`` carries no depth colour on its own; see :func:`_display_magnitude`); the
+    ``signal`` carries no depth colour on its own; see :func:`_display_magnitude`); the
     ``grayscale`` image is the channel-mean of ``signal`` itself (line-of-sight-average log₁₀ Q⊥),
     linearly stretched and mode-independent. When the preset sets ``stretch_radius`` the colour
     stretch is anchored on the disk/near-limb pixels (``impact < stretch_radius``); the grayscale
@@ -606,12 +604,12 @@ def _render_numpy(
     chunk_size: int,
     show_progress: bool,
 ) -> RenderResult:
-    """Single-threaded NumPy render: the no-numba fallback and the kernel's differential oracle.
+    """Single-threaded NumPy render: the no-numba fallback and the kernel's reference.
 
     The reference quadrature: per ray-chunk it samples the volume on the shared ``s``-grid, masks
     in-shell + occulted + non-finite samples, and forms each channel's weight-normalised average,
     its coverage, and the per-channel valid/on-path weight budgets the display reconstruction needs.
-    ``validation/render_parity.py`` checks the kernel against this path. The in-integral body mask
+    The in-integral body mask
     (the opaque photosphere) is on only for the ``"opaque"`` mode; the display reconstruction and
     the image-level eclipse occulter are applied later in :func:`_finalize`.
 
@@ -896,8 +894,8 @@ def render(
     """Render the Q⊥ volume to an eclipse-like image from a camera viewpoint.
 
     Dispatches to a numba ``prange``-over-rays kernel when numba is installed and the volume grid is
-    JIT-able, else to the single-threaded NumPy path (also the kernel's differential oracle); the
-    two are output-identical to floating-point noise.
+    JIT-able, else to the single-threaded NumPy path (also the kernel's reference); the two are
+    output-identical to floating-point noise.
 
     The optional Thomson weight (``thomson``) is an off-by-default radiometric factor on an
     axis orthogonal to the geometric ``preset``: it biases the rendered Q⊥ toward bright dense
@@ -960,7 +958,7 @@ def render(
         ``"hue"``: colour by the line-of-sight **net polarity** (warm outward / cool inward,
         neutral white), brightness from the structure; needs a volume carrying the polarity channel.
     chunk_size
-        Rays x line-of-sight steps processed per batch on the NumPy path, bounding its peak memory.
+        Rays · line-of-sight steps processed per batch on the NumPy path, bounding its peak memory.
         Unused by the kernel path, which touches one stencil at a time and chunks only for progress.
     workers
         numba thread count for the kernel (``None`` = all cores; ``1`` = serial). Ignored without
@@ -983,7 +981,7 @@ def render(
     if polarity_mode != "none" and volume.polarity is None:
         raise ValueError(
             "polarity colouring needs a volume with the polarity channel, but this one has none; "
-            "rebuild it with the paint or boundary builder (the per-voxel builder omits polarity)"
+            "rebuild it with the paint or per-voxel builder (the reference builder omits polarity)"
         )
     # The kernel needs both the volume grid and (when weighting) the density grid to be JIT-able.
     thomson_jit = thomson is None or thomson.density.grid._jit_grid() is not None

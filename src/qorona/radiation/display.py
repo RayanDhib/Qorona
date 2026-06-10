@@ -1,4 +1,4 @@
-"""Display treatments for the polarized-brightness frame: the two ways one pB image is shown.
+"""Display treatments for the polarized-brightness frame: the two detrends applied to a pB image.
 
 A finished pB image spans many decades radially, so it is displayed through a detrend that reveals
 the faint structure at all heights. Two treatments, both 2-D post-processes on the integrated frame
@@ -9,9 +9,8 @@ the faint structure at all heights. Two treatments, both 2-D post-processes on t
   contained, no extra dependency.
 - **Fine-structure enhancement** (:func:`mgn_enhance`): Multi-scale Gaussian Normalization, the
   multi-scale generalisation of a single-scale log unsharp mask, via ``sunkit_image.enhance.mgn``.
-  MGN ships in the default install; if it is excluded (a leaner footprint), only this treatment is
-  unavailable and it fails with a friendly note; the radial vignetting and the raw/linear pB frame
-  still render.
+  ``sunkit-image`` is not installed by default; without it only this treatment is unavailable and it
+  fails with a friendly note, while the radial vignetting and the raw/linear pB frame still render.
 
 Both leave the integrated frame untouched and return a new display frame; :func:`save_pb_png` writes
 either to an 8-bit grayscale PNG with a percentile stretch.
@@ -38,18 +37,18 @@ __all__ = [
     "save_pb_png",
 ]
 
-#: Newkirk coronal-density exponent: ``Nₑ ∝ 10^(scale · R☉/r)``. A tunable parameter at this
-#: locked default.
+#: Newkirk coronal-density exponent: ``Nₑ ∝ 10^(scale · R☉/r)``. A tunable parameter; the
+#: default is Newkirk's value.
 NEWKIRK_SCALE = 4.32
 
 #: Impact parameter (R☉) at which the radial vignette has unit transmission; anchored
-#: here and lifts radii beyond it. A tunable parameter at this locked default (the limb).
+#: here and lifts radii beyond it. A tunable parameter; the default is the limb.
 NEWKIRK_REFERENCE_RADIUS = 1.0
 
 #: Friendly guidance shown when the MGN treatment is requested without ``sunkit-image`` installed.
 MGN_MISSING_HINT = (
-    "the MGN pB fine-structure enhancement needs sunkit-image (in the default install); reinstall "
-    "it with `pip install sunkit-image`, or use the Newkirk vignetting / raw pB treatments instead"
+    "the MGN pB fine-structure enhancement needs sunkit-image; install it with "
+    "`pip install sunkit-image`, or use the Newkirk vignetting / raw pB treatments instead"
 )
 
 
@@ -120,8 +119,8 @@ def mgn_enhance(
         ``(H, W)`` MGN-enhanced frame.
     """
     try:
-        from sunkit_image.enhance import mgn
-    except ImportError as error:  # pragma: no cover - exercised only in a leaned-out install
+        from sunkit_image.enhance import mgn  # type: ignore
+    except ImportError as error:  # pragma: no cover - exercised only without sunkit-image installed
         raise ImportError(MGN_MISSING_HINT) from error
     data = np.nan_to_num(np.asarray(polarized, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
     return mgn(data, sigma=sigma, k=k, gamma=gamma, h=h, weights=weights)

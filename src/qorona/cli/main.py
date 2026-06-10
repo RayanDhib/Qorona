@@ -1,21 +1,24 @@
-"""The ``qorona`` command-line interface: ``build`` / ``render`` / ``run`` / ``info``.
+"""The ``qorona`` CLI: ``build`` / ``render`` / ``run`` / ``fieldlines`` / ``info``.
 
 A :mod:`click` group wired to the shared :mod:`qorona.console` Rich surface, so progress and styling
 stay uniform. It splits the two cost axes of the pipeline into separate commands: ``build`` bakes
 the viewpoint-independent Q⊥ volume **once** (the minutes-scale stage, where resolution / seeding /
 supersampling sweeps live), ``render`` integrates a baked volume for any camera / preset (seconds,
-where viewpoint / weighting sweeps live), and ``run`` chains both, plus an ``info`` inspector.
+where viewpoint / weighting sweeps live), and ``run`` chains both; ``fieldlines`` draws the
+field-line view and ``info`` inspects a solution.
 
 Every flag populates the typed :mod:`qorona.config` schema (the single source of truth for defaults
-and validation); the CLI carries no defaults of its own (a flag left unset defers to the dataclass),
-so the help text's stated defaults are documentation, never a second behavioural source. After any
-command that produces a result, a polished end-of-run summary prints the run's parameters and
-quantitative metrics, the spoken reproducibility surface.
+and validation); a flag left unset defers to the dataclass, so the help text's stated defaults are
+documentation, not a second behavioural source (the two documented exceptions: the single-axis
+image-dimension fallback and the volume-cache write options). After any command that produces a
+result, a polished end-of-run summary prints the run's parameters and quantitative metrics, the
+printed counterpart of the on-image stamp.
 """
 
 from __future__ import annotations
 
 import time
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -29,12 +32,14 @@ from qorona.config import (
     BRIGHTNESS_SCALINGS,
     BRIGHTNESS_TREATMENTS,
     CLOSED_TREATMENTS,
+    DEVICE_MODES,
     DISPLAY_MODES,
     FIELDLINE_COLOUR,
     FIELDLINE_SEEDING,
     FIELDLINE_SHOW,
     OCCULT_MODES,
     POLARITY_MODES,
+    PRECISION_MODES,
     RESAMPLERS,
     SPACING_LAWS,
     VOLUME_BUILDERS,
@@ -58,8 +63,9 @@ _DEFAULT_DIMENSION = 1024
 
 
 # --- Reusable option groups --------------------------------------------------------------------
-# Defined once and shared across commands so the flag surface never drifts between build / render /
-# run. Every default is ``None`` so the typed schema remains the sole source of defaults.
+# Defined once and shared across the commands so the flag surface never drifts between them.
+# Every option default is ``None`` (``--quiet``, a display-only flag, excepted) so the typed
+# schema remains the sole source of defaults.
 
 
 def _compose(*options: Callable[[Callable], Callable]) -> Callable[[Callable], Callable]:
@@ -121,8 +127,8 @@ _grid_options = _compose(
         help="Cell→grid resampler (default knn-mls).",
     ),
 )
-#: Sharp-turn guard knobs, shared (hidden/advanced) by `build` and `fieldlines`. Calibrated defaults
-#: apply automatically; `--max-turn-angle 0` disables the guard for an A/B comparison.
+#: Sharp-turn guard knobs, shared (hidden/advanced) by `build`/`run` and `fieldlines`. The
+#: defaults apply automatically; `--max-turn-angle 0` disables the guard.
 _turn_guard_options = (
     click.option(
         "--max-turn-angle",
@@ -153,7 +159,7 @@ _turn_guard_options = (
         default=None,
         hidden=True,
         help="Sharp-turn guard: number of qualifying sharp turns that triggers termination; "
-        "occasional null grazes are kept (default 3).",
+        "occasional null grazes are kept (default 1 for volume builds, 3 for fieldlines).",
     ),
 )
 _volume_options = _compose(
@@ -161,7 +167,9 @@ _volume_options = _compose(
         "--builder",
         type=click.Choice(VOLUME_BUILDERS),
         default=None,
-        help="Q⊥ volume builder (default paint).",
+        help="Q⊥ volume builder: paint (fast production fill), per-voxel (every voxel traced "
+        "to its feet; complete coverage, cost grows with voxels), reference (validation "
+        "ground truth). Default paint.",
     ),
     click.option(
         "--resolution-factor",
@@ -206,6 +214,13 @@ _volume_options = _compose(
         hidden=True,
         help="Stall guard: terminate a line after this many >90° direction reversals, a line "
         "trapped at a weak-field null (default 8; 0 disables).",
+    ),
+    click.option(
+        "--precision",
+        type=click.Choice(PRECISION_MODES),
+        default=None,
+        help="CUDA kernel precision: mixed (f32 field interpolation, f64 elsewhere; default), "
+        "float64 (all-double reference), float32 (experimental fully-float32 painter). GPU only.",
     ),
     *_turn_guard_options,
 )
@@ -466,6 +481,13 @@ _workers_option = click.option(
     default=None,
     help="Worker threads for the numba kernels (default all cores).",
 )
+_device_option = click.option(
+    "--device",
+    type=click.Choice(DEVICE_MODES),
+    default=None,
+    help="Compute backend for the volume build: auto (GPU when present, else CPU), gpu (force; "
+    "errors if absent), cpu. Renders always run on the CPU. Default auto.",
+)
 _quiet_option = click.option(
     "--quiet", is_flag=True, default=False, help="Suppress progress bars and the spinner."
 )
@@ -501,7 +523,7 @@ def _volume_config(kw: dict[str, Any], workers: int | None) -> VolumeConfig:
     fields = _present(
         kw, "builder", "resolution_factor", "supersample", "paint_step", "closed", "rtol", "cfl",
         "max_steps", "max_reversals", "max_turn_angle", "turn_guard_radius",
-        "turn_guard_weak_fraction", "min_turns",
+        "turn_guard_weak_fraction", "min_turns", "device", "precision",
     )
     if workers is not None:
         fields["workers"] = workers
@@ -525,7 +547,7 @@ def _weighting_config(kw: dict[str, Any]) -> WeightingConfig:
 
 def _render_config(kw: dict[str, Any], workers: int | None) -> RenderConfig:
     fields = _present(
-        kw, "display", "occult", "r_occult", "occult_softness", "step", "polarity_mode"
+        kw, "display", "occult", "r_occult", "occult_softness", "step", "polarity_mode", "device"
     )
     if kw.get("clamp") is not None:
         fields["clamp"] = tuple(kw["clamp"])
@@ -599,8 +621,17 @@ def main() -> None:
 
     Render the line-of-sight magnetic squashing factor Q⊥ of a coronal MHD solution into
     eclipse-like imagery. Bake the viewpoint-independent volume once with `build`, then render any
-    number of viewpoints cheaply with `render`; `run` does both in one shot, `info` inspects a file.
+    number of viewpoints cheaply with `render`; `run` does both in one shot, `fieldlines` draws
+    the field-line view, `info` inspects a file.
     """
+    # The numba CUDA dispatcher warns about low-occupancy launches on the one-seed kernel warm-up
+    # and the final partial chunks; both are deliberate, so the warning is noise on the CLI.
+    try:
+        from numba.core.errors import NumbaPerformanceWarning
+
+        warnings.filterwarnings("ignore", category=NumbaPerformanceWarning)
+    except ImportError:
+        pass
 
 
 @main.command()
@@ -618,8 +649,12 @@ def main() -> None:
 @_volume_options
 @_cache_options
 @_workers_option
+@_device_option
 @_quiet_option
-def build(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **kw: Any) -> None:
+def build(
+    input_path: Path, output_path: Path, workers: int | None, device: str | None, quiet: bool,
+    **kw: Any,
+) -> None:
     """Bake the viewpoint-independent Q⊥ volume from a solution to a cache file.
 
     The minutes-scale stage: read → resample → Q⊥ volume, written to a dependency-free .qor/.npz
@@ -627,17 +662,23 @@ def build(input_path: Path, output_path: Path, workers: int | None, quiet: bool,
     of cheap `render`s can reuse it.
     """
     kw["input_path"] = input_path
+    kw["device"] = device
     show_progress = not quiet
     input_cfg = _input_config(kw)
     grid_cfg = _grid_config(kw)
     volume_cfg = _volume_config(kw, workers)
 
     print_step(f"Baking Q⊥ volume from [bold]{input_path.name}[/bold]")
+    stage_timings: dict[str, float] = {}
     start = time.perf_counter()
-    field = pipeline.build_field(input_cfg, grid_cfg, show_progress=show_progress)
+    field = pipeline.build_field(
+        input_cfg, grid_cfg, show_progress=show_progress, timings=stage_timings
+    )
     field_time = time.perf_counter() - start
     build_start = time.perf_counter()
-    volume = pipeline.build_volume(field, volume_cfg, grid_cfg, show_progress=show_progress)
+    volume = pipeline.build_volume(
+        field, volume_cfg, grid_cfg, show_progress=show_progress, timings=stage_timings
+    )
     build_time = time.perf_counter() - build_start
 
     provenance = pipeline.build_provenance(
@@ -649,7 +690,7 @@ def build(input_path: Path, output_path: Path, workers: int | None, quiet: bool,
     print_success(f"Saved volume → [bold]{output_path}[/bold]")
     _print_summary(
         provenance,
-        {"field": field_time, "build": build_time},
+        {"field": field_time, "build": build_time, **stage_timings},
         volume_path=output_path,
         header="build",
     )
@@ -675,12 +716,14 @@ def build(input_path: Path, output_path: Path, workers: int | None, quiet: bool,
 @_render_options
 @_output_options
 @_workers_option
+@_device_option
 @_quiet_option
 def render(
     volume_path: Path,
     output_path: Path,
     timestamp: str | None,
     workers: int | None,
+    device: str | None,
     quiet: bool,
     **kw: Any,
 ) -> None:
@@ -688,8 +731,9 @@ def render(
 
     The seconds-scale stage: load the volume, integrate it for one camera / preset / display, write
     the PNG(s) with the on-image stamp, and print the metrics. Repeat for new viewpoints off the
-    same volume: the experimentation win.
+    same volume.
     """
+    kw["device"] = device
     show_progress = not quiet
     camera_cfg = _camera_config(kw)
     weighting_cfg = _weighting_config(kw)
@@ -744,12 +788,14 @@ def render(
 @_render_options
 @_output_options
 @_workers_option
+@_device_option
 @_quiet_option
 def run(
     input_path: Path,
     output_path: Path,
     save_volume_path: Path | None,
     workers: int | None,
+    device: str | None,
     quiet: bool,
     **kw: Any,
 ) -> None:
@@ -759,6 +805,7 @@ def run(
     intermediate so subsequent `render`s are instant.
     """
     kw["input_path"] = input_path
+    kw["device"] = device
     show_progress = not quiet
     input_cfg = _input_config(kw)
     grid_cfg = _grid_config(kw)
@@ -769,11 +816,16 @@ def run(
     output_cfg = _output_config(kw, output_path)
 
     print_step(f"Running the full pipeline on [bold]{input_path.name}[/bold]")
+    stage_timings: dict[str, float] = {}
     start = time.perf_counter()
-    field = pipeline.build_field(input_cfg, grid_cfg, show_progress=show_progress)
+    field = pipeline.build_field(
+        input_cfg, grid_cfg, show_progress=show_progress, timings=stage_timings
+    )
     field_time = time.perf_counter() - start
     build_start = time.perf_counter()
-    volume = pipeline.build_volume(field, volume_cfg, grid_cfg, show_progress=show_progress)
+    volume = pipeline.build_volume(
+        field, volume_cfg, grid_cfg, show_progress=show_progress, timings=stage_timings
+    )
     build_time = time.perf_counter() - build_start
 
     build_prov = pipeline.build_provenance(
@@ -799,7 +851,7 @@ def run(
     print_success(f"Wrote [bold]{output_path}[/bold]")
     _print_summary(
         provenance,
-        {"field": field_time, "build": build_time, "render": render_time},
+        {"field": field_time, "build": build_time, "render": render_time, **stage_timings},
         written=written,
         header="run",
     )
@@ -872,12 +924,11 @@ def fieldlines(
 ) -> None:
     """Render the magnetic field lines of a solution from a viewpoint.
 
-    Re-reads the solution, traces a bundle of field lines, and draws them in projection over the
+    Reads the solution, traces a bundle of field lines, and draws them in projection over the
     photosphere disk. The default eclipse-photograph look seeds the open fan on the limb with short
     closed loops on the front face (``--seeding limb``), colours open lines by their inner-foot
     ``B·r̂`` polarity (``--colour polarity``), and renders a B_r magnetogram (``--magnetogram``).
-    A self-contained
-    command: it traces the field directly and does not use a baked volume.
+    A self-contained command: it traces the field directly and does not use a baked volume.
     """
     kw["input_path"] = input_path
     show_progress = not quiet
@@ -910,7 +961,7 @@ def fieldlines(
     )
 
 
-@main.command()
+@main.command(hidden=True)
 @click.argument("input_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "-o",
@@ -930,7 +981,7 @@ def fieldlines(
 def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **kw: Any) -> None:
     """Render the white-light / polarized-brightness corona of a solution from a viewpoint.
 
-    Re-reads and resamples the solution, then integrates the Thomson-scattering brightness over
+    Reads and resamples the solution, then integrates the Thomson-scattering brightness over
     the electron density along each line of sight: the polarized brightness pB by default, or the
     total white-light brightness with ``--frame total``. Finish the pB frame with
     ``--treatment newkirk`` (radial vignette) or ``--treatment mgn`` (multi-scale fine-structure
@@ -973,6 +1024,10 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
 
 # --- The end-of-run summary --------------------------------------------------------------------
 
+#: Timing keys that are whole pipeline stages (and therefore sum to the footer total); every other
+#: key is a sub-stage breakdown displayed inline on its stage's line.
+_TOP_LEVEL_TIMINGS = ("field", "build", "render", "fieldlines", "brightness")
+
 
 def _input_line(prov: dict[str, Any]) -> str:
     inp = prov["input"]
@@ -989,25 +1044,41 @@ def _input_line(prov: dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
-def _field_line(prov: dict[str, Any]) -> str:
+def _field_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
     fld = prov["field"]
-    return (
+    base = (
         f"{fld['n_r']}x{fld['n_theta']}x{fld['n_phi']} · "
         f"r ∈ [{fld['inner_radius']}, {fld['outer_radius']}] R☉ · "
         f"{fld['spacing']} · {fld['resampler']}"
     )
+    extra = " · ".join(
+        f"{name} {timings[name]:.0f} s" for name in ("read", "resample") if name in timings
+    )
+    return f"{base} · {extra}" if extra else base
 
 
 def _volume_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
     vol = prov["volume"]
     parts = [str(vol["builder"]), str(vol["grid"])]
-    if vol["builder"] != "per-voxel":
+    if vol["builder"] != "reference":
         parts.append(f"supersample {vol['supersample']}")
     parts.append(f"{float(vol['covered_fraction']):.1%} voxels covered")
     if vol.get("sub_floor_voxels") is not None:
         parts.append(f"{int(vol['sub_floor_voxels']):,} sub-floor voxels")
+    if vol.get("backend"):
+        backend = str(vol["backend"])
+        if backend.startswith("gpu") and vol.get("precision"):
+            backend += f" · {vol['precision']}"
+        parts.append(backend)
     if "build" in timings:
-        parts.append(f"build {timings['build']:.0f} s")
+        stages = " · ".join(
+            f"{name} {timings[name]:.0f}" for name in ("boundary", "trace", "paint")
+            if name in timings
+        )
+        parts.append(
+            f"build {timings['build']:.0f} s ({stages})" if stages
+            else f"build {timings['build']:.0f} s"
+        )
     return " · ".join(parts)
 
 
@@ -1031,6 +1102,8 @@ def _render_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
         f"clamped {float(ren['lower_clamped_fraction']):.1%} at floor, "
         f"{float(ren['upper_clamped_fraction']):.1%} at log_max",
     ]
+    if ren.get("backend"):
+        parts.append(str(ren["backend"]))
     if "render" in timings:
         parts.append(f"render {timings['render']:.1f} s")
     return " · ".join(parts)
@@ -1083,7 +1156,7 @@ def _print_summary(
     volume_path: Path | None = None,
     header: str,
 ) -> None:
-    """Print the grouped end-of-run summary: the spoken reproducibility surface.
+    """Print the grouped end-of-run summary: the printed counterpart of the on-image stamp.
 
     Reports, per section, the resolved parameters and quantitative metrics drawn from the single
     provenance mapping and the stage timings, so the on-image stamp and this panel never disagree.
@@ -1097,7 +1170,7 @@ def _print_summary(
     table.add_column()
     table.add_row("Input", _input_line(provenance))
     if "field" in provenance:
-        table.add_row("Field", _field_line(provenance))
+        table.add_row("Field", _field_line(provenance, timings))
     if "volume" in provenance:
         table.add_row("Volume", _volume_line(provenance, timings))
     if "fieldlines" in provenance:
@@ -1110,7 +1183,9 @@ def _print_summary(
         table.add_row("Brightness", _brightness_line(provenance, timings))
     table.add_row("Output", _output_line(written, volume_path))
 
-    total = sum(timings.values())
+    # The footer total sums the top-level stages only; the sub-stage entries (read/resample within
+    # field, boundary/trace/paint within build) are breakdowns of those and would double-count.
+    total = sum(seconds for name, seconds in timings.items() if name in _TOP_LEVEL_TIMINGS)
     console.print(
         Panel(
             table,

@@ -8,7 +8,7 @@ value is converged rather than coincidental. Plus the ∇B̂-contraction guard: 
 cannot expose a transpose in the deviation derivative, so a hand-built **asymmetric** ``grad_b``
 checks the contraction convention directly.
 
-The one squashing-factor regression test; the dense theory-vs-code figure lives in the separate
+The squashing-factor regression gate; the dense theory-vs-code figure lives in the separate
 study ``validation/dipole_q_perp.py``.
 """
 
@@ -21,8 +21,8 @@ from qorona.geometry import spherical_to_cartesian
 from qorona.squashing import compute_squashing
 from qorona.squashing.transport import _deviation_derivative, _unit_field_gradient
 
-#: Seed radius from the validation doc, where θ_SL = 50.0°; seeds sit just above the inner
-#: boundary so both half-lines are non-trivial.
+#: Seed radius where θ_SL = 50.0°; seeds sit just above the inner boundary so both half-lines
+#: are non-trivial.
 R_SEED = 1.01
 
 
@@ -41,7 +41,7 @@ def test_dipole_squashing_profile() -> None:
     cap_deg = np.array([15.0, 30.0, 45.0, 49.0, 135.0, 150.0, 165.0])
 
     for rtol in (1e-4, 1e-5):
-        # Closed band: Q⊥ = 2 to well within a few 1e-3 (the engine delivers ~1e-9).
+        # Closed band: Q⊥ = 2, asserted at 1e-6 (the engine typically delivers ~1e-9).
         band = compute_squashing(field, _seeds(closed_band_deg), rtol=rtol, show_progress=False)
         assert band.lines.is_closed.all()
         assert np.max(np.abs(band.q_perp - 2.0)) < 1e-6

@@ -12,9 +12,8 @@ spurious ``∇·B``. That is load-bearing for the squashing factor, whose prefac
 conservation: a nearest-cell staircase injects ``|∇·B|/|B| ~ O(1)`` per R_sun that drives Q⊥ below
 its theoretical floor of 2 on real data, while the source solutions are themselves well-cleaned, so
 faithfully reconstructing the existing field restores the floor. :class:`NearestCellResampler` is
-kept as a fast, finite-volume-faithful baseline (and for A/B diagnostics), and a connectivity-based
-linear reconstruction is the optional higher-fidelity upgrade behind the same interface. The smooth,
-differentiable field the tracer needs is supplied downstream by the tricubic interpolant.
+the fast, finite-volume-faithful baseline. The smooth, differentiable field the tracer needs is
+supplied downstream by the tricubic interpolant.
 """
 
 from __future__ import annotations
@@ -25,6 +24,7 @@ import numpy as np
 from astropy import units as u
 from scipy.spatial import cKDTree
 
+from qorona.accel import HAVE_NUMBA
 from qorona.console import progress_bar, status
 from qorona.io.native import NativeSolution
 from qorona.resample.grid import SphericalGrid
@@ -98,8 +98,7 @@ class KnnMlsResampler(Resampler):
     native cell centres by Gaussian-distance-weighted least squares; the resampled value is the fit
     evaluated at the node (``c0``). Being first-order, the reconstruction reproduces a linear field
     exactly and stays smooth, so, unlike :class:`NearestCellResampler`'s piecewise-constant copy,
-    it does not manufacture spurious ``∇·B`` (the divergence that drives the squashing factor Q⊥
-    below its theoretical floor of 2 on real data; see the module header). Fully model-agnostic: it
+    it does not manufacture spurious ``∇·B`` (see the module header). Fully model-agnostic: it
     uses only cell centres and values.
 
     The work is batched over grid nodes (one k-d tree query and one batched 4-by-4 solve per chunk),
@@ -162,8 +161,26 @@ class KnnMlsResampler(Resampler):
     def _fit_chunk(
         self, nodes: np.ndarray, tree: cKDTree, cell_centers: np.ndarray, values: np.ndarray
     ) -> np.ndarray:
-        """Fit the degree-1 MLS model at a chunk of nodes; return node values ``(m, n_vars)``."""
+        """Fit the degree-1 MLS model at a chunk of nodes; return node values ``(m, n_vars)``.
+
+        The exact-k neighbours come from the CPU ``cKDTree`` (a small fraction of the cost); the
+        dominant per-node assemble + 4x4 solve runs in a numba ``prange`` kernel when numba is
+        present,
+        reproducing the NumPy reference below to float64 round-off. Without numba the NumPy
+        einsum path is used directly.
+        """
         distance, neighbor = tree.query(nodes, k=self.n_neighbors, workers=-1)
+        if HAVE_NUMBA:
+            from qorona.resample._mls_jit import fit_mls_chunk
+
+            return fit_mls_chunk(
+                np.ascontiguousarray(nodes, dtype=np.float64),
+                np.ascontiguousarray(neighbor),
+                np.ascontiguousarray(distance, dtype=np.float64),
+                np.ascontiguousarray(cell_centers, dtype=np.float64),
+                np.ascontiguousarray(values, dtype=np.float64),
+                float(self.ridge),
+            )
         offset = cell_centers[neighbor] - nodes[:, None, :]  # (m, k, 3), local coordinates
         # Gaussian weights with a per-node bandwidth = mean neighbour distance (floored for safety).
         bandwidth = np.maximum(distance.mean(axis=1, keepdims=True), 1.0e-30)

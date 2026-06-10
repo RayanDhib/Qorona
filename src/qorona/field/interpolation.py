@@ -2,8 +2,8 @@
 
 The deviation-transport RHS that drives the squashing-factor computation needs a smooth,
 differentiable field: trilinear interpolation has a piecewise-constant gradient that is the
-dominant accuracy limit, so Qorona interpolates with the cubic-convolution kernel of Keys
-(1981), which is C¹ (continuous value *and* gradient) and third-order accurate. The kernel
+dominant accuracy limit, so Qorona interpolates with the cubic-convolution kernel,
+which is C¹ (continuous value *and* gradient) and third-order accurate. The kernel
 parameter ``a = -1/2`` is Keys' choice giving that third-order accuracy (the Catmull-Rom
 spline).
 

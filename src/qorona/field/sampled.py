@@ -82,7 +82,7 @@ class SampledField(Field):
     ) -> SampledField:
         """Build a :class:`SampledField` by resampling a solution's B (and density) onto ``grid``.
 
-        B and the electron density are resampled together in one pass (they share the node geometry,
+        B and the (mass) density are resampled together in one pass (they share the node geometry,
         so the k-d tree and the moving-least-squares design are reused), and the density is carried
         as an optional :class:`~qorona.field.density.DensityVolume` for the Thomson / brightness
         branch; the magnetic core works the same whether or not it is present.
@@ -151,24 +151,22 @@ class SampledField(Field):
     def characteristic_length(self, points: np.ndarray) -> np.ndarray:
         """Return the smallest local grid-cell extent ``(n,)`` at ``points`` (the CFL metric).
 
-        Delegates to :meth:`~qorona.resample.grid.SphericalGrid.cell_extent`; the log-spaced
-        radial grid makes this vary ~25x across the shell, which is exactly why the step
-        ceiling must follow the local cell rather than a single scalar.
+        Delegates to :meth:`~qorona.resample.grid.SphericalGrid.cell_extent` (see
+        :meth:`Field.characteristic_length` for why the ceiling must follow the local cell).
         """
         return self.grid.cell_extent(np.asarray(points, dtype=np.float64))
 
     def sample(
         self, points: np.ndarray, *, gradient: bool = True, validate: bool = False
     ) -> FieldSample:
-        # Points are assumed in-domain (the Field precondition). An out-of-domain point reads a
-        # wrong-but-finite value, never a clean error (the Field contract in base.py). Only the
+        # Points are assumed in-domain (the Field precondition in base.py). Only the
         # radial axis can leave the domain: θ and φ are periodic / pole-reflected and always valid
         # through the padding. Explicit-RK stages overrun the shell by up to ~1 cell (past the two
         # radial ghost layers), so the radial coord is clamped into the Keys in-range band
         # (floor ∈ [1, N_r-3]); an out-of-shell probe then reads finite edge-extrapolation rather
         # than overrunning the array. In-domain radial coords already lie in the band (a boundary
         # node maps to its band edge), so the clamp is a no-op for them. validate=True instead
-        # raises OutOfDomainError, for development / tracer bring-up.
+        # raises OutOfDomainError, for development.
         points = np.asarray(points, dtype=np.float64)
         if validate:
             self._domain.require_interior(points)

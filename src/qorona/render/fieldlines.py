@@ -10,7 +10,7 @@ Two seeding strategies:
 - ``limb`` (the default eclipse-like look): the open fan is seeded on a ring around the **limb**,
   the plane-of-sky great circle where the line of sight grazes the photosphere, so it radiates
   cleanly from the disk edge; the front (observer-facing) hemisphere contributes only short closed
-  loops ("close to the Sun"); the back interior is left unseeded. Produces a clean field-line fan.
+  loops close to the Sun; the back interior is left unseeded. Produces a clean field-line fan.
 - ``uniform``: a golden-angle Fibonacci spiral over the whole inner sphere, every line, the honest
   analytical view.
 
@@ -154,7 +154,8 @@ def render_field_lines(
     depth_fade
         Dim far-side lines by up to this fraction (``0`` disables the depth cue).
     rtol, cfl, max_steps
-        Tracer accuracy / step-ceiling / step-guard knobs (the DOPRI5 engine).
+        Tracer knobs (the DOPRI5 engine): ``rtol`` accuracy, ``cfl`` step ceiling, ``max_steps``
+        step-count guard.
     turn_guard
         Sharp-turn guard: terminate (and drop) a line that makes a single sharp turn in the outer
         corona where ``|B|`` is weak: a staircase deflection at a null; see

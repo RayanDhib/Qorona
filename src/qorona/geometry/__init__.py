@@ -1,8 +1,8 @@
-"""Geometry: coordinate transforms and frames.
+"""Geometry: coordinate transforms and the rendering camera.
 
-Cartesian ↔ spherical transforms for points and vector components. The field and tracer
-operate in Cartesian (smooth through the poles); the spherical form is used for internal
-grid indexing and I/O.
+Cartesian ↔ spherical transforms for points and vector components (the field and tracer
+operate in Cartesian, smooth through the poles; the spherical form is used for internal
+grid indexing and I/O), plus the orthographic plane-of-sky camera and its ray bundle.
 """
 
 from __future__ import annotations

@@ -11,7 +11,7 @@ This rides the field-line integrator unchanged: the position-only ``(n, 3)`` sta
 ``(n, 9)`` state ``(r, U, V)`` and the position RHS becomes this 9-vector RHS, while the DOPRI5
 stepper, the embedded PI control (over all nine components), the CFL ceiling, the dense-output
 foot-landing, and the parameter-free null guard are reused verbatim; only the right-hand side
-and the deviation error floor are new. The unit-field gradient ∇B̂ is formed *here* (not in the
+and the deviation error floor differ. The unit-field gradient ∇B̂ is formed *here* (not in the
 field, which returns the raw Jacobian ∇B, nor in the position-only RHS) from a single
 ``field.sample(gradient=True)`` per stage, reusing the bundle's one ``b_magnitude`` so no two
 paths disagree on |B|. A single per-lane ``direction ∈ {+1, -1}`` multiplies the whole 9-vector:
@@ -105,6 +105,8 @@ def _trace_and_transport(
     max_reversals: int,
     turn_guard: TurnGuard,
     store_path: bool,
+    device: str = "auto",
+    precision: str = "mixed",
     progress: Callable[[int], None] | None,
 ) -> tuple[FieldLines, np.ndarray]:
     """Trace each seed both ways while co-transporting its deviation vectors to the feet.
@@ -112,7 +114,7 @@ def _trace_and_transport(
     Builds the ``(2n, 9)`` initial state ``(seed, U₀, V₀)``: backward lanes ``[0, n)``, forward
     lanes ``[n, 2n)``, both halves seeded with the **same** ``(U₀, V₀)`` (the neighbouring line a
     deviation implies is shared by the two halves), and the 9-vector RHS, then hands them to the
-    shared :func:`~qorona.trace.integrator._integrate_batch`. Each half-line's terminal state
+    shared :func:`~qorona.trace.integrator._integrate` dispatcher. Each half-line's terminal state
     carries its foot position (folded into the geometric :class:`FieldLines`) and the deviation
     vectors transported to that foot (returned for assembly), both landed on the boundary by the
     same dense-output interpolant.
@@ -139,6 +141,13 @@ def _trace_and_transport(
         where ``|B|`` is weak (a staircase deflection at a null); see :class:`TurnGuard`.
     store_path
         Whether to record each line's full ordered geometric path.
+    device
+        Compute backend: ``"auto"`` selects the GPU when present, else the numba/NumPy CPU tiers;
+        ``"gpu"`` forces the CUDA kernel and raises if no usable GPU is available; ``"cpu"`` forces
+        the CPU tiers regardless of GPU presence.
+    precision
+        CUDA kernel precision (GPU tier only; the CPU tiers always run float64): ``"mixed"``
+        (default), ``"float64"``, or ``"float32"``. See :class:`~qorona.config.VolumeConfig`.
     progress
         Optional callback receiving the cumulative count of finished half-lines.
 
@@ -186,6 +195,8 @@ def _trace_and_transport(
         max_reversals=max_reversals,
         turn_guard=turn_guard,
         store_path=store_path,
+        device=device,
+        precision=precision,
         progress=progress,
     )
 

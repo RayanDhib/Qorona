@@ -5,7 +5,7 @@ field line through each seed. The engine is **seeding-agnostic**: a seed is only
 selects a line, and the ``B₀²`` normalization makes Q⊥ seed-position-invariant, so the returned
 value is the line's boundary-to-boundary, constant-along-the-line squashing factor regardless of
 where on the line the seed sits. Where seeds come from is the caller's concern: a validation
-colatitude sweep, dense boundary-sphere grids (the Q⊥ volume), per-pixel line-of-sight samples.
+colatitude sweep, or the dense boundary-sphere grids of the Q⊥ volume.
 
 Internally: sample B at the seeds (giving ``B₀`` and the seed deviation basis), co-transport the
 two deviation vectors ``U, V`` with each line to both feet (:mod:`~qorona.squashing.transport`),
@@ -25,18 +25,18 @@ from qorona.squashing.squashing_factor import _assemble_squashing, _seed_basis
 from qorona.squashing.transport import _trace_and_transport
 from qorona.squashing.volume import (
     QPerpVolume,
-    build_volume_boundary,
     build_volume_paint,
     build_volume_per_voxel,
+    build_volume_reference,
 )
 from qorona.trace.fieldline import DEFAULT_TURN_GUARD, FieldLines, TurnGuard
 
 __all__ = [
     "QPerpVolume",
     "SquashingResult",
-    "build_volume_boundary",
     "build_volume_paint",
     "build_volume_per_voxel",
+    "build_volume_reference",
     "compute_squashing",
 ]
 
@@ -101,6 +101,8 @@ def compute_squashing(
     max_reversals: int = 8,
     turn_guard: TurnGuard = DEFAULT_TURN_GUARD,
     store_path: bool = False,
+    device: str = "auto",
+    precision: str = "mixed",
     show_progress: bool = True,
 ) -> SquashingResult:
     """Compute Q⊥ (and the classical-Q diagnostic) for the field line through each seed.
@@ -132,6 +134,13 @@ def compute_squashing(
         where ``|B|`` is weak (a staircase deflection at a null); see :class:`TurnGuard`.
     store_path
         Whether to also keep each line's full ordered geometric path (memory-heavy).
+    device
+        Compute backend: ``"auto"`` selects the GPU when present, else the numba/NumPy CPU tiers;
+        ``"gpu"`` forces the CUDA kernel and raises if no usable GPU is available; ``"cpu"`` forces
+        the CPU tiers regardless of GPU presence.
+    precision
+        CUDA kernel precision (GPU tier only; the CPU tiers always run float64): ``"mixed"``
+        (default), ``"float64"``, or ``"float32"``. See :class:`~qorona.config.VolumeConfig`.
     show_progress
         Whether to display progress (this is the pipeline's slow stage).
 
@@ -173,6 +182,8 @@ def compute_squashing(
             max_reversals=max_reversals,
             turn_guard=turn_guard,
             store_path=store_path,
+            device=device,
+            precision=precision,
             progress=progress,
         )
 

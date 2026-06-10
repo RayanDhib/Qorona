@@ -1,4 +1,4 @@
-"""The standalone white-light / polarized-brightness (pB) render: the secondary M-corona product.
+"""The standalone white-light / polarized-brightness (pB) render: the secondary white-light product.
 
 A Thomson-scattering line-of-sight integral over the electron density, on the *same* orthographic
 camera and ``s``-march as the Q⊥ render but a different integrand: along each ray it accumulates
@@ -15,7 +15,7 @@ The product is *relative*: the single-electron prefactor and the absolute electr
 calibration are dropped (pB is conventionally shown in relative / log units), so pixel-to-pixel
 structure and the polarization ratio ``P = pB / K_tot`` are exact while the overall scale is
 arbitrary. The quadrature runs on a numba ``prange``-over-rays kernel when installed, with a
-NumPy path as the fallback and differential oracle.
+NumPy path as the fallback and reference implementation.
 
 Implemented from Inhester (2015), "Thomson Scattering in the Solar Corona", arXiv:1512.00651
 (Eqs. 4.3, the line-of-sight brightness integrals).
@@ -66,11 +66,12 @@ class BrightnessResult:
         ``(H, W)`` per-pixel impact parameter rho (R☉): the radius the display treatments
         and the eclipse vignette use.
     u
-        The limb-darkening coefficient the coefficients were evaluated at.
+        The limb-darkening ``u`` the coefficient table was built with (recorded for provenance).
     occult
-        The occultation mode used (``"eclipse"`` / ``"opaque"`` / ``"none"``).
+        The occultation mode the frames were finished with (``"eclipse"`` / ``"opaque"`` /
+        ``"none"``); recorded for provenance.
     r_occult, occult_softness
-        The occulter radius and eclipse-edge feather (R☉), for the image-level dark disk.
+        The occulter radius and eclipse-edge feather (R☉) used; recorded for provenance.
     """
 
     polarized: np.ndarray
@@ -149,11 +150,11 @@ def _finalize_brightness(
     occult_softness: float,
     show_progress: bool,
 ) -> BrightnessResult:
-    """Scale by the step, occult the disk, form pB / K_tot, and assemble the result.
+    """Scale by the step, occult the disk, form pB and K_tot, and assemble the result.
 
     In ``"eclipse"`` mode the occulter is opaque to all light at ``rho < r_occult``, so the frames
     are darkened image-side (the observable eclipse product: a dark disk, off-limb corona only) by
-    the radial vignette, the same darkening the Q⊥ render applies, but baked into the frame here so
+    the eclipse vignette, the same darkening the Q⊥ render applies, but baked into the frame here so
     the display treatments and the saved image all see the occulted pB. ``"opaque"`` (the 3-D view,
     near-side corona over the disk) and ``"none"`` leave the frames as integrated.
     """
@@ -191,7 +192,7 @@ def _brightness_numpy(
     chunk_size: int,
     show_progress: bool,
 ) -> BrightnessResult:
-    """Single-threaded NumPy brightness render: the no-numba fallback and the kernel's oracle."""
+    """Single-threaded NumPy brightness render: the no-numba fallback and the kernel's reference."""
     height, width = camera.pixels
     origins, impact, look, s_grid, ds = _ray_geometry(camera, density, step)
     n_steps = s_grid.shape[0]
@@ -241,7 +242,8 @@ def _brightness_numba(
     workers: int | None,
     show_progress: bool,
 ) -> BrightnessResult:
-    """numba ``prange``-over-rays brightness render: output-identical to the NumPy oracle to FP."""
+    """numba ``prange``-over-rays brightness render; agrees with the NumPy reference to
+    floating-point noise."""
     from qorona.accel.kernels import brightness_batch_jit
 
     apply_workers(workers)
@@ -302,8 +304,8 @@ def render_brightness(
 
     Integrates ``K_tan`` and ``K_pol`` along each orthographic line of sight and returns the
     polarized brightness ``pB = K_pol`` and the total ``K_tot = 2 K_tan - K_pol`` (relative units;
-    the absolute calibration is deferred). Dispatches to a numba kernel when available, else the
-    NumPy path (the differential oracle); the two agree to floating-point noise.
+    the absolute calibration is dropped). Dispatches to a numba kernel when available, else the
+    NumPy path (the reference implementation); the two agree to floating-point noise.
 
     Parameters
     ----------
@@ -320,8 +322,8 @@ def render_brightness(
         Line-of-sight sample spacing in R☉.
     occult
         Occultation mode. ``"eclipse"`` (default) integrates the full off-limb corona and darkens
-        the disk image-side at display time; ``"opaque"`` drops the far side behind the body in the
-        integral; ``"none"`` disables both.
+        the disk image-side after integration; ``"opaque"`` drops the far side behind the body in
+        the integral; ``"none"`` disables both.
     r_occult, occult_softness
         Occulter radius and eclipse-edge feather in R☉ (carried into the result for the display).
     chunk_size
@@ -335,8 +337,8 @@ def render_brightness(
     Returns
     -------
     BrightnessResult
-        The polarized and total brightness frames, the impact-parameter grid, and the occultation
-        settings the display treatments and the eclipse vignette consume.
+        The polarized and total brightness frames, the impact-parameter grid, and a record of the
+        limb-darkening and occultation settings the frames were built with.
     """
     if occult not in ("eclipse", "opaque", "none"):
         raise ValueError(f"occult must be 'eclipse', 'opaque', or 'none', not {occult!r}")

@@ -1,7 +1,7 @@
 """Render confirmation checks: camera orientation, scalar pole padding, and the LOS quadrature.
 
-The primary render validation is visual (the dipole / COCONUT images in ``validation/``), but three
-cheap, targeted checks catch bugs the axisymmetric dipole image hides:
+The primary render validation is visual (rendered dipole / COCONUT images inspected by eye), but
+three cheap, targeted checks catch bugs the axisymmetric dipole image hides:
 
 1. **Camera orientation / handedness**: a roll-sign flip or an up-vector handedness flip
    survives an axisymmetric image, so assert the projected solar-north direction directly

@@ -300,7 +300,7 @@ class SphericalGrid:
             spacing_code=spacing_code,
             r_inner=float(self.radii[0]),
             r_outer=float(self.radii[-1]),
-            exponent=float(getattr(self.spacing, "exponent", 1.0)),
+            exponent=float(getattr(self.spacing, "exponent", 1.0)),  # 1.0: unused off power-law
         )
 
 

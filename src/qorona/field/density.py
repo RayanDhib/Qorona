@@ -6,11 +6,11 @@ defined everywhere the solution is, so unlike the Q⊥ volume it carries no cove
 no NaN-tolerant interpolation: a plain tricubic on a ghost-padded payload, the same
 :class:`~qorona.resample.grid.SphericalGrid` machinery the field and Q⊥ volume use.
 
-It is built from the resampler's electron-density output (the COCONUT ``rho`` column), so it rides
+It is built from the resampler's density output (the COCONUT ``rho`` column), so it rides
 the resample the field already runs (one k-d tree, B and density fit together). The COCONUT
 corona-normalised mass density is converted toward physical electron number density by the mean
 molecular weight ``μ`` (10 % helium ⇒ ``μ = 1.27``); the *absolute* normalisation constant is
-deferred: the Q⊥ weighting and relative pB are scale-free (a constant prefactor cancels in the
+dropped: the Q⊥ weighting and relative pB are scale-free (a constant prefactor cancels in the
 weight-normalised average and in the polarization ratio), so this volume carries the relative shape
 and an absolute factor is folded in only when a calibrated brightness is wanted.
 """
@@ -25,7 +25,8 @@ from qorona.field.interpolation import tricubic
 from qorona.resample.grid import GHOST, SphericalGrid, pad_field
 
 #: Mean molecular weight per electron for a 10 % helium corona; the COCONUT corona-normalised mass
-#: density is divided by this toward electron number density. A parameter, locked at this default.
+#: density is divided by this toward electron number density. Overridable per call via
+#: :meth:`DensityVolume.from_grid_values`.
 MEAN_MOLECULAR_WEIGHT = 1.27
 
 
@@ -34,8 +35,8 @@ class DensityVolume:
     """Scalar electron density ``Nₑ`` on the internal spherical grid (dense; plain tricubic).
 
     The payload is ghost-padded once at construction so :meth:`sample` is a plain scalar tricubic.
-    Values are the relative density shape (the absolute calibration is deferred; see the module
-    header); a constant prefactor does not affect the Q⊥ weighting or the polarization ratio.
+    Values are the relative density shape (no absolute calibration; see the module header); a
+    constant prefactor does not affect the Q⊥ weighting or the polarization ratio.
 
     Attributes
     ----------
@@ -57,7 +58,7 @@ class DensityVolume:
         """Build a :class:`DensityVolume` from resampled ``(n_r, n_theta, n_phi)`` mass density.
 
         Converts the corona-normalised mass density toward electron number density by dividing by
-        the mean molecular weight ``mu`` (the absolute factor is deferred; relative shape only) and
+        the mean molecular weight ``mu`` (relative shape only; see the module header) and
         ghost-pads the result.
 
         Parameters
@@ -77,9 +78,9 @@ class DensityVolume:
         """Return ``(n,)`` interpolated ``Nₑ`` at ``points``; ``0`` outside the shell.
 
         A plain scalar tricubic on the padded payload (no NaN handling; the field is dense). Points
-        outside the radial shell ``[R_inner, R_outer]`` are not interpolated (``index_coordinates``
-        extrapolates off the ghost padding past the grid), so they return ``0``: no plasma is
-        sampled there, contributing nothing to a brightness integral or weight.
+        outside the radial shell ``[R_inner, R_outer]`` are masked rather than interpolated
+        (interpolating there would extrapolate off the ghost padding), so they return ``0``: no
+        plasma is sampled there, contributing nothing to a brightness integral or weight.
 
         Parameters
         ----------

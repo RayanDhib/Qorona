@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use Qorona, please cite it using the metadata below."
+type: software
+title: "Qorona: squashing factor synthetic coronal imagery from global MHD solutions"
+abstract: >-
+  Qorona is an open, model-agnostic post-processor that turns a global coronal
+  magnetohydrodynamic (MHD) solution into an eclipse-like image by integrating the
+  perpendicular squashing factor (log10 Q-perp) along the line of sight, rendering the
+  quasi-separatrix layers and separatrices that shape the fine structure seen at a total
+  solar eclipse. Each coronal model and file format sits behind a single reader interface,
+  so the whole pipeline runs on any solution once a reader exists; a field-line painting
+  volume builder decouples interior resolution from cost, and the engine is validated
+  against an analytic dipole whose Q-perp is known in closed form.
+authors:
+  - family-names: Dhib
+    given-names: Rayan
+    orcid: "https://orcid.org/0000-0003-3670-4678"
+    affiliation: "Centre for Mathematical Plasma-Astrophysics, KU Leuven, Belgium"
+license: GPL-3.0-or-later
+repository-code: "https://github.com/RayanDhib/Qorona"
+keywords:
+  - solar corona
+  - solar magnetic fields
+  - magnetohydrodynamics simulations
+  - total solar eclipse
+  - solar coronal streamers
+  - astronomy software
+  - squashing factor
+  - quasi-separatrix layers
+version: 0.2.0

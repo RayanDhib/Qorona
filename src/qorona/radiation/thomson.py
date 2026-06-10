@@ -4,7 +4,7 @@ The K-corona scattered intensity per electron depends only on the heliocentric r
 the solar angular radius ``θ_max = asin(R☉/r)``) and the mean scattering angle ``χ̄`` (pure
 line-of-sight geometry). This module evaluates the four Minnaert/Billings coefficients
 ``A, B, C, D(θ_max)`` and combines them with a limb-darkening ``u`` into the tangential, polarized,
-and total single-electron intensities: the only radiometric physics behind both M-corona products
+and total single-electron intensities: the only radiometric physics behind both white-light products
 (the optional Q⊥ weighting here and the standalone brightness render in :mod:`.brightness`).
 
 Two numerical details are load-bearing:
@@ -43,6 +43,7 @@ __all__ = [
     "LIMB_DARKENING",
     "RadialCoefficients",
     "ThomsonWeight",
+    "build_coefficient_table",
     "intensity_coefficients",
     "minnaert_coefficients",
 ]
@@ -50,7 +51,7 @@ __all__ = [
 #: Scattering mode of the Thomson weight / brightness product.
 ThomsonMode = Literal["K", "pB"]
 
-#: Optical limb-darkening coefficient ``u`` in ``L(cos ζ) = L_c (1 - u + u cos ζ)``: the locked
+#: Optical limb-darkening coefficient ``u`` in ``L(cos ζ) = L_c (1 - u + u cos ζ)``: the
 #: default; a wavelength-specific effective value can be set per passband.
 LIMB_DARKENING = 0.6
 
@@ -83,7 +84,7 @@ def _closed_form(sin_theta: np.ndarray, cos_theta: np.ndarray) -> tuple[np.ndarr
 
 
 def _asymptotic(theta_max: np.ndarray) -> tuple[np.ndarray, ...]:
-    """Return the small-``θ_max`` asymptotic ``(A, B, C, D)`` (Appendix A.4), for large ``r``."""
+    """Return the small-``θ_max`` asymptotic ``(A, B, C, D)``, for large ``r``."""
     t2 = theta_max * theta_max
     t4 = t2 * t2
     a = t2 - (5.0 / 6.0) * t4

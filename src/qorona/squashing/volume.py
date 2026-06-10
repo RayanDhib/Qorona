@@ -8,24 +8,29 @@ padding is value-exact for a scalar (the ghost row is the true Q⊥ at the antip
 vector component to flip). Storing log₁₀ Q⊥ keeps the interpolated quantity tame across its many
 decades and is exactly what the render integrates.
 
-Two build paths, cross-validated: the seed-invariant per-line engine makes the first a valid ground
-truth for the second:
+Three build paths, cross-validated against each other (the seed-invariant per-line engine makes
+the reference a valid ground truth for the other two):
 
-- :func:`build_volume_per_voxel`, the **reference**. Seed the squashing engine at every voxel
+- :func:`build_volume_reference`, the **reference**. Seed the squashing engine at every voxel
   centre and assign each voxel its line's Q⊥: the literal definition of Q⊥ at every point (one full
   trace-and-transport per voxel), so it is slow and used only on small/coarse grids.
 
-- :func:`build_volume_boundary`, **production**. Because Q⊥ is constant along a field line, it need
-  only be computed once on the inner and outer boundary spheres (supersampled); an interior voxel
-  then inherits its value by tracing position-only to both feet and combining the two precomputed
-  boundary values. Far cheaper, since the boundary maps are built once and reused across every voxel
-  and every camera.
+- :func:`build_volume_per_voxel`, **production, complete coverage**. Because Q⊥ is constant along
+  a field line, it need only be computed once on the inner and outer boundary spheres
+  (supersampled); an interior voxel then inherits its value by tracing position-only to both feet
+  and combining the two precomputed boundary values. Far cheaper, since the boundary maps are built
+  once and reused across every voxel and every camera; the cost still scales with the voxel count.
+
+- :func:`build_volume_paint`, **production, default**. Trace a *seed set* of lines and paint each
+  line's one Q⊥ along its full swept path, so the cost scales with the seed count instead of the
+  voxel count; the trade is inter-line coverage gaps (``NaN``), which the render's
+  weight-normalised integral tolerates.
 
 The volume is **truthful, not display-clamped**: it stores the genuine log₁₀ Q⊥ wherever Q⊥ is
 defined, including the real-data ``(0, 2)`` sub-floor tail (a resampling ∇·B artifact, since the
 theoretical floor is Q⊥ ≥ 2). ``NaN`` marks only voxels with no representable value: Q⊥ ≤ 0
-(undefined log), an incomplete line, or a foot whose boundary map cell is itself ``NaN``. The
-display floor and the upper clamp are the render's job, never the volume's.
+(undefined log), an incomplete line, or a foot whose boundary map cell is itself ``NaN``
+(:class:`QPerpVolume` carries the full contract).
 
 The interior recovery (trace each point both ways to the boundaries, interpolate Q⊥ at the two feet
 in cubic and average) is a direct consequence of Q⊥ being constant along a line; the per-line Q⊥
@@ -34,13 +39,24 @@ values it interpolates between come from :func:`~qorona.squashing.compute_squash
 
 from __future__ import annotations
 
+import os
+import time
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TypeVar
 
 import numpy as np
 
-from qorona.accel import HAVE_NUMBA, apply_workers
+from qorona.accel import (
+    HAVE_CUDA,
+    HAVE_NUMBA,
+    JitField,
+    JitGrid,
+    apply_workers,
+    gpu_memory_budget,
+    resolve_device,
+)
 from qorona.console import print_success, print_warning, progress_bar, status
 from qorona.field.base import Field
 from qorona.field.interpolation import tricubic
@@ -53,16 +69,16 @@ from qorona.trace import DEFAULT_TURN_GUARD, Endpoint, TurnGuard, trace_field_li
 
 __all__ = [
     "QPerpVolume",
-    "build_volume_boundary",
     "build_volume_paint",
     "build_volume_per_voxel",
+    "build_volume_reference",
 ]
 
 #: Upper bound on the points a single build call may hold, capping the peak memory of the per-call
 #: ``(chunk, ...)`` arrays (the tricubic neighbourhood and the integrator state). The public memory
-#: knob (``chunk_size`` on the builders); matches the resampler precedent. Lower it on memory-tight
-#: machines. The *working* batch is the smaller :data:`_STREAM_BATCH` (below), so this is only the
-#: ceiling, reached only if a caller sets ``chunk_size`` below it.
+#: knob (``chunk_size`` on the builders), the same knob the resampler exposes. Lower it on
+#: memory-tight machines. The *working* batch is the smaller :data:`_STREAM_BATCH` (below), so
+#: this is only the ceiling, reached only if a caller sets ``chunk_size`` below it.
 _CHUNK_SIZE = 500_000
 
 #: Seeds processed per kernel launch inside a streamed stage: the progress *granularity*, kept well
@@ -74,12 +90,18 @@ _CHUNK_SIZE = 500_000
 #: _STREAM_BATCH)``, so a caller can still drop below it for tighter memory.
 _STREAM_BATCH = 25_000
 
+#: Seeds per GPU kernel launch: distinct from the CPU :data:`_STREAM_BATCH` (whose 25k is tuned for
+#: ``prange`` re-balancing, wrong for the GPU's per-launch + PCIe transfer cost). On the display-
+#: shared card the batch also bounds per-launch wall-time (so a long float64 launch cannot stutter
+#: the desktop); 100k balances the two against per-launch overhead. The effective GPU batch
+#: is ``min(chunk_size, _GPU_STREAM_BATCH)``.
+_GPU_STREAM_BATCH = 100_000
+
 #: Relative radial margin by which boundary-touching seeds are pulled inside the shell before
 #: seeding. A node at exactly R_inner/R_outer leaves the strict ``in_domain`` shell by a float
 #: round-trip error (``spherical_to_cartesian`` makes ``|x|`` differ from ``r`` by ~1e-16·r); this
 #: margin (≫ that error, ≪ the rtol=1e-4 engine tolerance) restores in-domain membership without
-#: moving Q⊥; seed-invariance makes a hair-inside seed return the on-boundary line's value, exactly
-#: the near-boundary regime the dipole gate certified at R_seed = 1.01.
+#: moving Q⊥; seed-invariance makes a hair-inside seed return the on-boundary line's value.
 _BOUNDARY_MARGIN = 1.0e-9
 
 #: Ceiling on the along-line samples the painter places per traced line. The painter sub-samples a
@@ -181,7 +203,7 @@ class QPerpVolume:
         line), so it is read NEAREST-CELL: the fractional grid index is rounded with
         ``floor(index + 0.5)``, matching the render kernel exactly, and the padded array indexed
         directly. ``NaN`` where the volume carries no polarity or the point is outside the radial
-        shell; this is the NumPy oracle for the kernel's in-loop polarity sampling.
+        shell; this is the NumPy reference for the kernel's in-loop polarity sampling.
         """
         points = np.asarray(points, dtype=np.float64)
         values = np.full(points.shape[0], np.nan)
@@ -231,10 +253,37 @@ def _safe_log10(q_perp: np.ndarray) -> np.ndarray:
 # on its own thread under ``prange``, so the volume build simply streams seeds through the engine in
 # fixed-size chunks. Chunking bounds the per-call seed/output arrays and drives the progress bar;
 # the kernel saturates the cores within a chunk. Without numba the engine falls back to the
-# single-core NumPy integrator, so a no-numba build is serial; install the ``accel`` extra for
-# production-resolution volumes.
+# single-core NumPy integrator, so a no-numba build is serial; install numba (in the default
+# install) for production-resolution volumes.
 
 _ResultT = TypeVar("_ResultT")
+
+
+@contextmanager
+def _cuda_alloc_guard(what: str) -> Iterator[None]:
+    """Convert a CUDA out-of-memory failure into an actionable error instead of a raw API dump."""
+    try:
+        yield
+    except Exception as exc:
+        if "OUT_OF_MEMORY" in str(exc).replace(" ", "_").upper():
+            raise MemoryError(
+                f"the GPU ran out of memory while allocating {what}; lower --resolution-factor "
+                f"or --supersample, free GPU memory, or rerun with --device cpu"
+            ) from exc
+        raise
+
+
+def _available_host_bytes() -> int:
+    """Best-effort available host memory (0 when the platform exposes no probe)."""
+    try:
+        return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, OSError, ValueError):  # non-POSIX or unsupported key
+        return 0
+
+
+def _stream_batch(device: str) -> int:
+    """Return the per-launch streaming batch for the resolved backend (GPU vs CPU granularity)."""
+    return _GPU_STREAM_BATCH if resolve_device(device) == "gpu" else _STREAM_BATCH
 
 
 def _stream_chunks(
@@ -242,6 +291,7 @@ def _stream_chunks(
     worker: Callable[[np.ndarray], _ResultT],
     *,
     chunk_size: int,
+    batch: int,
     label: str,
     show_progress: bool,
 ) -> Iterator[tuple[int, int, _ResultT]]:
@@ -249,12 +299,14 @@ def _stream_chunks(
 
     A generator: each batch's result is yielded (and consumed/freed) before the next is computed, so
     peak memory stays bounded by one batch regardless of the seed count: the chunking contract. The
-    batch is ``min(chunk_size, _STREAM_BATCH)``: the smaller :data:`_STREAM_BATCH` drives the
-    progress granularity (the bar advances and its time estimate appears within seconds), while
+    effective batch is ``min(chunk_size, batch)``: ``batch`` is the backend's launch granularity
+    (the smaller :data:`_STREAM_BATCH` for the CPU ``prange`` kernel, the larger
+    :data:`_GPU_STREAM_BATCH` for the GPU; see :func:`_stream_batch`), driving the progress
+    granularity (the bar advances and its time estimate appears within seconds), while
     ``chunk_size`` stays the caller's memory ceiling.
     """
     n = len(seeds)
-    batch = min(chunk_size, _STREAM_BATCH)
+    batch = min(chunk_size, batch)
     with progress_bar(label, n, enabled=show_progress) as progress:
         finished = 0
         for start in range(0, n, batch):
@@ -265,7 +317,15 @@ def _stream_chunks(
             yield start, stop, result
 
 
-def _warm_kernels(field: Field, grid: SphericalGrid, *, paint: bool, show_progress: bool) -> None:
+def _warm_kernels(
+    field: Field,
+    grid: SphericalGrid,
+    *,
+    paint: bool,
+    device: str = "auto",
+    precision: str = "mixed",
+    show_progress: bool,
+) -> None:
     """Trigger the one-time numba kernel compile up front, announced with a spinner.
 
     The first kernel launch of a build pays a ~30-60 s JIT compile that is otherwise invisible: the
@@ -278,12 +338,37 @@ def _warm_kernels(field: Field, grid: SphericalGrid, *, paint: bool, show_progre
     paint builder additionally compiles its rasterising kernel.
     """
     jit_field = getattr(field, "_jit_field", lambda: None)()
-    if not HAVE_NUMBA or jit_field is None or grid._jit_grid() is None:
+    jit_grid = grid._jit_grid()
+    if not HAVE_NUMBA or jit_field is None or jit_grid is None:
         return
     from qorona.squashing import compute_squashing
 
     mid = 0.5 * (field.domain.inner_radius + field.domain.outer_radius)
     seed = np.array([[mid, 0.0, 0.0]])
+
+    resolved = resolve_device(device)
+    if resolved == "gpu" and HAVE_CUDA:
+        from qorona.accel.cuda_kernels import paint_batch_cuda
+        from qorona.trace.integrator import _ATOL_POS
+
+        with status("Compiling CUDA kernels (one-time)...", enabled=show_progress):
+            compute_squashing(field, seed, device="gpu", precision=precision, show_progress=False)
+            if paint:
+                paint_batch_cuda(
+                    np.ascontiguousarray(seed),
+                    np.array([True]),
+                    jit_field,
+                    jit_grid,
+                    np.full(3, _ATOL_POS),
+                    1e-4,
+                    0.5,
+                    10,
+                    0.5,
+                    4 * (grid.n_r + grid.n_theta + grid.n_phi),
+                    precision=precision,
+                )
+        return
+
     with status("Compiling kernels (one-time)...", enabled=show_progress):
         compute_squashing(field, seed, show_progress=False)
         if paint:
@@ -294,7 +379,7 @@ def _warm_kernels(field: Field, grid: SphericalGrid, *, paint: bool, show_progre
                 np.ascontiguousarray(seed),
                 np.array([True]),
                 jit_field,
-                grid._jit_grid(),
+                jit_grid,
                 np.full(3, _ATOL_POS),
                 1e-4,
                 0.5,
@@ -304,7 +389,7 @@ def _warm_kernels(field: Field, grid: SphericalGrid, *, paint: bool, show_progre
             )
 
 
-def build_volume_per_voxel(
+def build_volume_reference(
     field: Field,
     grid: SphericalGrid,
     *,
@@ -315,14 +400,16 @@ def build_volume_per_voxel(
     turn_guard: TurnGuard = DEFAULT_TURN_GUARD,
     chunk_size: int = _CHUNK_SIZE,
     workers: int | None = None,
+    device: str = "auto",
+    precision: str = "mixed",
     show_progress: bool = True,
 ) -> QPerpVolume:
     """Build the reference Q⊥ volume by seeding the squashing engine at every voxel centre.
 
     The literal definition of Q⊥ at every grid node, one full trace-and-transport per node via
     :func:`~qorona.squashing.compute_squashing`, so it is expensive and meant only as the
-    correctness ground truth on small/coarse grids (it validates :func:`build_volume_boundary`). The
-    seeds are streamed in fixed-size batches to bound peak memory.
+    correctness ground truth on small/coarse grids (it validates :func:`build_volume_per_voxel`).
+    The seeds are streamed in fixed-size batches to bound peak memory.
 
     Parameters
     ----------
@@ -340,6 +427,12 @@ def build_volume_per_voxel(
     workers
         numba thread count for the kernel (``None`` = all cores; ``1`` = serial). Ignored without
         numba; the NumPy fallback is single-core.
+    device
+        Compute backend: ``"auto"`` (GPU if available, else CPU), ``"gpu"``, or ``"cpu"``. Forwarded
+        to the squashing engine, which routes to the CUDA tier on the GPU.
+    precision
+        CUDA kernel precision (GPU tier only; the CPU tiers always run float64): ``"mixed"``
+        (default), ``"float64"``, or ``"float32"``. See :class:`~qorona.config.VolumeConfig`.
     show_progress
         Whether to display progress.
 
@@ -352,26 +445,28 @@ def build_volume_per_voxel(
         grid.node_points().reshape(-1, 3), float(grid.radii[0]), float(grid.radii[-1])
     )
     apply_workers(workers)
-    _warm_kernels(field, grid, paint=False, show_progress=show_progress)
+    _warm_kernels(
+        field, grid, paint=False, device=device, precision=precision, show_progress=show_progress
+    )
 
     def squash(chunk: np.ndarray) -> np.ndarray:
         from qorona.squashing import compute_squashing
 
         return compute_squashing(
             field, chunk, rtol=rtol, cfl=cfl, max_steps=max_steps, max_reversals=max_reversals,
-            turn_guard=turn_guard, show_progress=False,
+            turn_guard=turn_guard, device=device, precision=precision, show_progress=False,
         ).q_perp
 
     q_perp = np.empty(nodes.shape[0])
     for start, stop, chunk_q in _stream_chunks(
-        nodes, squash, chunk_size=chunk_size,
-        label="Building Q⊥ volume (per-voxel reference)", show_progress=show_progress,
+        nodes, squash, chunk_size=chunk_size, batch=_stream_batch(device),
+        label="Building Q⊥ volume (reference)", show_progress=show_progress,
     ):
         q_perp[start:stop] = chunk_q
 
     volume = _pack_volume(grid, _safe_log10(q_perp))
     if show_progress:
-        print_success(f"Built per-voxel Q⊥ volume on {grid.n_r}x{grid.n_theta}x{grid.n_phi} grid")
+        print_success(f"Built reference Q⊥ volume on {grid.n_r}x{grid.n_theta}x{grid.n_phi} grid")
     return volume
 
 
@@ -451,15 +546,16 @@ def _build_boundary_map(
     max_reversals: int,
     turn_guard: TurnGuard,
     chunk_size: int,
+    device: str = "auto",
+    precision: str = "mixed",
     show_progress: bool,
     label: str,
 ) -> _BoundaryMap:
     """Precompute log₁₀ Q⊥ on one boundary sphere and return its cubic interpolant.
 
     Seeds a cell-centred ``(θ, φ)`` grid at ``radius`` (so no seed sits on a pole) and runs the
-    squashing engine on it in batches. On-boundary seeding is the limit of the near-boundary case
-    the dipole gate certified (one half-line degenerates, the formula collapses to the
-    single-mapping form), so the map is trustworthy by that validation.
+    squashing engine on it in batches. On-boundary seeding is the degenerate near-boundary limit:
+    one half-line vanishes and the formula collapses to the single-mapping form.
     """
     seeds = _sphere_seed_grid(
         radius, n_theta, n_phi, field.domain.inner_radius, field.domain.outer_radius
@@ -470,12 +566,13 @@ def _build_boundary_map(
 
         return compute_squashing(
             field, chunk, rtol=rtol, cfl=cfl, max_steps=max_steps, max_reversals=max_reversals,
-            turn_guard=turn_guard, show_progress=False,
+            turn_guard=turn_guard, device=device, precision=precision, show_progress=False,
         ).q_perp
 
     q_perp = np.empty(seeds.shape[0])
     for start, stop, chunk_q in _stream_chunks(
-        seeds, squash, chunk_size=chunk_size, label=label, show_progress=show_progress
+        seeds, squash, chunk_size=chunk_size, batch=_stream_batch(device), label=label,
+        show_progress=show_progress,
     ):
         q_perp[start:stop] = chunk_q
 
@@ -493,25 +590,27 @@ def _build_boundary_maps(
     max_reversals: int,
     turn_guard: TurnGuard,
     chunk_size: int,
+    device: str = "auto",
+    precision: str = "mixed",
     show_progress: bool,
 ) -> tuple[_BoundaryMap, _BoundaryMap, int, int]:
-    """Precompute the inner and outer boundary Q⊥ maps shared by the boundary and paint builders.
+    """Precompute the inner and outer boundary Q⊥ maps shared by the per-voxel and paint builders.
 
     Returns the two cubic interpolants and the ``(n_theta_b, n_phi_b)`` boundary resolution
-    (``supersample`` times the field's native angular grid). The interior fill (boundary
-    builder) and the swept-path paint (paint builder) both consume exactly these maps.
+    (``supersample`` times the field's native angular grid). The interior fill (the per-voxel
+    builder) and the swept-path paint (the paint builder) both consume exactly these maps.
     """
     n_theta_b, n_phi_b = (supersample * n for n in _reference_angular_resolution(field, grid))
     inner_map = _build_boundary_map(
         field, float(grid.radii[0]), n_theta_b, n_phi_b, rtol=rtol, cfl=cfl, max_steps=max_steps,
-        max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size,
-        show_progress=show_progress,
+        max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size, device=device,
+        precision=precision, show_progress=show_progress,
         label=f"Precomputing inner-boundary Q⊥ ({n_theta_b}x{n_phi_b})",
     )
     outer_map = _build_boundary_map(
         field, float(grid.radii[-1]), n_theta_b, n_phi_b, rtol=rtol, cfl=cfl, max_steps=max_steps,
-        max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size,
-        show_progress=show_progress,
+        max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size, device=device,
+        precision=precision, show_progress=show_progress,
         label=f"Precomputing outer-boundary Q⊥ ({n_theta_b}x{n_phi_b})",
     )
     return inner_map, outer_map, n_theta_b, n_phi_b
@@ -628,7 +727,7 @@ def _combine_polarity(
     return np.where(is_inner.any(axis=1), np.sign(sign_sum), 0.0)
 
 
-def build_volume_boundary(
+def build_volume_per_voxel(
     field: Field,
     grid: SphericalGrid,
     *,
@@ -641,6 +740,8 @@ def build_volume_boundary(
     turn_guard: TurnGuard = DEFAULT_TURN_GUARD,
     chunk_size: int = _CHUNK_SIZE,
     workers: int | None = None,
+    device: str = "auto",
+    precision: str = "mixed",
     show_progress: bool = True,
 ) -> QPerpVolume:
     """Build the production Q⊥ volume by precomputing on the boundaries and recovering the interior.
@@ -677,6 +778,13 @@ def build_volume_boundary(
     workers
         numba thread count for the kernel (``None`` = all cores; ``1`` = serial). Ignored without
         numba; the NumPy fallback is single-core.
+    device
+        Compute backend: ``"auto"`` (GPU if available, else CPU), ``"gpu"``, or ``"cpu"``. Forwarded
+        to the boundary squashing seeds and the interior tracer, which route to the CUDA tier on the
+        GPU.
+    precision
+        CUDA kernel precision (GPU tier only; the CPU tiers always run float64): ``"mixed"``
+        (default), ``"float64"``, or ``"float32"``. See :class:`~qorona.config.VolumeConfig`.
     show_progress
         Whether to display progress.
 
@@ -689,11 +797,13 @@ def build_volume_boundary(
         grid.node_points().reshape(-1, 3), float(grid.radii[0]), float(grid.radii[-1])
     )
     apply_workers(workers)
-    _warm_kernels(field, grid, paint=False, show_progress=show_progress)
+    _warm_kernels(
+        field, grid, paint=False, device=device, precision=precision, show_progress=show_progress
+    )
     inner_map, outer_map, n_theta_b, n_phi_b = _build_boundary_maps(
         field, grid, supersample, rtol=rtol, cfl=cfl, max_steps=max_steps,
-        max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size,
-        show_progress=show_progress,
+        max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size, device=device,
+        precision=precision, show_progress=show_progress,
     )
 
     # The interior trace is the cost; the per-foot boundary lookup + linear-Q combine are cheap and
@@ -701,7 +811,7 @@ def build_volume_boundary(
     def trace(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         lines = trace_field_lines(
             field, chunk, rtol=rtol, cfl=cfl, max_steps=max_steps, max_reversals=max_reversals,
-            turn_guard=turn_guard, show_progress=False,
+            turn_guard=turn_guard, device=device, precision=precision, show_progress=False,
         )
         return lines.feet, lines.ends
 
@@ -709,7 +819,7 @@ def build_volume_boundary(
     log_q = np.empty(nodes.shape[0])
     polarity = np.empty(nodes.shape[0])
     for start, stop, feet_ends in _stream_chunks(
-        nodes, trace, chunk_size=chunk_size,
+        nodes, trace, chunk_size=chunk_size, batch=_stream_batch(device),
         label="Filling Q⊥ volume interior (trace to boundaries)", show_progress=show_progress,
     ):
         feet, ends = feet_ends
@@ -722,7 +832,7 @@ def build_volume_boundary(
     volume = _pack_volume(grid, log_q, polarity)
     if show_progress:
         print_success(
-            f"Built boundary-precompute Q⊥ volume on {grid.n_r}x{grid.n_theta}x{grid.n_phi} grid "
+            f"Built per-voxel Q⊥ volume on {grid.n_r}x{grid.n_theta}x{grid.n_phi} grid "
             f"(boundaries {n_theta_b}x{n_phi_b})"
         )
     return volume
@@ -798,14 +908,15 @@ def _paint_lines_numpy(
     max_reversals: int,
     turn_guard: TurnGuard,
     chunk_size: int,
+    device: str = "auto",
     show_progress: bool,
 ) -> int:
     """Paint each line's Q⊥ and footpoint polarity along its swept path, per voxel.
 
-    The single-threaded reference painter and the kernel's parity oracle. Each seed is traced both
+    The single-threaded reference painter the kernel is validated against. Each seed is traced both
     ways with ``store_path=True`` (which routes to the NumPy integrator, so this path is serial by
     construction), its line value read from the boundary maps and combined exactly as
-    :func:`build_volume_boundary` does, and that value scattered into every voxel the line's path
+    :func:`build_volume_per_voxel` does, and that value scattered into every voxel the line's path
     crosses (:func:`_line_voxels`). The line's inner-footpoint polarity (:func:`_combine_polarity`)
     is scattered the same way, **weighted by its linear Q⊥**, so once ``sum_pol`` is signed the
     dominant (highest-Q) line through a voxel sets its sign. Incomplete lines (a ``NaN`` combined
@@ -814,14 +925,14 @@ def _paint_lines_numpy(
     """
     inner_radius, outer_radius = float(grid.radii[0]), float(grid.radii[-1])
     n = len(seeds)
-    batch = min(chunk_size, _STREAM_BATCH)
+    batch = min(chunk_size, _stream_batch(device))
     painted_lines = 0
     with progress_bar("Painting Q⊥ volume (NumPy)", n, enabled=show_progress) as progress:
         for start in range(0, n, batch):
             stop = min(start + batch, n)
             lines = trace_field_lines(
                 field, seeds[start:stop], rtol=rtol, cfl=cfl, max_steps=max_steps,
-                max_reversals=max_reversals, turn_guard=turn_guard, store_path=True,
+                max_reversals=max_reversals, turn_guard=turn_guard, device=device, store_path=True,
                 show_progress=False,
             )
             values = _combine_feet(_lookup_feet(lines.feet, lines.ends, inner_map, outer_map))
@@ -857,9 +968,11 @@ def _paint_lines_jit(
     cfl: float,
     max_steps: int,
     chunk_size: int,
+    device: str = "auto",
+    precision: str = "mixed",
     show_progress: bool,
 ) -> int:
-    """Trace and paint the seeded lines via the numba kernel, scattering each value into the grid.
+    """Trace and paint the seeded lines via the numba or CUDA kernel, scattering each value in.
 
     The production painter (the trace-parallel + paint-serial scheme): the kernel traces each seed
     and emits its deduped swept voxel indices, each lane writing only its own row, so no atomics,
@@ -869,17 +982,31 @@ def _paint_lines_jit(
     Seeds stream in chunks sized so the per-chunk index buffer stays bounded (:data:`_PAINT_BUFFER`)
     regardless of grid resolution. Returns the number of lines painted.
     """
-    from qorona.accel.kernels import paint_batch_jit
     from qorona.trace.integrator import _ATOL_POS
+
+    use_gpu = resolve_device(device) == "gpu" and HAVE_CUDA
 
     jit_field = field._jit_field()  # type: ignore[attr-defined]
     jit_grid = grid._jit_grid()
+    assert jit_grid is not None  # build_volume_paint's kernel-path guard ensures this
     atol = np.full(3, _ATOL_POS)
     max_deposits = 4 * (grid.n_r + grid.n_theta + grid.n_phi)
-    paint_chunk = max(1, min(chunk_size, _STREAM_BATCH, _PAINT_BUFFER // max_deposits))
-    deposit_slot = np.arange(max_deposits)
-
     n = len(seeds)
+
+    if use_gpu:
+        # GPU: trace + on-device atomic scatter into tiled f64 accumulators.
+        return _paint_lines_cuda(
+            seeds, values, polarities, jit_field, jit_grid, atol, max_deposits,
+            sum_q=sum_q, count=count, sum_pol=sum_pol, paint_step=paint_step, rtol=rtol, cfl=cfl,
+            max_steps=max_steps, chunk_size=chunk_size, device=device, precision=precision,
+            show_progress=show_progress,
+        )
+
+    # CPU (numba) path: trace-parallel + serial host scatter into the host accumulators.
+    from qorona.accel.kernels import paint_batch_jit as paint_batch
+
+    paint_chunk = max(1, min(chunk_size, _stream_batch(device), _PAINT_BUFFER // max_deposits))
+    deposit_slot = np.arange(max_deposits)
     painted_lines = 0
     overflow_lines = 0
     with progress_bar("Painting Q⊥ volume (numba)", n, enabled=show_progress) as progress:
@@ -887,7 +1014,7 @@ def _paint_lines_jit(
             stop = min(start + paint_chunk, n)
             chunk_values = values[start:stop]
             chunk_valid = np.isfinite(chunk_values)
-            voxels, counts, overflow = paint_batch_jit(
+            voxels, counts, overflow = paint_batch(
                 np.ascontiguousarray(seeds[start:stop]),
                 np.ascontiguousarray(chunk_valid),
                 jit_field, jit_grid, atol, float(rtol), float(cfl), int(max_steps),
@@ -913,6 +1040,147 @@ def _paint_lines_jit(
     return painted_lines
 
 
+def _paint_lines_cuda(
+    seeds: np.ndarray,
+    values: np.ndarray,
+    polarities: np.ndarray,
+    jit_field: JitField,
+    jit_grid: JitGrid,
+    atol: np.ndarray,
+    max_deposits: int,
+    *,
+    sum_q: np.ndarray,
+    count: np.ndarray,
+    sum_pol: np.ndarray,
+    paint_step: float,
+    rtol: float,
+    cfl: float,
+    max_steps: int,
+    chunk_size: int,
+    device: str,
+    precision: str,
+    show_progress: bool,
+    n_tiles: int | None = None,
+) -> int:
+    """GPU paint + accumulate: on-device atomic scatter into f64 accumulators, tiled to fit VRAM.
+
+    The volume's f64 ``sum_q`` / ``count`` / ``sum_pol`` are partitioned into ``n_tiles`` contiguous
+    flat-index tiles sized to free VRAM (a caller-supplied ``n_tiles`` overrides the probe, the
+    validation hook); each tile scatters only its in-range deposits on-device, then copies the
+    finished tile into the host accumulators, so the build runs in bounded device memory at any
+    resolution. The seeds are traced **once**: the first tile traces and scatters
+    (:func:`~qorona.accel.cuda_kernels.paint_scatter_collect_batch_cuda`), keeping each chunk's
+    compacted voxel runs on the host, and the later tiles replay those runs
+    (:func:`~qorona.accel.cuda_kernels.scatter_runs_cuda`) without re-tracing. A run store that
+    would exceed half the available host memory (extrapolated from the first chunk) falls back to
+    re-tracing the later tiles (:func:`~qorona.accel.cuda_kernels.paint_and_scatter_batch_cuda`),
+    which is correct, just slower. ``n_tiles == 1`` when the whole volume fits one tile.
+    """
+    from numba import cuda
+
+    from qorona.accel.cuda_kernels import (
+        paint_and_scatter_batch_cuda,
+        paint_scatter_collect_batch_cuda,
+        scatter_runs_cuda,
+    )
+
+    n = len(seeds)
+    n_nodes = sum_q.shape[0]
+    # Upload the read-only field once and reuse it across every chunk and tile: at fine field
+    # ``b_padded`` is ~1 GB, and the small per-line voxel cap forces many small paint chunks, so a
+    # per-chunk re-upload would swamp the build in PCIe traffic. The kernel reads it unchanged.
+    bpad_dtype = np.float32 if precision != "float64" else np.float64
+    with _cuda_alloc_guard(f"the traced field ({jit_field.b_padded.nbytes / 1e9:.1f} GB)"):
+        d_bpad = cuda.to_device(np.ascontiguousarray(jit_field.b_padded, dtype=bpad_dtype))
+
+    # The probed VRAM grants (taken after the field upload): the per-chunk swept-voxel buffer
+    # ``(chunk, max_deposits)`` int32 lives on the *device*, so the paint chunk is sized to its
+    # grant rather than the host ``_PAINT_BUFFER`` (keeping fine-field chunks large: good
+    # occupancy, few launches), and the 3 x n_nodes x 8 B f64 accumulators are tiled to theirs;
+    # n_tiles == 1 when the whole volume fits one tile.
+    budget = gpu_memory_budget()
+    chunk_grant = budget.voxel_buffer_bytes // (max_deposits * 4)
+    paint_chunk = max(1, min(int(chunk_size), _stream_batch(device), chunk_grant))
+    if n_tiles is None:
+        n_tiles = max(1, -(-3 * n_nodes * 8 // budget.accumulator_bytes))
+    tile_size = -(-n_nodes // n_tiles)
+
+    valid_all = np.isfinite(values)
+    line_q_all = np.where(valid_all, 10.0**values, 0.0)
+    line_pol_all = np.where(valid_all, polarities * 10.0**values, 0.0)
+    painted_lines = int(valid_all.sum())
+    overflow_lines = 0
+
+    # Multi-tile: replay each chunk's compacted runs for tiles > 0 unless the extrapolated store
+    # would not fit the host budget, in which case the later tiles re-trace instead.
+    replay = n_tiles > 1
+    replay_budget = _available_host_bytes() // 2
+    runs: list[tuple[int, int, np.ndarray, np.ndarray]] = []
+
+    with progress_bar("Painting Q⊥ volume (CUDA)", n_tiles * n, enabled=show_progress) as progress:
+        for t in range(n_tiles):
+            lo = t * tile_size
+            hi = min(lo + tile_size, n_nodes)
+            with _cuda_alloc_guard(f"an accumulator tile ({3 * (hi - lo) * 8 / 1e9:.1f} GB)"):
+                d_sum_q = cuda.to_device(np.zeros(hi - lo, dtype=np.float64))
+                d_count = cuda.to_device(np.zeros(hi - lo, dtype=np.float64))
+                d_sum_pol = cuda.to_device(np.zeros(hi - lo, dtype=np.float64))
+            if t > 0 and replay:
+                for start, stop, flat, offsets in runs:
+                    scatter_runs_cuda(
+                        flat, offsets, line_q_all[start:stop], line_pol_all[start:stop],
+                        d_sum_q, d_count, d_sum_pol, int(lo), int(hi),
+                    )
+                    progress(t * n + stop)
+            else:
+                for start in range(0, n, paint_chunk):
+                    stop = min(start + paint_chunk, n)
+                    # Host-side chunk inputs only; the device accumulators and the staged field are
+                    # passed separately so no reference to them outlives the chunk call (a lingering
+                    # reference would keep the previous tile's 8 GB-class accumulators alive across
+                    # the next tile's allocation).
+                    chunk_args = (
+                        np.ascontiguousarray(seeds[start:stop]),
+                        np.ascontiguousarray(valid_all[start:stop]),
+                        np.ascontiguousarray(line_q_all[start:stop]),
+                        np.ascontiguousarray(line_pol_all[start:stop]),
+                        jit_field, jit_grid, atol, float(rtol), float(cfl), int(max_steps),
+                        float(paint_step), int(max_deposits),
+                    )
+                    if t == 0 and replay:
+                        overflow, flat, offsets = paint_scatter_collect_batch_cuda(
+                            *chunk_args, d_sum_q, d_count, d_sum_pol, int(lo), int(hi), d_bpad,
+                            precision=precision,
+                        )
+                        runs.append((start, stop, flat, offsets))
+                        if start == 0:
+                            n_chunks = -(-n // paint_chunk)
+                            projected = (flat.nbytes + offsets.nbytes) * n_chunks
+                            if projected > replay_budget:
+                                replay = False
+                                runs.clear()
+                    else:
+                        overflow = paint_and_scatter_batch_cuda(
+                            *chunk_args, d_sum_q, d_count, d_sum_pol, int(lo), int(hi), d_bpad,
+                            precision=precision,
+                        )
+                    if t == 0:
+                        overflow_lines += overflow
+                    progress(t * n + stop)
+            sum_q[lo:hi] = d_sum_q.copy_to_host()
+            count[lo:hi] = d_count.copy_to_host()
+            sum_pol[lo:hi] = d_sum_pol.copy_to_host()
+            del d_sum_q, d_count, d_sum_pol
+    runs.clear()
+
+    if overflow_lines and show_progress:
+        print_warning(
+            f"{overflow_lines} lines exceeded the per-line voxel cap ({max_deposits}); their tails "
+            f"were dropped; raise paint_step if this is pervasive."
+        )
+    return painted_lines
+
+
 def build_volume_paint(
     field: Field,
     grid: SphericalGrid,
@@ -927,18 +1195,21 @@ def build_volume_paint(
     turn_guard: TurnGuard = DEFAULT_TURN_GUARD,
     chunk_size: int = _CHUNK_SIZE,
     workers: int | None = None,
+    device: str = "auto",
+    precision: str = "mixed",
     show_progress: bool = True,
+    timings: dict[str, float] | None = None,
 ) -> QPerpVolume:
     """Build the Q⊥ volume by painting seeded lines along their swept paths into the grid.
 
     The cheap builder: because Q⊥ is constant along a field line, one trace fills *every* voxel the
     line crosses, so the trace count is set by the number of **seeds** (a coverage knob) rather than
-    the voxel count, decoupling resolution from cost. It reuses :func:`build_volume_boundary`'s
+    the voxel count, decoupling resolution from cost. It reuses :func:`build_volume_per_voxel`'s
     machinery for the per-line value (the same boundary maps and linear-Q foot-combine), so the only
     difference from that builder is the spreading. Four steps:
 
     1. precompute log₁₀ Q⊥ on the supersampled inner and outer boundary spheres (shared with
-       :func:`build_volume_boundary`);
+       :func:`build_volume_per_voxel`);
     2. seed both boundary surfaces at the boundary-map resolution;
     3. trace each seed to its two feet, then read and linear-Q-combine the boundary values into the
        line's one Q⊥;
@@ -985,8 +1256,19 @@ def build_volume_paint(
     workers
         numba thread count for the kernel (``None`` = all cores; ``1`` = serial). Ignored without
         numba; the NumPy painter is single-core.
+    device
+        Compute backend: ``"auto"`` (GPU if available, else CPU), ``"gpu"``, or ``"cpu"``. Forwarded
+        to the boundary squashing seeds, the line traces, and the paint kernel, which route to the
+        CUDA tier on the GPU.
+    precision
+        CUDA kernel precision (GPU tier only; the CPU tiers always run float64): ``"mixed"``
+        (default), ``"float64"``, or ``"float32"``. See :class:`~qorona.config.VolumeConfig`.
     show_progress
         Whether to display progress.
+    timings
+        Optional dict receiving the per-stage durations in seconds (``"boundary"`` boundary maps,
+        ``"trace"`` per-line Q⊥ values, ``"paint"`` trace+scatter), for the end-of-run summary.
+        The NumPy fallback path records only ``"boundary"``.
 
     Returns
     -------
@@ -998,12 +1280,17 @@ def build_volume_paint(
     inner_radius = float(grid.radii[0])
     outer_radius = float(grid.radii[-1])
     apply_workers(workers)
-    _warm_kernels(field, grid, paint=True, show_progress=show_progress)
+    _warm_kernels(
+        field, grid, paint=True, device=device, precision=precision, show_progress=show_progress
+    )
+    stage_start = time.perf_counter()
     inner_map, outer_map, n_theta_b, n_phi_b = _build_boundary_maps(
         field, grid, supersample, rtol=rtol, cfl=cfl, max_steps=max_steps,
-        max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size,
-        show_progress=show_progress,
+        max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size, device=device,
+        precision=precision, show_progress=show_progress,
     )
+    if timings is not None:
+        timings["boundary"] = time.perf_counter() - stage_start
 
     seeds = np.concatenate(
         [
@@ -1021,9 +1308,9 @@ def build_volume_paint(
     if jit_field is not None and grid._jit_grid() is not None:
         # Kernel path: a fast feet-only trace gives each line's value (the boundary-map combine),
         # then the paint kernel re-traces and rasterizes each value along its swept path. The feet
-        # trace is streamed (not one launch over all ~2M seeds) so the bar shows a live ETA and each
-        # launch re-balances the prange idle tail: the long ``max-steps`` lines otherwise cluster
-        # onto a few threads in one static-scheduled launch, leaving a slow single-threaded tail.
+        # trace is streamed (not one launch over all seeds at once) so the bar shows a live ETA and
+        # each launch re-balances the prange idle tail: the long ``max-steps`` lines otherwise
+        # cluster onto a few threads in one static-scheduled launch, leaving a slow tail.
         values = np.empty(len(seeds))
         polarities = np.empty(len(seeds))
         # closed, open, null, stalled, deflected, max-steps (trace diagnostics).
@@ -1032,7 +1319,7 @@ def build_volume_paint(
         def trace_values(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
             lines = trace_field_lines(
                 field, chunk, rtol=rtol, cfl=cfl, max_steps=max_steps, max_reversals=max_reversals,
-                turn_guard=turn_guard, show_progress=False,
+                turn_guard=turn_guard, device=device, precision=precision, show_progress=False,
             )
             null = lines.is_null
             stalled = lines.is_stalled
@@ -1051,42 +1338,57 @@ def build_volume_paint(
             )
             return line_values, line_polarity
 
+        stage_start = time.perf_counter()
         for start, stop, (chunk_values, chunk_polarity) in _stream_chunks(
-            seeds, trace_values, chunk_size=chunk_size,
+            seeds, trace_values, chunk_size=chunk_size, batch=_stream_batch(device),
             label="Tracing field lines for Q⊥ values", show_progress=show_progress,
         ):
             values[start:stop] = chunk_values
             polarities[start:stop] = chunk_polarity
+        if timings is not None:
+            timings["trace"] = time.perf_counter() - stage_start
         if show_progress:
             print_success(
                 f"Traced {len(seeds)} field lines: {tally[0]} closed · {tally[1]} open · "
                 f"{tally[2]} null · {tally[3]} stalled · {tally[4]} deflected · "
                 f"{tally[5]} max-steps"
             )
+        stage_start = time.perf_counter()
         painted_lines = _paint_lines_jit(
             field, seeds, grid, values, polarities, paint_step=paint_step, sum_q=sum_q,
             count=count, sum_pol=sum_pol, rtol=rtol, cfl=cfl, max_steps=max_steps,
-            chunk_size=chunk_size, show_progress=show_progress,
+            chunk_size=chunk_size, device=device, precision=precision,
+            show_progress=show_progress,
         )
+        if timings is not None:
+            timings["paint"] = time.perf_counter() - stage_start
     else:
         painted_lines = _paint_lines_numpy(
             field, seeds, grid, inner_map, outer_map, paint_step=paint_step, closed=closed,
             sum_q=sum_q, count=count, sum_pol=sum_pol, rtol=rtol, cfl=cfl, max_steps=max_steps,
             max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size,
-            show_progress=show_progress,
+            device=device, show_progress=show_progress,
         )
 
-    painted = count > 0.0
-    mean_q = np.full(n_nodes, np.nan)
-    np.divide(sum_q, count, out=mean_q, where=painted)
+    # In-place finalize to bound host memory at very high resolution: with hundreds of millions of
+    # voxels, host memory cannot hold the three f64 sum arrays, a separate mean, a separate
+    # polarity, and the packed volume at once, so reuse ``sum_q`` for the mean and ``sum_pol`` for
+    # the polarity, freeing each array the moment it is consumed.
+    covered = float((count > 0.0).mean())
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sum_q /= count  # sum_q -> mean linear Q⊥ (count==0 -> NaN/Inf, fixed next)
+    sum_q[count == 0.0] = np.nan  # unpainted voxels carry no Q⊥
+    del count
     # Per-voxel polarity = sign of the Q⊥-weighted polarity sum (the dominant high-Q line's sign),
     # in {-1, 0, +1}; 0 (neutral) where unpainted or where opposite polarities cancel.
-    polarity = np.sign(sum_pol)
-    volume = _pack_volume(grid, _safe_log10(mean_q), polarity)
+    np.sign(sum_pol, out=sum_pol)
+    log_q = _safe_log10(sum_q)  # mean Q⊥ -> log10 (Inf/NaN -> NaN)
+    del sum_q
+    volume = _pack_volume(grid, log_q, sum_pol)
     if show_progress:
         print_success(
             f"Painted Q⊥ volume on {grid.n_r}x{grid.n_theta}x{grid.n_phi} grid from "
             f"{painted_lines}/{len(seeds)} lines (boundaries {n_theta_b}x{n_phi_b}); "
-            f"{painted.mean():.1%} of voxels covered"
+            f"{covered:.1%} of voxels covered"
         )
     return volume

@@ -74,9 +74,38 @@ qorona fieldlines data/hmi_lmax50.CFmesh.xz -o data/fieldlines.png --fov 8 --lon
 ```
 
 Every command prints a polished end-of-run summary of its parameters and metrics, and the rendered
-PNG carries a corner stamp (CR · timestamp · sub-observer angle · FOV) for reproducibility. Run
+PNG carries a corner stamp (CR · timestamp · sub-observer angles · roll · FOV) for reproducibility. Run
 `qorona <command> --help` for the full flag list (grid resolution, builder, weighting preset,
 occultation, display mode, and more); the defaults reproduce the published whole-corona Q⊥ render.
+
+## GPU acceleration
+
+Volume builds are CUDA-accelerated end to end, with no extra Qorona dependency: the kernels ride
+the default-install numba and activate whenever it sees a CUDA-capable NVIDIA GPU (driver + CUDA
+toolkit). Nothing to configure: `qorona build` already uses the GPU when one is present.
+
+```bash
+qorona build ... --device gpu                       # force the GPU (errors if none is usable)
+qorona build ... --device cpu                       # multi-core CPU path (the reference)
+qorona build ... --device gpu --precision float64   # all-double reference (~2× slower than mixed)
+```
+
+- `--device auto` (default) picks the GPU when present; the CPU kernels remain the reference
+  implementation and produce the same images.
+- `--precision mixed` (default) runs the field interpolation in float32 and everything else in
+  float64, log-invisible against the `float64` reference. `float32` is an experimental fully-float32
+  paint variant. GPU-only knob; the CPU path always computes in float64.
+- Device memory adapts to free VRAM (the Q⊥ accumulation tiles itself), so the same command runs
+  on small cards and at very high resolutions alike.
+- The resolved backend and precision are stamped into the volume's provenance and the end-of-run
+  summary.
+
+Indicative volume-build timings (RTX 4080 vs 32-core CPU, mixed precision; not a benchmark):
+
+| Q⊥ volume                            | GPU    | CPU            |
+|--------------------------------------|--------|----------------|
+| Quickstart, 384×360×720 (100 M vox)  | ~75 s  | ~9 min         |
+| High-res, 512×800×1600 (655 M vox)   | ~3 min | not practical  |
 
 ## How it works
 

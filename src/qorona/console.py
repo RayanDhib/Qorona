@@ -48,7 +48,7 @@ def progress_bar(
 ) -> Iterator[Callable[[int], None]]:
     """Show a determinate progress bar, yielding a callable to set the completed count.
 
-    For the long-running stages (tracing, volume fill) where the total amount of work is known
+    For the long-running stages (tracing, volume painting) where the total amount of work is known
     up front. The yielded function takes the absolute number of units completed so far.
 
     Parameters

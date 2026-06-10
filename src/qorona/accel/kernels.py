@@ -7,22 +7,21 @@ evaluation (``field/sampled.py`` and the analytic dipole of ``field/analytic.py`
 stepper with PI control and dense-output foot-landing (``trace/integrator.py`` + ``trace/
 boundaries.py``), and the deviation transport (``squashing/transport.py``) into one nopython unit,
 because numba cannot cross the ``Field`` ABC / dataclasses / closures and inlines best within a
-single module. The clean layered implementations remain the source of truth; this is run only when
-numba is installed (the optional ``accel`` extra), with the NumPy path as fallback and as the
-differential oracle.
+single module. The clean layered implementations are the source of truth; this runs whenever numba
+is importable (numba ships in the default install; a lean install may omit it), with the NumPy path
+as fallback and as the reference implementation for cross-checks.
 
 Each field line is integrated independently in its own ``prange`` iteration, running its adaptive
 loop to completion, so there is no per-step Python dispatch and no lockstep adaptive-straggler
 waste. The numerics are byte-for-byte the reference ones: the DOPRI5 5(4)7M tableau, the PI-control
 constants, and the numerical floors are **imported** from ``trace/integrator.py`` (single source);
 only the floating-point accumulation order differs from the einsum path, so results agree to FP
-noise (validated by the dipole gates running through this kernel and by ``validation/
-numba_parity.py``).
+noise (validated by the dipole gates running through this kernel).
 
 The module also hosts the **line-of-sight render kernel** (:func:`render_batch_jit`, one ray per
 ``prange`` lane), the same scalar-per-lane port applied to ``render/los.py``'s NumPy quadrature: it
 reuses the interpolation/grid primitives below (via :func:`_tricubic_point_scalar`) to integrate the
-weighted log₁₀ Q⊥ volume, with the NumPy render kept as its fallback and parity oracle.
+weighted log₁₀ Q⊥ volume, with the NumPy render kept as its fallback and reference.
 """
 
 from __future__ import annotations
@@ -98,10 +97,10 @@ def _tricubic_point(
 ) -> None:
     """Interpolate the padded B array at one point, writing ``value[3]`` and ``igrad[3,3]``.
 
-    ``igrad[d, i] = ∂value_i/∂coord_d`` is the index-space gradient (zeroed/skipped when
-    ``gradient`` is ``False``). The 4-point Keys stencil spans offsets ``-1..+2`` about
-    ``floor(coord)`` on each axis; callers guarantee the stencil is in range via the ghost padding
-    and the radial clip.
+    ``igrad[d, i] = ∂value_i/∂coord_d`` is the index-space gradient (written only when
+    ``gradient`` is ``True``; otherwise left untouched). The 4-point Keys stencil spans offsets
+    ``-1..+2`` about ``floor(coord)`` on each axis; callers guarantee the stencil is in range via
+    the ghost padding and the radial clip.
     """
     base0 = int(np.floor(c0))
     base1 = int(np.floor(c1))
@@ -679,8 +678,9 @@ def integrate_batch_jit(
 # --- Painting kernel ---------------------------------------------------------------------------
 # The painting Q⊥-volume builder traces a fixed set of seeded lines and rasterizes each line's
 # constant Q⊥ into every voxel its swept path crosses. Tracing reuses the position-only stepper
-# above byte-for-byte; the new work is forward-binning sub-sampled path points into the *volume*
-# grid (a JitGrid distinct from the traced field's JitField) and recording the deduped voxel run.
+# above byte-for-byte; the painting-specific work is forward-binning sub-sampled path points into
+# the *volume* grid (a JitGrid distinct from the traced field's JitField) and recording the deduped
+# voxel run.
 # Each prange lane writes only its own output row (no shared array, hence no atomics: the
 # trace-parallel, paint-serial scheme); the caller applies the per-line value and scatters into the
 # shared grid serially.
@@ -922,7 +922,7 @@ def paint_batch_jit(
     indices the line through seed ``i`` sweeps (the seed voxel first, then each half-line), and
     ``overflow[i]`` flags a line whose run exceeded ``max_deposits``. The per-line Q⊥ value is *not*
     needed here; the caller applies it in a serial scatter (paint-serial), so each lane writes only
-    its own ``voxels`` row and no atomics are required. ``valid`` (the incomplete-line mask from the
+    its own ``voxels`` row and no atomics are required. ``valid`` (the complete-line mask from the
     feet trace) skips seeds with no defined Q⊥.
     """
     n = seeds.shape[0]
@@ -1092,12 +1092,13 @@ def render_batch_jit(
     intensity from the coefficient table (:func:`_thomson_intensity`, ``thomson_pb`` selecting
     ``I_pol`` over ``I_tot``), and folds it into ``num``/``den`` only. ``use_thomson`` off makes
     the scalar ``1.0``, an exact no-op, so the result is byte-identical to the plain render and
-    the ``density_vol``/``dg``/table arguments are unread placeholders.
+    ``density_vol`` and the coefficient tables are unread placeholders (``dg`` is read for its
+    shape only).
 
     The optional **net polarity** (``use_polarity``): at each valid sample the per-voxel footpoint
     sign is read NEAREST-CELL from ``polarity_vol`` (a sign is never interpolated) and summed as
     ``Σ w̄·sign`` with ``w̄ = (w0+w1+w2)/3`` the channel-mean geometric weight (the same budget the
-    coverage uses), so the returned ``polarity = Σ w̄·sign / Σ w̄`` is the magnitude-weighted mean
+    coverage uses), so the returned ``polarity = Σ w̄·sign / Σ w̄`` is the weight-averaged mean
     column polarity in ``[-1, +1]`` (``NaN`` where no valid sample, or with ``use_polarity`` off and
     ``polarity_vol`` an unread placeholder).
 

@@ -1,7 +1,7 @@
 """Radiation: Thomson scattering, K-corona, and polarized-brightness (pB) imagery.
 
 The secondary product family: white-light / polarized brightness from the electron density, and the
-optional Thomson weighting of the primary Q⊥ render. Two coupled deliverables share one core (the
+optional Thomson weighting of the primary Q⊥ render. Two coupled products share one core (the
 Minnaert/Billings coefficients and the single-electron intensities in :mod:`.thomson`):
 
 - :class:`ThomsonWeight`: the optional, off-by-default radiometric LOS weight for the Q⊥ render

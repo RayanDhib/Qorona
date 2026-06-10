@@ -1,7 +1,7 @@
 """Command-line entry points.
 
-The ``qorona`` click group (``build`` / ``render`` / ``run`` / ``info``) over the cached
-viewpoint-independent Q⊥ volume, with Rich progress and a polished end-of-run metrics summary.
+The ``qorona`` click group (``build`` / ``render`` / ``run`` / ``fieldlines`` / ``info``),
+with Rich progress and a polished end-of-run metrics summary.
 """
 
 from __future__ import annotations

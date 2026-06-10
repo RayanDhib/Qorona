@@ -9,8 +9,8 @@ The integrator is **DOPRI5**, a 7-stage embedded 5(4) pair that is FSAL
 (First Same As Last: the last stage of an accepted step is the first of the next, so an
 accepted step costs ~6 field evaluations) and ships a C¹ dense-output interpolant used, at zero
 extra field evaluations, to land feet on the boundary spheres (``boundaries.py``). The stepper
-is written **generic over a Butcher tableau and over the state shape ``(n, state_dim)`` with a
-pluggable right-hand side**, so the deviation transport extends position-only ``(n, 3)`` to
+is written **generic over the state shape ``(n, state_dim)`` with a pluggable right-hand
+side**, so the deviation transport extends position-only ``(n, 3)`` to
 position+deviation ``(n, 9)`` by swapping the RHS; the step control, active mask, foot-landing,
 and null guard are unchanged.
 
@@ -23,8 +23,9 @@ features that arc-length tracing passes through and the controller resolves. Lin
 both ways from each seed (``-B̂`` and ``+B̂``) to the inner/outer spheres; open vs closed falls
 out of the per-end landing codes.
 
-Reference: the DOPRI5 ``RK5(4)7M`` Butcher tableau and its dense-output interpolant are
-implemented from Dormand & Prince (1980), *J. Comput. Appl. Math.* **6**, 19.
+References: the DOPRI5 ``RK5(4)7M`` Butcher tableau is implemented from Dormand & Prince (1980),
+*J. Comput. Appl. Math.* **6**, 19; its quartic dense-output interpolant from Shampine (1986),
+*Math. Comp.* **46**, 135.
 """
 
 from __future__ import annotations
@@ -34,15 +35,13 @@ from functools import partial
 
 import numpy as np
 
-from qorona.accel import HAVE_NUMBA
+from qorona.accel import HAVE_CUDA, HAVE_NUMBA, resolve_device
 from qorona.console import print_success, progress_bar
 from qorona.field.base import Field
 from qorona.trace.boundaries import _classify_crossings, _localize_foot
 from qorona.trace.fieldline import DEFAULT_TURN_GUARD, Endpoint, FieldLines, TurnGuard
 
 # --- DOPRI5 (RK5(4)7M) Butcher tableau -----------------------------------------
-# Nodes c (stages 2..6; stage 1 is at c = 0, the FSAL stage 7 is at c = 1).
-_C = np.array([0.0, 1.0 / 5.0, 3.0 / 10.0, 4.0 / 5.0, 8.0 / 9.0, 1.0])
 # Lower-triangular RK matrix a[i, j], i = stage (0..5), j < i.
 _A = np.array(
     [
@@ -118,11 +117,11 @@ _BETA = 0.04
 _ALPHA = 0.2 - 0.75 * _BETA  # = 0.17 = 1/(q+1) - 0.75·β with q = min(5, 4) = 4
 _MIN_FACTOR = 0.2
 _MAX_FACTOR = 10.0
-_ERR_PREV_FLOOR = 1.0e-4  # FACOLD floor / initialisation, bounding the PI memory term
+_ERR_PREV_FLOOR = 1.0e-4  # floor / initial value of the previous-step error (PI memory term)
 
 # --- Pinned numerical floors (off the public signature; accuracy is the rtol knob) -------------
 #: Per-component position floor so the relative error weight stays well-defined where a Cartesian
-#: component passes through zero (every closed line apexes at z = 0; a meridian crossing sends
+#: component passes through zero (loop apexes near the equatorial plane; a meridian crossing sends
 #: x or y → 0). Not an accuracy dial.
 _ATOL_POS = 1.0e-7
 #: Step-size underflow guard, as a fraction of the local cell metric: a line whose step shrinks
@@ -290,8 +289,8 @@ def _integrate_batch(
     active = np.array(active, dtype=bool)
     step = cfl * field.characteristic_length(state0[:, :3])
     err_prev = np.full(n_lines, _ERR_PREV_FLOOR)
-    # Per-lane "the previous attempt was rejected" flag: the step after a rejection may not grow
-    # (dopri5.f caps it at the current size), which damps oscillation on QSL-grazing lines.
+    # Per-lane "the previous attempt was rejected" flag: the step after a rejection may shrink or
+    # hold but not grow, which damps oscillation on QSL-grazing lines.
     rejected_last = np.zeros(n_lines, dtype=bool)
 
     # FSAL k1, carried across steps; recomputed only when a lane commits to a new point.
@@ -338,8 +337,8 @@ def _integrate_batch(
         crossed, target_radius, code = _classify_crossings(end_radius, inner_radius, outer_radius)
 
         # The PI base factor fac·err**(-_ALPHA), shared by the accept and reject step updates.
-        # One errstate covers both err = 0 (factor to infinity, clipped to the growth ceiling)
-        # and non-finite err (factor to zero, clipped to the floor).
+        # The errstate covers the err = 0 divide (factor to infinity, clipped to the growth
+        # ceiling); a non-finite err was mapped to inf above and decays to the floor warning-free.
         with np.errstate(divide="ignore", invalid="ignore"):
             base_factor = _SAFETY * err ** (-_ALPHA)
 
@@ -465,6 +464,8 @@ def _integrate(
     max_reversals: int,
     turn_guard: TurnGuard,
     store_path: bool,
+    device: str = "auto",
+    precision: str = "mixed",
     progress: Callable[[int], None] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[np.ndarray] | None]:
     """Integrate a flat batch of lines, via the numba kernel when usable, else the NumPy core.
@@ -473,7 +474,7 @@ def _integrate(
     taken when numba is installed, the field opts in via ``_jit_field()``, and no per-line path is
     requested (paths are awkward in nopython and unused by the volume build). Otherwise this calls
     the NumPy :func:`_integrate_batch` with the caller's ``rhs`` closure. That NumPy core is the
-    reference implementation: the fallback when numba is unavailable, and the oracle the kernel is
+    reference implementation: the fallback when numba is unavailable, and what the kernel is
     validated against. Both engines produce the same results, so the choice is invisible to callers.
 
     ``rhs`` (with its captured ``directions``) drives only the NumPy core; the kernel reads
@@ -500,6 +501,14 @@ def _integrate(
         Sharp-turn guard parameters; its relative ``weak_fraction`` is resolved here against
         ``field.reference_strength()`` into the absolute ``weak_threshold`` both engines use, so the
         threshold is the same whichever engine runs.
+    device
+        Backend selection: ``"auto"`` runs on the GPU when one is present, else falls through to the
+        numba/NumPy CPU tiers; ``"gpu"`` forces the CUDA kernel and raises if no GPU is present, or
+        if ``store_path`` / a non-JIT-able field makes the kernel unusable; ``"cpu"`` skips the GPU
+        tier entirely. The GPU path is the CUDA twin of the numba kernel, validated against it.
+    precision
+        CUDA kernel precision (GPU tier only; the CPU tiers always run float64): ``"mixed"``
+        (default), ``"float64"``, or ``"float32"``. See :class:`~qorona.config.VolumeConfig`.
 
     Returns
     -------
@@ -513,11 +522,46 @@ def _integrate(
     turn_radius = turn_guard.radius
     turn_min = turn_guard.min_turns
 
-    jit_field_method = (
-        getattr(field, "_jit_field", None) if HAVE_NUMBA and not store_path else None
-    )
+    # JIT-ability tier (shared by the CUDA and numba tiers): the field must expose a descriptor and
+    # paths are unsupported in either kernel (routed to the NumPy core).
+    jit_field_method = getattr(field, "_jit_field", None) if not store_path else None
     jit_field = jit_field_method() if jit_field_method is not None else None
-    if jit_field is not None:
+
+    # Explicit device='gpu' with an unusable JIT tier is a loud error (the hardware-tier loud error
+    # for a missing GPU is raised inside resolve_device).
+    if device == "gpu" and jit_field is None:
+        reason = (
+            "store_path is set" if store_path else "the field is not GPU-JIT-able (no _jit_field)"
+        )
+        raise ValueError(f"device='gpu' cannot be used because {reason}; use device='auto'")
+
+    resolved = resolve_device(device)
+    if resolved == "gpu" and HAVE_CUDA and jit_field is not None:
+        from qorona.accel.cuda_kernels import integrate_batch_cuda
+
+        state0 = np.ascontiguousarray(state0, dtype=np.float64)
+        terminal_state, ends, lengths = integrate_batch_cuda(
+            state0,
+            np.ascontiguousarray(active, dtype=np.bool_),
+            np.ascontiguousarray(directions, dtype=np.float64),
+            transport,
+            jit_field,
+            np.ascontiguousarray(atol, dtype=np.float64),
+            float(rtol),
+            float(cfl),
+            int(max_steps),
+            int(max_reversals),
+            float(turn_cos),
+            float(turn_radius),
+            float(weak_threshold),
+            int(turn_min),
+            precision=precision,
+        )
+        if progress is not None:
+            progress(state0.shape[0])
+        return terminal_state, ends, lengths, None
+
+    if HAVE_NUMBA and jit_field is not None:
         from qorona.accel.kernels import integrate_batch_jit
 
         state0 = np.ascontiguousarray(state0, dtype=np.float64)
@@ -624,6 +668,8 @@ def trace_field_lines(
     turn_guard: TurnGuard = DEFAULT_TURN_GUARD,
     store_path: bool = False,
     show_progress: bool = True,
+    device: str = "auto",
+    precision: str = "mixed",
 ) -> FieldLines:
     """Trace field lines through ``seeds``, both ways, to the inner and outer boundary spheres.
 
@@ -648,17 +694,24 @@ def trace_field_lines(
         Maximum step attempts per line before the resource guard flags it.
     max_reversals
         Stall guard: terminate a line once it reverses direction (>90° between consecutive committed
-        steps) this many times, the signature of a line trapped and thrashing at a weak-field null
-        (the current sheet), where the unit field ``B/|B|`` turns meaningless. ``0`` disables it.
+        steps) this many times (a line trapped at a weak-field null; see :attr:`Endpoint.STALLED`).
+        ``0`` disables it.
     turn_guard
         Sharp-turn guard: terminate a line that makes a single sharp turn in the outer corona where
         ``|B|`` is weak, a grid-locked staircase deflection at a null the stall guard is blind to.
-        :class:`TurnGuard` defaults are calibrated; ``max_turn_angle = 0`` disables it.
+        :class:`TurnGuard` holds the thresholds; ``max_turn_angle = 0`` disables it.
     store_path
         When ``True`` also return each line's full ordered path (memory-heavy); otherwise only
         feet, lengths, and codes are kept.
     show_progress
         Whether to display progress (tracing is the pipeline's slow stage).
+    device
+        Backend selection: ``"auto"`` runs on the GPU when present, else the numba/NumPy CPU tiers;
+        ``"gpu"`` forces the CUDA kernel and raises if no GPU is present or if ``store_path`` makes
+        it unusable; ``"cpu"`` skips the GPU tier.
+    precision
+        CUDA kernel precision (GPU tier only; the CPU tiers always run float64): ``"mixed"``
+        (default), ``"float64"``, or ``"float32"``. See :class:`~qorona.config.VolumeConfig`.
 
     Returns
     -------
@@ -711,6 +764,8 @@ def trace_field_lines(
             max_reversals=max_reversals,
             turn_guard=turn_guard,
             store_path=store_path,
+            device=device,
+            precision=precision,
             progress=progress,
         )
 

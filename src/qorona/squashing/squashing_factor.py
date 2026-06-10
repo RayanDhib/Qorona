@@ -27,8 +27,10 @@ deviations. The shared seed basis fixes ``B₀ⁿ = |B₀|`` for both quantities
 array math: the caller (``squashing/__init__.py``) samples B at the seed and the two feet and
 passes those values in.
 
-Reference: the master squashing formula (Eq. 22) and the perpendicular/classical reprojection
-(Eqs. 50-51) are implemented from Scott, Pontin & Hornig (2017).
+References: the master squashing formula (Eq. 22; first given in this form by Tassev & Savcheva
+2017, Eq. 11) and the perpendicular/classical reprojection (Eqs. 50-51) are implemented from
+Scott, Pontin & Hornig (2017). Q is the squashing factor of Titov, Hornig & Démoulin (2002);
+Q⊥ is its perpendicular variant from Titov (2007).
 """
 
 from __future__ import annotations

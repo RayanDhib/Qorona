@@ -14,14 +14,14 @@ construction edge, never in the hot loop):
   gradient smooth through the poles.
 - **∇B** is the *raw* Jacobian with convention ``grad_b[..., i, j] = ∂B_i/∂x_j``, so a
   directional derivative is ``(v·∇)B = grad_b @ v``. The unit-field gradient needed by the
-  deviation transport, ``∇B̂ = (I - B̂ B̂ᵀ)·∇B / |B|``, is formed once by the tracer, not here,
-  so each field returns its natural Jacobian and the unit-field algebra lives in one place.
+  deviation transport, ``∇B̂ = (I - B̂ B̂ᵀ)·∇B / |B|``, is formed once by the deviation transport
+  (``squashing/transport.py``), not here, so each field returns its natural Jacobian and the
+  unit-field algebra lives in one place.
 - **Domain.** ``sample`` assumes points are inside :attr:`Domain` and does not guard the
-  boundary; callers test membership with ``domain.in_domain(points)`` and pass only in-domain
-  points. A traced line leaving the domain is the normal terminating event, owned by the tracer
-  (it stops crossed lines and triggers foot-landing), keeping the field branch-free and free of
-  inf/nan arithmetic. This is unrelated to the genuine ``Q⊥ → ∞`` at a separatrix, which is
-  preserved.
+  boundary (see :class:`Field`'s precondition paragraph). A traced line leaving the domain is
+  the normal terminating event, owned by the tracer (it stops crossed lines and triggers
+  foot-landing), keeping the field branch-free and free of inf/nan arithmetic. This is unrelated
+  to the genuine ``Q⊥ → ∞`` at a separatrix (a physical feature, not a boundary event).
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class OutOfDomainError(ValueError):
 
     Surfaced only when :meth:`Field.sample` is called with ``validate=True`` (off by
     default); it turns a silent, meaningless out-of-domain read into a clear, immediate
-    failure during development and tracer bring-up.
+    failure during development.
     """
 
 
@@ -50,7 +50,7 @@ class Domain:
     inner_radius
         Inner boundary radius in R☉ (the seeding surface, typically the photosphere).
     outer_radius
-        Outer boundary radius in R☉ (also the open-field-line target surface ``R_sw``).
+        Outer boundary radius in R☉ (the open-field-line target surface).
     frame
         Name of the physical coordinate frame the Cartesian axes are aligned with
         (descriptive metadata for downstream camera / WCS handling; not used by the field
@@ -135,8 +135,8 @@ class Field(ABC):
     crossings and trigger foot-landing). Sampling outside the domain returns a meaningless
     value (a wrong interpolation off the ghost padding, or a non-finite closed-form value),
     *not* a clean error, so out-of-domain policy stays with the caller that owns it and the
-    hot path stays branch-free. Pass ``validate=True`` during development / tracer bring-up to
-    turn that silent precondition into an explicit :class:`OutOfDomainError`.
+    hot path stays branch-free. Pass ``validate=True`` during development to turn that silent
+    precondition into an explicit :class:`OutOfDomainError`.
     """
 
     @property
@@ -201,7 +201,7 @@ class Field(ABC):
         whole-field strong-field scale, not a per-point value). The default ``0.0`` makes that test
         never pass, so the guard is inert on fields that do not define a strength scale (e.g. the
         analytic validation fields); :class:`~qorona.field.sampled.SampledField` overrides it with
-        the grid-max ``|B|`` the calibration normalised by.
+        the grid-max ``|B|``, the peak-field scale ``weak_fraction`` is expressed against.
         """
         return 0.0
 

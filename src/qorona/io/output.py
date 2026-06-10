@@ -1,16 +1,16 @@
 """Image output and the optional on-image provenance stamp.
 
 Writes the rendered :class:`~qorona.render.los.RenderResult` to PNG, reusing the dependency-free
-``save_png`` / ``save_grayscale_png`` already in :mod:`qorona.render.los` (hand-rolled zlib, no
-Pillow), and owns *which* images are written and the post-write annotation stamp, keeping
-:mod:`qorona.render` self-contained.
+``save_png`` / ``save_grayscale_png`` in :mod:`qorona.render.los` (a hand-rolled PNG writer over
+stdlib zlib, no Pillow), and owns *which* images are written and the post-write annotation stamp,
+keeping :mod:`qorona.render` self-contained.
 
 The stamp is a corner text overlay (CR · UTC · sub-observer φ/θ · roll · FOV) drawn on the *saved*
-PNG so it sits at final resolution and ``annotate=False`` is a one-flag bypass: the frame-labelling
-convention of eclipse-prediction renders. It needs a font renderer (**Pillow**), in the default
-install: when Pillow is absent (a deliberately leaned-out install) the overlay is skipped with a
-friendly note and the run still completes (the metrics still print). Non-ASCII glyphs degrade to
-ASCII surrogates only on the bitmap-font fallback.
+PNG so it sits at final resolution, following the frame-labelling convention of eclipse-prediction
+renders; ``annotate=False`` is a one-flag bypass. It needs a font renderer (**Pillow**), in the
+default install: when Pillow is absent (a deliberately leaned-out install) the overlay is skipped
+with a friendly note and the run still completes (the metrics still print). Non-ASCII glyphs
+degrade to ASCII surrogates only on the bitmap-font fallback.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 #: Margin between the stamp text and the image edge, in pixels.
 _MARGIN_PX = 12
-#: Outline radius for the text's dark halo; 1 px keeps it legible on any background.
+#: Outline radius for the text's dark halo, in pixels (see ``_draw_outlined``).
 _OUTLINE_PX = 1
 
 
@@ -37,7 +37,7 @@ def write_outputs(
 ) -> list[Path]:
     """Write the render's PNG(s) and stamp them, returning the paths written.
 
-    The colour depth image is always written; the grayscale measurement image is written when
+    The depth-coloured image is always written; the grayscale measurement image is written when
     ``output_cfg.save_grayscale``. When ``output_cfg.annotate`` and Pillow is installed, each
     written PNG is stamped with the provenance corner overlay; without Pillow the stamp is skipped
     with a friendly note and the images are still written.
@@ -94,7 +94,7 @@ def write_brightness(
     ------
     ImportError
         If the ``mgn`` treatment is requested without ``sunkit-image`` installed (the only treatment
-        that needs it); the message names the fix.
+        that needs it); the message names the missing package and the alternatives.
 
     Returns
     -------
@@ -129,8 +129,8 @@ def _apply_stamp(
     present.
 
     A no-op when ``output_cfg.annotate`` is off; when Pillow is missing the stamp is skipped with a
-    friendly note and the already-written images are left as-is. Shared by :func:`write_outputs` and
-    :func:`write_fieldlines` so both products carry the identical stamp.
+    friendly note and the already-written images are left as-is. Shared by all this module's
+    writers so every product carries the identical stamp.
     """
     if not output_cfg.annotate:
         return
@@ -140,8 +140,8 @@ def _apply_stamp(
             _annotate_png(path, lines, position=output_cfg.annotate_position)
     except ImportError:
         print_warning(
-            "install pillow (in the default install) for the on-image provenance stamp,"
-            "skipping it; the run summary still records the provenance"
+            "pillow not found, skipping the on-image provenance stamp; the run summary still "
+            "records the provenance (install pillow, part of the default install, to enable it)"
         )
 
 
@@ -177,9 +177,8 @@ def _annotate_png(path: Path, lines: list[str], *, position: str = "bottom-left"
     """Overlay ``lines`` onto the PNG at ``path``, in one corner, and save back in place.
 
     Drawn in white DejaVuSans (preferred for its φ/θ/° coverage; system fonts then the PIL bitmap
-    default as fallbacks) with a thin dark outline for legibility on any background. Raises
-    :class:`ImportError` if Pillow is unavailable, which :func:`write_outputs` turns into a friendly
-    skip.
+    default as fallbacks) with a thin dark outline. Raises :class:`ImportError` if Pillow is
+    unavailable, which :func:`_apply_stamp` turns into a friendly skip.
     """
     from PIL import Image, ImageDraw, ImageFont
 

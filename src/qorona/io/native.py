@@ -28,7 +28,8 @@ class Boundary:
     Attributes
     ----------
     name
-        Canonical role of the surface: ``"inner"`` or ``"outer"``.
+        Canonical role of the surface: ``"inner"`` or ``"outer"`` (``"boundary_<i>"`` when the
+        tagged surfaces are not the expected two).
     source_name
         The boundary's name in the source file (e.g. ``"Inlet"``, ``"Outlet"``).
     faces
@@ -81,7 +82,7 @@ class NativeSolution:
     variables
         Cell-centred field values, keyed by name (native normalization).
     boundaries
-        Tagged boundary surfaces, keyed by canonical role (``"inner"``/``"outer"``).
+        Tagged boundary surfaces, keyed by canonical role (typically ``"inner"``/``"outer"``).
     metadata
         Provenance and grid description.
     """

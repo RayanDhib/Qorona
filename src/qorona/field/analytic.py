@@ -3,8 +3,8 @@
 An :class:`AnalyticField` evaluates B and its Jacobian from a closed-form expression, with
 no mesh, interpolation, or numerical gradient in the way, so a test built on one measures the
 field-line integrator and the squashing-factor computation in isolation. Subclasses supply B
-and ∇B directly in **Cartesian** components: the planned validation fields (the PFSS dipole
-here; the linear null and X-line later) are all naturally Cartesian, which avoids the
+and ∇B directly in **Cartesian** components: the validation fields (here the PFSS dipole)
+are naturally Cartesian, which avoids the
 spherical→Cartesian vector Jacobian and its singular behaviour on the polar axis, exactly
 where the dipole's Q⊥ profile is checked.
 """
@@ -36,8 +36,7 @@ class AnalyticField(Field):
     only ever evaluated at ``r ≥ inner_radius > 0`` and never see a singular radius.
     """
 
-    #: CFL step ceiling as a fraction of the shell width (no grid; a loose ceiling the embedded
-    #: controller resolves well below on the smooth analytic fields).
+    #: CFL step ceiling as a fraction of the shell width (see :meth:`characteristic_length`).
     _CHARACTERISTIC_FRACTION = 0.02
 
     def __init__(self, domain: Domain) -> None:
@@ -230,8 +229,7 @@ class PfssDipoleField(AnalyticField):
         between the inner boundary ``R_⊙`` and the source surface ``R_S``. It is therefore
         evaluated by reducing the given point to its line's inner-boundary footpoint colatitude
         ``θ₀`` (field lines are flux contours ``Ψ = (r² + 2R_S³/r) sin²θ``) and applying the closed
-        form there, so the value does not depend on where along the line the point sits. It is
-        derived from this field and the perpendicular Q⊥ definition.
+        form there.
         The axisymmetric mapping factorizes into the azimuthal and meridional stretches, so
         ``Q⊥ = R + 1/R`` with ``Q⊥ ≥ 2``. Two regimes (in the footpoint colatitude ``θ₀``):
 

@@ -16,7 +16,7 @@ from typing import TextIO
 from qorona.io.native import NativeSolution
 
 #: Compression suffixes a stored solution may carry. A large ASCII mesh shrinks markedly when
-#: compressed, so a solution may be committed compressed; the payload format is recognised through
+#: compressed, so a solution may be stored compressed; the payload format is recognised behind
 #: the compression suffix and the file is opened through the matching standard-library decompressor,
 #: so a ``.CFmesh.xz`` reads exactly like a plain ``.CFmesh`` with no extra dependency.
 _COMPRESSION_SUFFIXES = (".xz", ".gz")
