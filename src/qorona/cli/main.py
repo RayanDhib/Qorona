@@ -1,11 +1,13 @@
-"""The ``qorona`` CLI: ``build`` / ``render`` / ``run`` / ``fieldlines`` / ``info``.
+"""The ``qorona`` CLI: ``build`` / ``render`` / ``run`` / ``fieldlines`` / ``export-lines`` /
+``info``.
 
 A :mod:`click` group wired to the shared :mod:`qorona.console` Rich surface, so progress and styling
 stay uniform. It splits the two cost axes of the pipeline into separate commands: ``build`` bakes
 the viewpoint-independent Q⊥ volume **once** (the minutes-scale stage, where resolution / seeding /
 supersampling sweeps live), ``render`` integrates a baked volume for any camera / preset (seconds,
 where viewpoint / weighting sweeps live), and ``run`` chains both; ``fieldlines`` draws the
-field-line view and ``info`` inspects a solution.
+field-line view, ``export-lines`` serialises traced field lines for external tools, and ``info``
+inspects a solution.
 
 Every flag populates the typed :mod:`qorona.config` schema (the single source of truth for defaults
 and validation); a flag left unset defers to the dataclass, so the help text's stated defaults are
@@ -46,6 +48,7 @@ from qorona.config import (
     WEIGHTING_PRESETS,
     BrightnessConfig,
     CameraConfig,
+    ExportConfig,
     FieldLinesConfig,
     GridConfig,
     InputConfig,
@@ -55,6 +58,7 @@ from qorona.config import (
     WeightingConfig,
 )
 from qorona.console import console, print_step, print_success
+from qorona.io.fieldlines_export import write_fieldlines_json
 from qorona.io.output import write_brightness, write_fieldlines, write_outputs
 
 #: Default image dimension used only when exactly one of ``--width`` / ``--height`` is supplied; the
@@ -414,6 +418,32 @@ _fieldlines_options = _compose(
     ),
     *_turn_guard_options,
 )
+_export_options = _compose(
+    click.option(
+        "--seeds",
+        "seed_grid",
+        type=int,
+        nargs=2,
+        default=None,
+        help="Seed grid resolution 'N_THETA N_PHI' on the seed sphere (default 100 100).",
+    ),
+    click.option(
+        "--seed-radius",
+        type=float,
+        default=None,
+        help="Seed sphere radius in R_sun (default: the inner boundary).",
+    ),
+    click.option(
+        "--rtol", type=float, default=None, help="Tracer relative tolerance (default 1e-4)."
+    ),
+    click.option(
+        "--cfl", type=float, default=None, help="CFL step ceiling, 0<cfl<1 (default 0.5)."
+    ),
+    click.option(
+        "--max-steps", type=int, default=None, help="Per-half-line step guard (default 10000)."
+    ),
+    *_turn_guard_options,
+)
 _brightness_options = _compose(
     click.option(
         "--frame",
@@ -595,6 +625,18 @@ def _fieldlines_config(kw: dict[str, Any], workers: int | None) -> FieldLinesCon
     if workers is not None:
         fields["workers"] = workers
     return FieldLinesConfig(**fields)
+
+
+def _export_config(kw: dict[str, Any], workers: int | None) -> ExportConfig:
+    fields = _present(
+        kw, "seed_radius", "rtol", "cfl", "max_steps", "max_turn_angle",
+        "turn_guard_radius", "turn_guard_weak_fraction", "min_turns",
+    )
+    if kw.get("seed_grid") is not None:
+        fields["n_theta"], fields["n_phi"] = kw["seed_grid"]
+    if workers is not None:
+        fields["workers"] = workers
+    return ExportConfig(**fields)
 
 
 def _brightness_config(kw: dict[str, Any], workers: int | None) -> BrightnessConfig:
@@ -961,6 +1003,57 @@ def fieldlines(
     )
 
 
+@main.command("export-lines")
+@click.argument("input_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "-o",
+    "--output",
+    "output_path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Destination field-line file (.json).",
+)
+@_input_options
+@_grid_options
+@_export_options
+@_workers_option
+@_quiet_option
+def export_lines(
+    input_path: Path, output_path: Path, workers: int | None, quiet: bool, **kw: Any
+) -> None:
+    """Export traced field lines of a solution to JSON for external tools.
+
+    Reads the solution, traces field lines seeded on a uniform longitude/latitude grid
+    (``--seeds``, default 100x100, on the inner boundary unless ``--seed-radius`` overrides it),
+    and writes the polylines with their open/closed topology. A self-contained command: it traces
+    the field directly and does not use a baked volume. The file schema is documented in
+    ``qorona/io/fieldlines_export.py``.
+    """
+    kw["input_path"] = input_path
+    show_progress = not quiet
+    input_cfg = _input_config(kw)
+    grid_cfg = _grid_config(kw)
+    export_cfg = _export_config(kw, workers)
+
+    print_step(f"Exporting field lines from [bold]{input_path.name}[/bold]")
+    start = time.perf_counter()
+    field = pipeline.build_field(input_cfg, grid_cfg, show_progress=show_progress)
+    field_time = time.perf_counter() - start
+    trace_start = time.perf_counter()
+    lines = pipeline.export_lines(field, export_cfg, show_progress=show_progress)
+    trace_time = time.perf_counter() - trace_start
+
+    provenance = pipeline.export_provenance(input_cfg, grid_cfg, export_cfg, field, lines)
+    written = write_fieldlines_json(lines, output_path, provenance)
+    print_success(f"Wrote [bold]{output_path}[/bold]")
+    _print_summary(
+        provenance,
+        {"field": field_time, "export": trace_time},
+        written=[written],
+        header="export-lines",
+    )
+
+
 @main.command(hidden=True)
 @click.argument("input_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
@@ -1026,7 +1119,7 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
 
 #: Timing keys that are whole pipeline stages (and therefore sum to the footer total); every other
 #: key is a sub-stage breakdown displayed inline on its stage's line.
-_TOP_LEVEL_TIMINGS = ("field", "build", "render", "fieldlines", "brightness")
+_TOP_LEVEL_TIMINGS = ("field", "build", "render", "fieldlines", "export", "brightness")
 
 
 def _input_line(prov: dict[str, Any]) -> str:
@@ -1123,6 +1216,18 @@ def _fieldlines_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
     return " · ".join(parts)
 
 
+def _export_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
+    exp = prov["export"]
+    parts = [
+        f"{exp['n_theta']}x{exp['n_phi']} lon/lat seeds at r = {float(exp['seed_radius']):.2f}",
+        f"{int(exp['n_open'])} open · {int(exp['n_closed'])} closed · "
+        f"{int(exp['n_incomplete'])} incomplete (dropped)",
+    ]
+    if "export" in timings:
+        parts.append(f"trace {timings['export']:.1f} s")
+    return " · ".join(parts)
+
+
 def _brightness_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
     bri = prov["brightness"]
     frame = "pB" if bri["frame"] == "polarized" else "white-light"
@@ -1175,6 +1280,8 @@ def _print_summary(
         table.add_row("Volume", _volume_line(provenance, timings))
     if "fieldlines" in provenance:
         table.add_row("Field lines", _fieldlines_line(provenance, timings))
+    if "export" in provenance:
+        table.add_row("Export", _export_line(provenance, timings))
     if "camera" in provenance:
         table.add_row("Camera", _camera_line(provenance))
     if "render" in provenance:

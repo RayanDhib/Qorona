@@ -114,6 +114,26 @@ Indicative volume-build timings (RTX 4080 vs 32-core CPU, mixed precision; not a
 | Quickstart, 384×360×720 (100 M vox)  | ~75 s  | ~9 min         |
 | High-res, 512×800×1600 (655 M vox)   | ~3 min | not practical  |
 
+## On a cluster
+
+Qorona installs from PyPI into a plain virtual environment; no conda needed:
+
+```bash
+module purge            # optional; stops other modules leaking packages via PYTHONPATH
+module load python      # any Python ≥ 3.11
+python -m venv ~/envs/qorona && source ~/envs/qorona/bin/activate
+pip install qorona
+```
+
+On GPU nodes, load the site's CUDA module (`module load cuda`) so numba finds the toolkit;
+`--device gpu` errors loudly if the GPU is unusable rather than silently falling back. Two flags
+are made for batch jobs: `--workers` pins the kernel threads to your allocation (numba otherwise
+takes every core it sees), and `--quiet` keeps job logs readable:
+
+```bash
+qorona build <solution> -o <solution>.qor --device gpu --workers $SLURM_CPUS_PER_TASK --quiet
+```
+
 ## How it works
 
 The pipeline processes a single MHD snapshot through four stages, each isolated behind a clean

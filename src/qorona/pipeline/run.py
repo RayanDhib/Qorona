@@ -31,6 +31,7 @@ from qorona import __version__
 from qorona.config import (
     BrightnessConfig,
     CameraConfig,
+    ExportConfig,
     FieldLinesConfig,
     GridConfig,
     InputConfig,
@@ -64,7 +65,7 @@ from qorona.squashing.volume import (
     build_volume_per_voxel,
     build_volume_reference,
 )
-from qorona.trace import TurnGuard
+from qorona.trace import FieldLines, TurnGuard, lonlat_seeds, trace_field_lines
 
 #: Schema selector strings → the concrete strategy classes / preset instances they name. One place
 #: each, so the config names and the pipeline dispatch never drift.
@@ -352,6 +353,49 @@ def render_fieldlines(
     )
 
 
+def export_lines(
+    field: Field,
+    export_cfg: ExportConfig,
+    *,
+    show_progress: bool = True,
+) -> FieldLines:
+    """Trace the field-line bundle for export.
+
+    Seeds a uniform longitude/latitude grid on the seed sphere (the field's inner boundary unless
+    ``export_cfg.seed_radius`` overrides it) and traces every seed both ways to the boundaries,
+    keeping the full polylines.
+
+    Returns
+    -------
+    FieldLines
+        The traced bundle, with ``paths`` populated.
+    """
+    from qorona.accel import apply_workers
+
+    apply_workers(export_cfg.workers)
+    radius = (
+        export_cfg.seed_radius
+        if export_cfg.seed_radius is not None
+        else field.domain.inner_radius
+    )
+    seeds = lonlat_seeds(radius, n_theta=export_cfg.n_theta, n_phi=export_cfg.n_phi)
+    return trace_field_lines(
+        field,
+        seeds,
+        rtol=export_cfg.rtol,
+        cfl=export_cfg.cfl,
+        max_steps=export_cfg.max_steps,
+        turn_guard=TurnGuard(
+            max_turn_angle=export_cfg.max_turn_angle,
+            radius=export_cfg.turn_guard_radius,
+            weak_fraction=export_cfg.turn_guard_weak_fraction,
+            min_turns=export_cfg.min_turns,
+        ),
+        store_path=True,
+        show_progress=show_progress,
+    )
+
+
 def render_brightness(
     field: SampledField,
     brightness_cfg: BrightnessConfig,
@@ -603,6 +647,43 @@ def fieldlines_provenance(
         },
         "camera": camera_cfg.to_provenance(),
         "output": output_cfg.to_provenance(),
+    }
+
+
+def export_provenance(
+    input_cfg: InputConfig,
+    grid_cfg: GridConfig,
+    export_cfg: ExportConfig,
+    field: Field,
+    lines: FieldLines,
+) -> dict[str, Any]:
+    """Assemble the export's provenance: the mapping the summary and the file's metadata read.
+
+    Mirrors :func:`fieldlines_provenance` (minus camera and image output): the input (path +
+    content hash + derived CR/JD), the field grid, and the export parameters with the resolved
+    seed radius and the line tallies. JSON-safe, so the writer stores it as the file's
+    ``metadata`` block.
+    """
+    seed_radius = (
+        export_cfg.seed_radius
+        if export_cfg.seed_radius is not None
+        else field.domain.inner_radius
+    )
+    return {
+        "version": __version__,
+        "input": {
+            **input_cfg.to_provenance(),
+            "content_hash": content_hash(input_cfg.path),
+            **_ephemeris(input_cfg.timestamp),
+        },
+        "field": grid_cfg.to_provenance(),
+        "export": {
+            **export_cfg.to_provenance(),
+            "seed_radius": seed_radius,
+            "n_open": int(lines.is_open.sum()),
+            "n_closed": int(lines.is_closed.sum()),
+            "n_incomplete": int(lines.is_incomplete.sum()),
+        },
     }
 
 

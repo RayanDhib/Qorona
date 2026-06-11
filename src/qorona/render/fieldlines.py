@@ -37,8 +37,14 @@ from qorona.accel import apply_workers
 from qorona.console import status
 from qorona.field.base import Field
 from qorona.geometry.camera import OrthographicCamera
-from qorona.geometry.coordinates import spherical_to_cartesian
-from qorona.trace import DEFAULT_TURN_GUARD, Endpoint, FieldLines, TurnGuard, trace_field_lines
+from qorona.trace import (
+    DEFAULT_TURN_GUARD,
+    Endpoint,
+    FieldLines,
+    TurnGuard,
+    fibonacci_seeds,
+    trace_field_lines,
+)
 
 #: Line / disk colours as linear RGB in [0, 1].
 _BACKGROUND = (0.0, 0.0, 0.0)
@@ -216,29 +222,13 @@ def _build_seeds(
     ``n_front`` is the count of leading near-hemisphere seeds (the short-loop source) in ``limb``
     seeding; for ``uniform`` it spans every seed and is unused downstream.
     """
-    fibonacci = _fibonacci_seeds(n_seeds, inner_radius)
+    fibonacci = fibonacci_seeds(n_seeds, inner_radius)
     if seeding == "uniform":
         return fibonacci, fibonacci.shape[0]
     look = camera._basis()[0]
     front = fibonacci[fibonacci @ look > 0.0]  # observer-facing hemisphere
     ring = _limb_ring(limb_seeds, inner_radius, camera)
     return np.vstack([front, ring]), front.shape[0]
-
-
-def _fibonacci_seeds(n_seeds: int, inner_radius: float) -> np.ndarray:
-    """Return ``(n_seeds, 3)`` Cartesian seeds spread by the golden-angle spiral just inside the
-    inner sphere.
-
-    The spiral places points at cell-centred ``cos θ`` (no exact pole) and golden-angle azimuth, for
-    even, non-aliased area density; the radius is nudged a hair inside the shell so the tracer
-    accepts them.
-    """
-    index = np.arange(n_seeds)
-    z = 1.0 - (2.0 * index + 1.0) / n_seeds
-    theta = np.arccos(z)
-    phi = index * (np.pi * (3.0 - np.sqrt(5.0)))
-    radius = np.full(n_seeds, inner_radius * (1.0 + _DOMAIN_MARGIN))
-    return spherical_to_cartesian(np.stack([radius, theta, phi], axis=-1))
 
 
 def _limb_ring(n_seeds: int, inner_radius: float, camera: OrthographicCamera) -> np.ndarray:
@@ -292,7 +282,7 @@ def _line_colours(
     """Return the ``(n_kept, 3)`` draw colour for the kept lines, in kept order."""
     if colour == "rainbow":
         return _rainbow_colours(int(keep.sum()))
-    return _polarity_colours(field, lines, inner_radius, outer_radius)[keep]
+    return polarity_colours(field, lines, inner_radius, outer_radius)[keep]
 
 
 def _rainbow_colours(n_lines: int) -> np.ndarray:
@@ -316,15 +306,16 @@ def _hsv_to_rgb(hue: np.ndarray, saturation: float, value: float) -> np.ndarray:
     return np.stack([red, green, blue], axis=-1)
 
 
-def _polarity_colours(
+def polarity_colours(
     field: Field, lines: FieldLines, inner_radius: float, outer_radius: float
 ) -> np.ndarray:
     """Return the ``(n, 3)`` per-line polarity colour: open by inner-foot ``B·r̂``, closed neutral.
 
     Open lines are coloured by the sign of ``B·r̂`` at their inner foot, the end whose
     :class:`~qorona.trace.Endpoint` is ``INNER`` (sampled in one batched call, the foot nudged
-    inside the shell); closed loops take the neutral tone. Incomplete lines get an arbitrary colour;
-    they are filtered out before drawing.
+    inside the shell); closed loops take the neutral tone. Incomplete lines get an arbitrary
+    colour; the render filters them out before drawing. Linear RGB in [0, 1]; public so an
+    exporter can colour lines with the same palette.
     """
     colours = np.tile(np.array(_CLOSED), (lines.seeds.shape[0], 1))
     open_idx = np.nonzero(lines.is_open)[0]

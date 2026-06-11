@@ -457,6 +457,63 @@ class FieldLinesConfig:
 
 
 @dataclass(frozen=True)
+class ExportConfig:
+    """The field-line export: the seed grid and the tracer knobs.
+
+    Drives ``export-lines``, which traces a bundle of field lines and writes the polylines to a
+    file. Seeds sit on a uniform longitude/latitude grid
+    (:func:`~qorona.trace.lonlat_seeds`) on the sphere of ``seed_radius`` (``None`` means the
+    field's inner boundary). The tracer knobs are the same as :class:`FieldLinesConfig`.
+    """
+
+    n_theta: int = 100
+    n_phi: int = 100
+    seed_radius: float | None = None
+    rtol: float = 1e-4
+    cfl: float = 0.5
+    max_steps: int = 10_000
+    max_turn_angle: float = 45.0
+    turn_guard_radius: float = 2.0
+    turn_guard_weak_fraction: float = 1.0e-5
+    min_turns: int = 3
+    workers: int | None = None
+
+    def __post_init__(self) -> None:
+        _require(self.n_theta >= 1, f"n_theta must be >= 1, got {self.n_theta}")
+        _require(self.n_phi >= 1, f"n_phi must be >= 1, got {self.n_phi}")
+        _require(
+            self.seed_radius is None or self.seed_radius > 0.0,
+            f"seed_radius must be None or > 0, got {self.seed_radius}",
+        )
+        _require(self.rtol > 0.0, f"rtol must be > 0, got {self.rtol}")
+        _require(0.0 < self.cfl < 1.0, f"cfl must satisfy 0 < cfl < 1, got {self.cfl}")
+        _require(self.max_steps > 0, f"max_steps must be > 0, got {self.max_steps}")
+        _validate_turn_guard(
+            self.max_turn_angle, self.turn_guard_radius, self.turn_guard_weak_fraction,
+            self.min_turns,
+        )
+        _require(
+            self.workers is None or self.workers >= 1,
+            f"workers must be None or >= 1, got {self.workers}",
+        )
+
+    def to_provenance(self) -> dict[str, object]:
+        return {
+            "n_theta": self.n_theta,
+            "n_phi": self.n_phi,
+            "seed_radius": self.seed_radius,
+            "rtol": self.rtol,
+            "cfl": self.cfl,
+            "max_steps": self.max_steps,
+            "max_turn_angle": self.max_turn_angle,
+            "turn_guard_radius": self.turn_guard_radius,
+            "turn_guard_weak_fraction": self.turn_guard_weak_fraction,
+            "min_turns": self.min_turns,
+            "workers": self.workers,
+        }
+
+
+@dataclass(frozen=True)
 class BrightnessConfig:
     """The white-light / polarized-brightness (pB) render: frame, display treatment, and knobs.
 
