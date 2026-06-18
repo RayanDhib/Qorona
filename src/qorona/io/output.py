@@ -161,10 +161,10 @@ def _stamp_lines(provenance: dict[str, Any]) -> list[str]:
         lines.append(f"{inp['timestamp']} UTC")
     if camera:
         lines.append(
-            f"φ={float(camera['longitude']):+.0f}° θ={float(camera['latitude']):+.0f}° "
-            f"roll={float(camera['roll']):+.0f}°"
+            f"φ={float(camera['longitude']):+.2f}° θ={float(camera['latitude']):+.2f}° "
+            f"roll={float(camera['roll']):+.2f}°"
         )
-        lines.append(f"FOV {float(camera['fov']):.0f} R_sun")
+        lines.append(f"FOV {float(camera['fov']):g} R_sun")
     return lines
 
 

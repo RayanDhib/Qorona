@@ -266,7 +266,8 @@ class SphericalGrid:
         theta_step = np.pi / self.n_theta
         phi_step = 2.0 * np.pi / self.n_phi
         theta_index = colatitude / theta_step - 0.5
-        phi_index = azimuth / phi_step
+        # φ is periodic: an azimuth that rounds to 2π must map to index 0, not n_phi.
+        phi_index = np.mod(azimuth / phi_step, self.n_phi)
 
         index = np.stack([r_index, theta_index, phi_index], axis=-1)
         dr_index_dr = (self.n_r - 1) / self.spacing.radius_derivative(parameter)

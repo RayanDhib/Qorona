@@ -8,19 +8,40 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import timedelta
 
 from rich.console import Console
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
     Progress,
+    ProgressColumn,
     SpinnerColumn,
+    Task,
     TaskProgressColumn,
     TextColumn,
-    TimeRemainingColumn,
+    TimeElapsedColumn,
 )
+from rich.text import Text
 
 console = Console()
+
+
+class AverageRateRemainingColumn(ProgressColumn):
+    """Estimated time remaining, from the run's cumulative average rate.
+
+    Computed as ``elapsed * (total - completed) / completed``: the average time per
+    completed unit, scaled by the units left. Shown once the first unit completes and
+    hidden when the run finishes.
+    """
+
+    def render(self, task: Task) -> Text:
+        elapsed = task.elapsed
+        if task.finished or not task.total or not task.completed or elapsed is None:
+            return Text("", style="progress.remaining")
+        remaining = elapsed * (task.total - task.completed) / task.completed
+        delta = timedelta(seconds=round(remaining))
+        return Text(f"• ~{delta} left", style="progress.remaining")
 
 
 @contextmanager
@@ -70,7 +91,8 @@ def progress_bar(
         BarColumn(),
         TaskProgressColumn(),
         MofNCompleteColumn(),
-        TimeRemainingColumn(),
+        TimeElapsedColumn(),
+        AverageRateRemainingColumn(),
         console=console,
     ) as progress:
         task = progress.add_task(description, total=total)

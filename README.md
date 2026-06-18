@@ -16,16 +16,21 @@ coronal MHD solution ──▶ read ──▶ resample ──▶ Q⊥ volume ─
 
 ## Install
 
+**With pip** you install the latest release; it is the quickest way to get the `qorona` command:
+
 ```bash
+pip install qorona
+```
+
+**With conda** you clone the repository and build the provided environment from its root, giving you
+the development version (`main`) as an editable checkout, e.g. to develop or add a model reader:
+
+```bash
+git clone https://github.com/RayanDhib/Qorona.git
+cd Qorona
 conda env create -f environment.yml
 conda activate qorona
 ```
-
-This creates the `qorona` environment and installs the package (editable) with the `qorona` command.
-The default install is the **full toolset**: every feature works out of the box, including
-numba-accelerated builds and renders and the on-image provenance stamp (Pillow). Without conda,
-`pip install qorona` gives the same full install (the conda environment additionally provides
-`tbb`, numba's dynamic load-balancing threading layer).
 
 ### Minimal install (advanced, optional)
 
