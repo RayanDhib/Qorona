@@ -36,6 +36,7 @@ from qorona.config import (
     CLOSED_TREATMENTS,
     DEVICE_MODES,
     DISPLAY_MODES,
+    EXPORT_FORMATS,
     FIELDLINE_COLOUR,
     FIELDLINE_SEEDING,
     FIELDLINE_SHOW,
@@ -59,7 +60,12 @@ from qorona.config import (
 )
 from qorona.console import console, print_step, print_success
 from qorona.io.fieldlines_export import write_fieldlines_json
-from qorona.io.output import write_brightness, write_fieldlines, write_outputs
+from qorona.io.output import (
+    export_brightness,
+    write_brightness,
+    write_fieldlines,
+    write_outputs,
+)
 
 #: Default image dimension used only when exactly one of ``--width`` / ``--height`` is supplied; the
 #: full default ``pixels`` otherwise lives once on :class:`~qorona.config.CameraConfig`.
@@ -455,7 +461,24 @@ _brightness_options = _compose(
         "--treatment",
         type=click.Choice(BRIGHTNESS_TREATMENTS),
         default=None,
-        help="pB display treatment: raw / newkirk radial vignette / mgn enhancement (default raw).",
+        help="Display treatment (applied to the selected --frame): raw / radial rho-power filter / "
+        "newkirk radial vignette / mgn fine-structure enhancement (default raw).",
+    ),
+    click.option(
+        "--radial-power",
+        type=float,
+        default=None,
+        help="Exponent for --treatment radial: brightness is scaled by rho**power (rho = "
+        "plane-of-sky radius in R_sun); below the radial-falloff power it lifts the outer corona "
+        "while staying bright near the limb (default 3.0).",
+    ),
+    click.option(
+        "--export",
+        "export_formats",
+        type=click.Choice(EXPORT_FORMATS),
+        multiple=True,
+        help="Also write the raw data (both pB and total B + plane-of-sky coordinates) to this "
+        "format beside the PNG; repeatable. Currently only npz.",
     ),
     click.option(
         "--limb-darkening",
@@ -551,9 +574,22 @@ def _grid_config(kw: dict[str, Any]) -> GridConfig:
 
 def _volume_config(kw: dict[str, Any], workers: int | None) -> VolumeConfig:
     fields = _present(
-        kw, "builder", "resolution_factor", "supersample", "paint_step", "closed", "rtol", "cfl",
-        "max_steps", "max_reversals", "max_turn_angle", "turn_guard_radius",
-        "turn_guard_weak_fraction", "min_turns", "device", "precision",
+        kw,
+        "builder",
+        "resolution_factor",
+        "supersample",
+        "paint_step",
+        "closed",
+        "rtol",
+        "cfl",
+        "max_steps",
+        "max_reversals",
+        "max_turn_angle",
+        "turn_guard_radius",
+        "turn_guard_weak_fraction",
+        "min_turns",
+        "device",
+        "precision",
     )
     if workers is not None:
         fields["workers"] = workers
@@ -611,14 +647,29 @@ def _output_config(kw: dict[str, Any], output_path: Path) -> OutputConfig:
         fields["annotate"] = kw["annotate"]
     if kw.get("annotate_position") is not None:
         fields["annotate_position"] = kw["annotate_position"]
+    if kw.get("export_formats"):
+        fields["export_formats"] = tuple(kw["export_formats"])
     return OutputConfig(**fields)
 
 
 def _fieldlines_config(kw: dict[str, Any], workers: int | None) -> FieldLinesConfig:
     fields = _present(
-        kw, "seeding", "n_seeds", "limb_seeds", "front_loop_length", "colour", "show",
-        "line_width", "depth_fade", "rtol", "cfl", "max_steps", "max_turn_angle",
-        "turn_guard_radius", "turn_guard_weak_fraction", "min_turns",
+        kw,
+        "seeding",
+        "n_seeds",
+        "limb_seeds",
+        "front_loop_length",
+        "colour",
+        "show",
+        "line_width",
+        "depth_fade",
+        "rtol",
+        "cfl",
+        "max_steps",
+        "max_turn_angle",
+        "turn_guard_radius",
+        "turn_guard_weak_fraction",
+        "min_turns",
     )
     if kw.get("magnetogram") is not None:
         fields["magnetogram"] = kw["magnetogram"]
@@ -629,8 +680,15 @@ def _fieldlines_config(kw: dict[str, Any], workers: int | None) -> FieldLinesCon
 
 def _export_config(kw: dict[str, Any], workers: int | None) -> ExportConfig:
     fields = _present(
-        kw, "seed_radius", "rtol", "cfl", "max_steps", "max_turn_angle",
-        "turn_guard_radius", "turn_guard_weak_fraction", "min_turns",
+        kw,
+        "seed_radius",
+        "rtol",
+        "cfl",
+        "max_steps",
+        "max_turn_angle",
+        "turn_guard_radius",
+        "turn_guard_weak_fraction",
+        "min_turns",
     )
     if kw.get("seed_grid") is not None:
         fields["n_theta"], fields["n_phi"] = kw["seed_grid"]
@@ -641,7 +699,15 @@ def _export_config(kw: dict[str, Any], workers: int | None) -> ExportConfig:
 
 def _brightness_config(kw: dict[str, Any], workers: int | None) -> BrightnessConfig:
     fields = _present(
-        kw, "frame", "treatment", "crossover", "step", "occult", "r_occult", "occult_softness",
+        kw,
+        "frame",
+        "treatment",
+        "radial_power",
+        "crossover",
+        "step",
+        "occult",
+        "r_occult",
+        "occult_softness",
         "scaling",
     )
     if kw.get("limb_darkening") is not None:
@@ -694,7 +760,11 @@ def main() -> None:
 @_device_option
 @_quiet_option
 def build(
-    input_path: Path, output_path: Path, workers: int | None, device: str | None, quiet: bool,
+    input_path: Path,
+    output_path: Path,
+    workers: int | None,
+    device: str | None,
+    quiet: bool,
     **kw: Any,
 ) -> None:
     """Bake the viewpoint-independent Q⊥ volume from a solution to a cache file.
@@ -881,8 +951,12 @@ def run(
 
     render_start = time.perf_counter()
     result = pipeline.render_volume(
-        volume, camera_cfg, weighting_cfg, render_cfg,
-        density=field.density, show_progress=show_progress,
+        volume,
+        camera_cfg,
+        weighting_cfg,
+        render_cfg,
+        density=field.density,
+        show_progress=show_progress,
     )
     render_time = time.perf_counter() - render_start
 
@@ -1076,10 +1150,11 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
 
     Reads and resamples the solution, then integrates the Thomson-scattering brightness over
     the electron density along each line of sight: the polarized brightness pB by default, or the
-    total white-light brightness with ``--frame total``. Finish the pB frame with
-    ``--treatment newkirk`` (radial vignette) or ``--treatment mgn`` (multi-scale fine-structure
-    enhancement). A self-contained command: it needs only the density and neither builds nor uses a
-    Q⊥ volume.
+    total white-light brightness with ``--frame total``. Detrend the chosen frame with
+    ``--treatment radial`` (a rho-power filter, ``--radial-power``), ``--treatment newkirk`` (radial
+    vignette), or ``--treatment mgn`` (fine-structure enhancement). ``--export npz`` also writes the
+    raw frames (both pB and total) with their plane-of-sky coordinates. A self-contained command: it
+    needs only the density and neither builds nor uses a Q⊥ volume.
     """
     kw["input_path"] = input_path
     show_progress = not quiet
@@ -1106,6 +1181,7 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
         written = write_brightness(result, brightness_cfg, output_cfg, provenance)
     except ImportError as error:
         raise click.ClickException(str(error)) from error
+    written += export_brightness(result, output_cfg, provenance)
     print_success(f"Wrote [bold]{output_path}[/bold]")
     _print_summary(
         provenance,
@@ -1165,11 +1241,13 @@ def _volume_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
         parts.append(backend)
     if "build" in timings:
         stages = " · ".join(
-            f"{name} {timings[name]:.0f}" for name in ("boundary", "trace", "paint")
+            f"{name} {timings[name]:.0f}"
+            for name in ("boundary", "trace", "paint")
             if name in timings
         )
         parts.append(
-            f"build {timings['build']:.0f} s ({stages})" if stages
+            f"build {timings['build']:.0f} s ({stages})"
+            if stages
             else f"build {timings['build']:.0f} s"
         )
     return " · ".join(parts)
@@ -1231,12 +1309,20 @@ def _export_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
 def _brightness_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
     bri = prov["brightness"]
     frame = "pB" if bri["frame"] == "polarized" else "white-light"
+    treatment = (
+        f"radial r^{float(bri['radial_power']):g}"
+        if bri["treatment"] == "radial"
+        else str(bri["treatment"])
+    )
     parts = [
-        f"{frame} · {bri['treatment']}",
+        f"{frame} · {treatment}",
         str(bri["occult"]),
         f"median polarization {float(bri['median_polarization']):.2f}",
         f"pB spans {float(bri['pb_decades']):.1f} decades",
     ]
+    exported = prov.get("output", {}).get("export_formats")
+    if exported:
+        parts.append(f"export {'+'.join(exported)} (raw pB+B)")
     if "brightness" in timings:
         parts.append(f"render {timings['brightness']:.1f} s")
     return " · ".join(parts)

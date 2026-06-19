@@ -85,10 +85,11 @@ def write_brightness(
 ) -> list[Path]:
     """Write the white-light / pB render's PNG and stamp it, returning the path written.
 
-    Selects the requested frame (the polarized ``pB`` or the total white-light brightness) and, for
-    the polarized frame, the display treatment (raw, the Newkirk radial vignette, or the MGN
-    fine-structure enhancement), writes a percentile-stretched 8-bit grayscale PNG, and applies the
-    shared provenance stamp.
+    Selects the requested frame (the polarized ``pB`` or the total white-light brightness) and the
+    display treatment applied to it: raw, the ``radial`` power-law filter, the Newkirk radial
+    vignette, or the MGN fine-structure enhancement. Writes a percentile-stretched 8-bit grayscale
+    PNG and applies the shared provenance stamp. MGN is calibrated for the pB frame; on the total
+    frame it still renders but is less physically meaningful, so a note is printed.
 
     Raises
     ------
@@ -101,16 +102,28 @@ def write_brightness(
     list of Path
         The image file written.
     """
-    from qorona.radiation.display import mgn_enhance, newkirk_vignette, save_pb_png
+    from qorona.radiation.display import (
+        mgn_enhance,
+        newkirk_vignette,
+        radial_filter,
+        save_pb_png,
+    )
 
-    if brightness_cfg.frame == "total":
-        frame = result.total
-    elif brightness_cfg.treatment == "newkirk":
-        frame = newkirk_vignette(result.polarized, result.impact)
-    elif brightness_cfg.treatment == "mgn":
-        frame = mgn_enhance(result.polarized)
+    base = result.total if brightness_cfg.frame == "total" else result.polarized
+    treatment = brightness_cfg.treatment
+    if treatment == "radial":
+        frame = radial_filter(base, result.impact, power=brightness_cfg.radial_power)
+    elif treatment == "newkirk":
+        frame = newkirk_vignette(base, result.impact)
+    elif treatment == "mgn":
+        if brightness_cfg.frame == "total":
+            print_warning(
+                "MGN is calibrated for the polarized (pB) frame; on the total frame it still "
+                "renders but is less physically meaningful"
+            )
+        frame = mgn_enhance(base)
     else:
-        frame = result.polarized
+        frame = base
     save_pb_png(
         frame,
         output_cfg.path,
@@ -122,9 +135,45 @@ def write_brightness(
     return written
 
 
-def _apply_stamp(
-    written: list[Path], output_cfg: OutputConfig, provenance: dict[str, Any]
-) -> None:
+def export_brightness(
+    result: BrightnessResult, output_cfg: OutputConfig, provenance: dict[str, Any]
+) -> list[Path]:
+    """Write the requested raw data sidecars for a brightness render, returning the paths.
+
+    The export carries the *raw, relative* frames — both the polarized ``pB`` and the total
+    white-light brightness — with the plane-of-sky coordinate axes (``x_rsun`` / ``y_rsun``) and the
+    impact-parameter grid, independent of the displayed frame/treatment, so a downstream tool (NRGF,
+    WOW, or a custom detrend) processes the unstyled data. Only the dependency-free ``.npz`` is
+    written for now (FITS+WCS is deferred to M6b); the run provenance travels as a JSON string in
+    ``meta``.
+
+    Returns
+    -------
+    list of Path
+        The sidecar files written, one per requested export format.
+    """
+    import json
+
+    import numpy as np
+
+    written: list[Path] = []
+    for fmt in output_cfg.export_formats:
+        path = output_cfg.export_path(fmt)
+        if fmt == "npz":
+            np.savez_compressed(
+                path,
+                total=result.total.astype(np.float32),
+                pb=result.polarized.astype(np.float32),
+                x_rsun=result.x_rsun.astype(np.float32),
+                y_rsun=result.y_rsun.astype(np.float32),
+                impact=result.impact.astype(np.float32),
+                meta=np.array(json.dumps(provenance, default=str)),
+            )
+        written.append(path)
+    return written
+
+
+def _apply_stamp(written: list[Path], output_cfg: OutputConfig, provenance: dict[str, Any]) -> None:
     """Burn the provenance corner stamp onto each written PNG, when annotation is on and Pillow is
     present.
 

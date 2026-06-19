@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
+from astropy.units import R_sun
 
 from qorona.accel import HAVE_NUMBA, apply_workers
 from qorona.console import print_success, progress_bar
@@ -65,6 +66,10 @@ class BrightnessResult:
     impact
         ``(H, W)`` per-pixel impact parameter rho (R☉): the radius the display treatments
         and the eclipse vignette use.
+    x_rsun, y_rsun
+        ``(W,)`` and ``(H,)`` plane-of-sky pixel-centre coordinates (R☉): ``x`` increases to
+        image-right, ``y`` to image-up with row 0 at the top, so ``rho = hypot(x, y)``. Carried so
+        a data export is self-describing without re-deriving the camera geometry.
     u
         The limb-darkening ``u`` the coefficient table was built with (recorded for provenance).
     occult
@@ -77,6 +82,8 @@ class BrightnessResult:
     polarized: np.ndarray
     total: np.ndarray
     impact: np.ndarray
+    x_rsun: np.ndarray
+    y_rsun: np.ndarray
     u: float
     occult: str
     r_occult: float
@@ -142,8 +149,7 @@ def _finalize_brightness(
     impact: np.ndarray,
     ds: float,
     *,
-    height: int,
-    width: int,
+    camera: OrthographicCamera,
     u: float,
     occult: str,
     r_occult: float,
@@ -156,8 +162,14 @@ def _finalize_brightness(
     are darkened image-side (the observable eclipse product: a dark disk, off-limb corona only) by
     the eclipse vignette, the same darkening the Q⊥ render applies, but baked into the frame here so
     the display treatments and the saved image all see the occulted pB. ``"opaque"`` (the 3-D view,
-    near-side corona over the disk) and ``"none"`` leave the frames as integrated.
+    near-side corona over the disk) and ``"none"`` leave the frames as integrated. The plane-of-sky
+    pixel axes are derived from the camera (the same layout as :meth:`OrthographicCamera.rays`) and
+    carried on the result so a data export is self-describing.
     """
+    height, width = camera.pixels
+    pixel_scale = camera.fov.to_value(R_sun) / width
+    x_rsun = (np.arange(width) - 0.5 * (width - 1)) * pixel_scale
+    y_rsun = (0.5 * (height - 1) - np.arange(height)) * pixel_scale
     impact_grid = impact.reshape(height, width)
     polarized = (k_pol * ds).reshape(height, width)
     total = ((2.0 * k_tan - k_pol) * ds).reshape(height, width)
@@ -169,6 +181,8 @@ def _finalize_brightness(
         polarized=polarized,
         total=total,
         impact=impact_grid,
+        x_rsun=x_rsun,
+        y_rsun=y_rsun,
         u=u,
         occult=occult,
         r_occult=r_occult,
@@ -193,7 +207,6 @@ def _brightness_numpy(
     show_progress: bool,
 ) -> BrightnessResult:
     """Single-threaded NumPy brightness render: the no-numba fallback and the kernel's reference."""
-    height, width = camera.pixels
     origins, impact, look, s_grid, ds = _ray_geometry(camera, density, step)
     n_steps = s_grid.shape[0]
     n_rays = origins.shape[0]
@@ -224,8 +237,16 @@ def _brightness_numpy(
             progress(stop)
 
     return _finalize_brightness(
-        k_tan, k_pol, impact, ds, height=height, width=width, u=u, occult=occult,
-        r_occult=r_occult, occult_softness=occult_softness, show_progress=show_progress,
+        k_tan,
+        k_pol,
+        impact,
+        ds,
+        camera=camera,
+        u=u,
+        occult=occult,
+        r_occult=r_occult,
+        occult_softness=occult_softness,
+        show_progress=show_progress,
     )
 
 
@@ -247,7 +268,6 @@ def _brightness_numba(
     from qorona.accel.kernels import brightness_batch_jit
 
     apply_workers(workers)
-    height, width = camera.pixels
     origins, impact, look, s_grid, ds = _ray_geometry(camera, density, step)
     n_rays = origins.shape[0]
     occult_body = occult == "opaque"
@@ -281,8 +301,16 @@ def _brightness_numba(
             progress(stop)
 
     return _finalize_brightness(
-        k_tan, k_pol, impact, ds, height=height, width=width, u=u, occult=occult,
-        r_occult=r_occult, occult_softness=occult_softness, show_progress=show_progress,
+        k_tan,
+        k_pol,
+        impact,
+        ds,
+        camera=camera,
+        u=u,
+        occult=occult,
+        r_occult=r_occult,
+        occult_softness=occult_softness,
+        show_progress=show_progress,
     )
 
 
@@ -347,10 +375,26 @@ def render_brightness(
     )
     if HAVE_NUMBA and density.grid._jit_grid() is not None:
         return _brightness_numba(
-            density, camera, table, step=step, occult=occult, r_occult=r_occult,
-            occult_softness=occult_softness, u=u, workers=workers, show_progress=show_progress,
+            density,
+            camera,
+            table,
+            step=step,
+            occult=occult,
+            r_occult=r_occult,
+            occult_softness=occult_softness,
+            u=u,
+            workers=workers,
+            show_progress=show_progress,
         )
     return _brightness_numpy(
-        density, camera, table, step=step, occult=occult, r_occult=r_occult,
-        occult_softness=occult_softness, u=u, chunk_size=chunk_size, show_progress=show_progress,
+        density,
+        camera,
+        table,
+        step=step,
+        occult=occult,
+        r_occult=r_occult,
+        occult_softness=occult_softness,
+        u=u,
+        chunk_size=chunk_size,
+        show_progress=show_progress,
     )

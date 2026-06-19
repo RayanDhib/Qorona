@@ -38,8 +38,9 @@ FIELDLINE_SHOW = ("all", "open", "closed")
 FIELDLINE_SEEDING = ("limb", "uniform")
 FIELDLINE_COLOUR = ("rainbow", "polarity")
 BRIGHTNESS_FRAMES = ("polarized", "total")
-BRIGHTNESS_TREATMENTS = ("raw", "newkirk", "mgn")
+BRIGHTNESS_TREATMENTS = ("raw", "radial", "newkirk", "mgn")
 BRIGHTNESS_SCALINGS = ("linear", "log")
+EXPORT_FORMATS = ("npz",)
 DEVICE_MODES = ("auto", "gpu", "cpu")
 PRECISION_MODES = ("float64", "mixed", "float32")
 
@@ -204,7 +205,9 @@ class VolumeConfig:
             f"max_reversals must be >= 0 (0 disables the stall guard), got {self.max_reversals}",
         )
         _validate_turn_guard(
-            self.max_turn_angle, self.turn_guard_radius, self.turn_guard_weak_fraction,
+            self.max_turn_angle,
+            self.turn_guard_radius,
+            self.turn_guard_weak_fraction,
             self.min_turns,
         )
         _require(
@@ -426,7 +429,9 @@ class FieldLinesConfig:
         _require(0.0 < self.cfl < 1.0, f"cfl must satisfy 0 < cfl < 1, got {self.cfl}")
         _require(self.max_steps > 0, f"max_steps must be > 0, got {self.max_steps}")
         _validate_turn_guard(
-            self.max_turn_angle, self.turn_guard_radius, self.turn_guard_weak_fraction,
+            self.max_turn_angle,
+            self.turn_guard_radius,
+            self.turn_guard_weak_fraction,
             self.min_turns,
         )
         _require(
@@ -489,7 +494,9 @@ class ExportConfig:
         _require(0.0 < self.cfl < 1.0, f"cfl must satisfy 0 < cfl < 1, got {self.cfl}")
         _require(self.max_steps > 0, f"max_steps must be > 0, got {self.max_steps}")
         _validate_turn_guard(
-            self.max_turn_angle, self.turn_guard_radius, self.turn_guard_weak_fraction,
+            self.max_turn_angle,
+            self.turn_guard_radius,
+            self.turn_guard_weak_fraction,
             self.min_turns,
         )
         _require(
@@ -519,16 +526,21 @@ class BrightnessConfig:
 
     The viewpoint-independent inputs to the standalone brightness product (the camera is a separate
     config, as for the Q⊥ render). ``frame`` selects the polarized brightness ``pB`` (the default,
-    the reference target) or the total white-light brightness; ``treatment`` finishes the pB frame
-    raw, with the Newkirk radial vignette, or with multi-scale Gaussian-normalization enhancement
-    (the latter two are defined on the polarized frame only). ``u`` and ``crossover`` are the
-    Thomson coefficient knobs, ``scaling`` / ``percentiles`` the display stretch; the line-of-sight
-    ``step`` and the occultation triple mirror :class:`RenderConfig`. ``scaling`` defaults to
-    ``None`` and resolves to ``"linear"`` for the already-normalised MGN treatment, else ``"log"``.
+    the reference target) or the total white-light brightness; ``treatment`` finishes the selected
+    frame raw, with the ``radial`` power-law filter (brightness times ``rho**radial_power``, lifting
+    the outer corona while staying bright near the limb), with the Newkirk radial vignette, or with
+    multi-scale Gaussian-normalization enhancement. MGN is calibrated for the steep-gradient pB
+    frame; on the total frame it still runs but is less physically meaningful. ``u`` and
+    ``crossover`` are the Thomson coefficient knobs, ``scaling`` / ``percentiles`` the display
+    stretch; the line-of-sight ``step`` and the occultation triple mirror :class:`RenderConfig`.
+    ``scaling`` defaults to ``None`` and resolves to ``"linear"`` for the already-normalised MGN
+    treatment, else ``"log"``.
     """
 
     frame: str = "polarized"
     treatment: str = "raw"
+    #: Exponent of the ``radial`` power-law filter; mirrors ``display.RADIAL_FILTER_POWER``.
+    radial_power: float = 3.0
     u: float = 0.6
     crossover: float = 10.0
     step: float = 0.02
@@ -553,6 +565,7 @@ class BrightnessConfig:
         _one_of(scaling, BRIGHTNESS_SCALINGS, "scaling")
         _require(0.0 <= self.u <= 1.0, f"limb darkening u must be in [0, 1], got {self.u}")
         _require(self.crossover > 0.0, f"crossover must be > 0 R_sun, got {self.crossover}")
+        _require(self.radial_power > 0.0, f"radial_power must be > 0, got {self.radial_power}")
         _require(self.step > 0.0, f"step must be > 0 R_sun, got {self.step}")
         _require(self.r_occult > 0.0, f"r_occult must be > 0 R_sun, got {self.r_occult}")
         _require(
@@ -564,11 +577,6 @@ class BrightnessConfig:
             f"percentiles must satisfy 0 <= low < high <= 100, got {self.percentiles}",
         )
         _require(
-            self.frame == "polarized" or self.treatment == "raw",
-            f"the {self.treatment!r} treatment applies to the polarized (pB) frame only; "
-            f"use --frame polarized, or --treatment raw with --frame total",
-        )
-        _require(
             self.workers is None or self.workers >= 1,
             f"workers must be None or >= 1, got {self.workers}",
         )
@@ -577,6 +585,7 @@ class BrightnessConfig:
         return {
             "frame": self.frame,
             "treatment": self.treatment,
+            "radial_power": self.radial_power,
             "u": self.u,
             "crossover": self.crossover,
             "step": self.step,
@@ -591,24 +600,34 @@ class BrightnessConfig:
 
 @dataclass(frozen=True)
 class OutputConfig:
-    """Where the image is written and how it is annotated.
+    """Where the image is written, how it is annotated, and which data sidecars to export.
 
     The colour PNG is the headline product; the grayscale measurement image is opt-in. The on-image
-    provenance stamp is on by default and bypassed with ``annotate=False``.
+    provenance stamp is on by default and bypassed with ``annotate=False``. ``export_formats`` lists
+    the dependency-free data sidecars to write beside the image (currently ``"npz"``; the brightness
+    products write the raw frames + plane-of-sky coordinates there).
     """
 
     path: Path
     save_grayscale: bool = False
     annotate: bool = True
     annotate_position: str = "bottom-left"
+    export_formats: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "path", Path(self.path))
+        object.__setattr__(self, "export_formats", tuple(self.export_formats))
         _one_of(self.annotate_position, ANNOTATE_POSITIONS, "annotate_position")
+        for fmt in self.export_formats:
+            _one_of(fmt, EXPORT_FORMATS, "export format")
 
     def grayscale_path(self) -> Path:
         """Return the companion grayscale PNG path (``<stem>_grayscale<suffix>``)."""
         return self.path.with_name(f"{self.path.stem}_grayscale{self.path.suffix}")
+
+    def export_path(self, fmt: str) -> Path:
+        """Return the data-sidecar path for ``fmt`` (``<stem>.<fmt>`` beside the image)."""
+        return self.path.with_suffix(f".{fmt}")
 
     def to_provenance(self) -> dict[str, object]:
         return {
@@ -616,6 +635,7 @@ class OutputConfig:
             "save_grayscale": self.save_grayscale,
             "annotate": self.annotate,
             "annotate_position": self.annotate_position,
+            "export_formats": list(self.export_formats),
         }
 
 

@@ -1,19 +1,23 @@
-"""Display treatments for the polarized-brightness frame: the two detrends applied to a pB image.
+"""Display treatments for a brightness frame: the radial / fine-structure detrends for a frame.
 
-A finished pB image spans many decades radially, so it is displayed through a detrend that reveals
-the faint structure at all heights. Two treatments, both 2-D post-processes on the integrated frame
-(no field or line-of-sight access):
+A finished brightness image (pB or total) spans many decades radially, so it is displayed through a
+detrend that reveals the faint structure at all heights. Three treatments, all 2-D post-processes on
+the integrated frame (no field or line-of-sight access):
 
+- **Power-law radial filter** (:func:`radial_filter`): multiply by the impact parameter ``rho``
+  raised to a power, a generic graded radial detrend that lifts the outer corona while staying
+  bright near the limb; the lightest, model-free option.
 - **Radial vignetting** (:func:`newkirk_vignette`): divide out a radial detrend following the
   Newkirk coronal-density model ``Nₑ ∝ 10^(4.32 R☉/r)``, lifting the faint outer corona; self-
   contained, no extra dependency.
 - **Fine-structure enhancement** (:func:`mgn_enhance`): Multi-scale Gaussian Normalization, the
   multi-scale generalisation of a single-scale log unsharp mask, via ``sunkit_image.enhance.mgn``.
   ``sunkit-image`` is not installed by default; without it only this treatment is unavailable and it
-  fails with a friendly note, while the radial vignetting and the raw/linear pB frame still render.
+  fails with a friendly note, while the other treatments and the raw frame still render. MGN is
+  calibrated for the steep-gradient pB frame; on total it still runs but is less meaningful.
 
-Both leave the integrated frame untouched and return a new display frame; :func:`save_pb_png` writes
-either to an 8-bit grayscale PNG with a percentile stretch.
+All leave the integrated frame untouched and return a new display frame; :func:`save_pb_png` writes
+any of them to an 8-bit grayscale PNG with a percentile stretch.
 
 Newkirk radial model: Newkirk (1961), ApJ 133, 983. Multi-scale Gaussian Normalization:
 Morgan & Druckmüller (2014), Solar Physics 289, 2945.
@@ -32,10 +36,17 @@ __all__ = [
     "MGN_MISSING_HINT",
     "NEWKIRK_REFERENCE_RADIUS",
     "NEWKIRK_SCALE",
+    "RADIAL_FILTER_POWER",
     "mgn_enhance",
     "newkirk_vignette",
+    "radial_filter",
     "save_pb_png",
 ]
+
+#: Default exponent of the power-law radial filter; ``BrightnessConfig.radial_power`` mirrors this.
+#: Chosen just below the typical brightness radial-falloff power (≈3.8) so the filter lifts the
+#: outer corona while keeping the image bright near the limb, with no gradient inversion.
+RADIAL_FILTER_POWER = 3.0
 
 #: Newkirk coronal-density exponent: ``Nₑ ∝ 10^(scale · R☉/r)``. A tunable parameter; the
 #: default is Newkirk's value.
@@ -50,6 +61,34 @@ MGN_MISSING_HINT = (
     "the MGN pB fine-structure enhancement needs sunkit-image; install it with "
     "`pip install sunkit-image`, or use the Newkirk vignetting / raw pB treatments instead"
 )
+
+
+def radial_filter(
+    frame: np.ndarray, impact: np.ndarray, *, power: float = RADIAL_FILTER_POWER
+) -> np.ndarray:
+    """Return ``frame`` through the power-law radial filter ``frame · rho**power``.
+
+    A generic power-law detrend, not a named coronal-density model: scaling by the impact parameter
+    ``rho`` raised to ``power`` flattens the steep radial brightness falloff enough to reveal the
+    outer streamers, while a ``power`` below the falloff exponent keeps the corona brightest near
+    the limb (no gradient inversion). Sign-preserving and parameter-light, the lightest alternative
+    to the fixed :func:`newkirk_vignette` model. The occulted disk (``rho = 0``) maps to ``0``.
+
+    Parameters
+    ----------
+    frame
+        ``(H, W)`` brightness frame (pB or total).
+    impact
+        ``(H, W)`` per-pixel impact parameter rho (R☉).
+    power
+        Radial exponent (default :data:`RADIAL_FILTER_POWER`).
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(H, W)`` radially filtered frame.
+    """
+    return frame * impact**power
 
 
 def newkirk_vignette(
