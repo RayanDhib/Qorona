@@ -667,8 +667,20 @@ def integrate_batch_jit(
         if not active[i]:
             continue
         code, length = _integrate_line(
-            state0[i], directions[i], transport, fld, atol, rtol, cfl, max_steps, max_reversals,
-            turn_cos, turn_radius, weak_threshold, turn_min, terminal_state[i],
+            state0[i],
+            directions[i],
+            transport,
+            fld,
+            atol,
+            rtol,
+            cfl,
+            max_steps,
+            max_reversals,
+            turn_cos,
+            turn_radius,
+            weak_threshold,
+            turn_min,
+            terminal_state[i],
         )
         ends[i] = code
         lengths[i] = length

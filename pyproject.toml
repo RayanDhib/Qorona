@@ -35,7 +35,7 @@ qorona = "qorona.cli.main:main"
 
 [project.optional-dependencies]
 # Contributor tooling only; not needed to *use* Qorona, so it stays an opt-in extra.
-dev = ["ruff>=0.4", "mypy>=1.9", "pytest>=8.0"]
+dev = ["ruff>=0.15,<0.16", "mypy>=1.9", "pytest>=8.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

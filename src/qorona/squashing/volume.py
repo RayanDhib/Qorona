@@ -235,9 +235,9 @@ def _pack_volume(
     grid_values = log_q_flat.reshape(grid.n_r, grid.n_theta, grid.n_phi, 1)
     polarity = None
     if polarity_flat is not None:
-        polarity = pad_field(
-            polarity_flat.reshape(grid.n_r, grid.n_theta, grid.n_phi, 1)
-        ).astype(np.float32, copy=False)
+        polarity = pad_field(polarity_flat.reshape(grid.n_r, grid.n_theta, grid.n_phi, 1)).astype(
+            np.float32, copy=False
+        )
     return QPerpVolume(grid=grid, log_q_perp=pad_field(grid_values), polarity=polarity)
 
 
@@ -453,14 +453,26 @@ def build_volume_reference(
         from qorona.squashing import compute_squashing
 
         return compute_squashing(
-            field, chunk, rtol=rtol, cfl=cfl, max_steps=max_steps, max_reversals=max_reversals,
-            turn_guard=turn_guard, device=device, precision=precision, show_progress=False,
+            field,
+            chunk,
+            rtol=rtol,
+            cfl=cfl,
+            max_steps=max_steps,
+            max_reversals=max_reversals,
+            turn_guard=turn_guard,
+            device=device,
+            precision=precision,
+            show_progress=False,
         ).q_perp
 
     q_perp = np.empty(nodes.shape[0])
     for start, stop, chunk_q in _stream_chunks(
-        nodes, squash, chunk_size=chunk_size, batch=_stream_batch(device),
-        label="Building Q⊥ volume (reference)", show_progress=show_progress,
+        nodes,
+        squash,
+        chunk_size=chunk_size,
+        batch=_stream_batch(device),
+        label="Building Q⊥ volume (reference)",
+        show_progress=show_progress,
     ):
         q_perp[start:stop] = chunk_q
 
@@ -565,13 +577,25 @@ def _build_boundary_map(
         from qorona.squashing import compute_squashing
 
         return compute_squashing(
-            field, chunk, rtol=rtol, cfl=cfl, max_steps=max_steps, max_reversals=max_reversals,
-            turn_guard=turn_guard, device=device, precision=precision, show_progress=False,
+            field,
+            chunk,
+            rtol=rtol,
+            cfl=cfl,
+            max_steps=max_steps,
+            max_reversals=max_reversals,
+            turn_guard=turn_guard,
+            device=device,
+            precision=precision,
+            show_progress=False,
         ).q_perp
 
     q_perp = np.empty(seeds.shape[0])
     for start, stop, chunk_q in _stream_chunks(
-        seeds, squash, chunk_size=chunk_size, batch=_stream_batch(device), label=label,
+        seeds,
+        squash,
+        chunk_size=chunk_size,
+        batch=_stream_batch(device),
+        label=label,
         show_progress=show_progress,
     ):
         q_perp[start:stop] = chunk_q
@@ -602,15 +626,35 @@ def _build_boundary_maps(
     """
     n_theta_b, n_phi_b = (supersample * n for n in _reference_angular_resolution(field, grid))
     inner_map = _build_boundary_map(
-        field, float(grid.radii[0]), n_theta_b, n_phi_b, rtol=rtol, cfl=cfl, max_steps=max_steps,
-        max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size, device=device,
-        precision=precision, show_progress=show_progress,
+        field,
+        float(grid.radii[0]),
+        n_theta_b,
+        n_phi_b,
+        rtol=rtol,
+        cfl=cfl,
+        max_steps=max_steps,
+        max_reversals=max_reversals,
+        turn_guard=turn_guard,
+        chunk_size=chunk_size,
+        device=device,
+        precision=precision,
+        show_progress=show_progress,
         label=f"Precomputing inner-boundary Q⊥ ({n_theta_b}x{n_phi_b})",
     )
     outer_map = _build_boundary_map(
-        field, float(grid.radii[-1]), n_theta_b, n_phi_b, rtol=rtol, cfl=cfl, max_steps=max_steps,
-        max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size, device=device,
-        precision=precision, show_progress=show_progress,
+        field,
+        float(grid.radii[-1]),
+        n_theta_b,
+        n_phi_b,
+        rtol=rtol,
+        cfl=cfl,
+        max_steps=max_steps,
+        max_reversals=max_reversals,
+        turn_guard=turn_guard,
+        chunk_size=chunk_size,
+        device=device,
+        precision=precision,
+        show_progress=show_progress,
         label=f"Precomputing outer-boundary Q⊥ ({n_theta_b}x{n_phi_b})",
     )
     return inner_map, outer_map, n_theta_b, n_phi_b
@@ -801,17 +845,34 @@ def build_volume_per_voxel(
         field, grid, paint=False, device=device, precision=precision, show_progress=show_progress
     )
     inner_map, outer_map, n_theta_b, n_phi_b = _build_boundary_maps(
-        field, grid, supersample, rtol=rtol, cfl=cfl, max_steps=max_steps,
-        max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size, device=device,
-        precision=precision, show_progress=show_progress,
+        field,
+        grid,
+        supersample,
+        rtol=rtol,
+        cfl=cfl,
+        max_steps=max_steps,
+        max_reversals=max_reversals,
+        turn_guard=turn_guard,
+        chunk_size=chunk_size,
+        device=device,
+        precision=precision,
+        show_progress=show_progress,
     )
 
     # The interior trace is the cost; the per-foot boundary lookup + linear-Q combine are cheap and
     # stay here, per chunk, so the boundary maps are never shipped into the kernel.
     def trace(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         lines = trace_field_lines(
-            field, chunk, rtol=rtol, cfl=cfl, max_steps=max_steps, max_reversals=max_reversals,
-            turn_guard=turn_guard, device=device, precision=precision, show_progress=False,
+            field,
+            chunk,
+            rtol=rtol,
+            cfl=cfl,
+            max_steps=max_steps,
+            max_reversals=max_reversals,
+            turn_guard=turn_guard,
+            device=device,
+            precision=precision,
+            show_progress=False,
         )
         return lines.feet, lines.ends
 
@@ -819,8 +880,12 @@ def build_volume_per_voxel(
     log_q = np.empty(nodes.shape[0])
     polarity = np.empty(nodes.shape[0])
     for start, stop, feet_ends in _stream_chunks(
-        nodes, trace, chunk_size=chunk_size, batch=_stream_batch(device),
-        label="Filling Q⊥ volume interior (trace to boundaries)", show_progress=show_progress,
+        nodes,
+        trace,
+        chunk_size=chunk_size,
+        batch=_stream_batch(device),
+        label="Filling Q⊥ volume interior (trace to boundaries)",
+        show_progress=show_progress,
     ):
         feet, ends = feet_ends
         foot_log_q = _lookup_feet(feet, ends, inner_map, outer_map)
@@ -931,8 +996,15 @@ def _paint_lines_numpy(
         for start in range(0, n, batch):
             stop = min(start + batch, n)
             lines = trace_field_lines(
-                field, seeds[start:stop], rtol=rtol, cfl=cfl, max_steps=max_steps,
-                max_reversals=max_reversals, turn_guard=turn_guard, device=device, store_path=True,
+                field,
+                seeds[start:stop],
+                rtol=rtol,
+                cfl=cfl,
+                max_steps=max_steps,
+                max_reversals=max_reversals,
+                turn_guard=turn_guard,
+                device=device,
+                store_path=True,
                 show_progress=False,
             )
             values = _combine_feet(_lookup_feet(lines.feet, lines.ends, inner_map, outer_map))
@@ -996,9 +1068,23 @@ def _paint_lines_jit(
     if use_gpu:
         # GPU: trace + on-device atomic scatter into tiled f64 accumulators.
         return _paint_lines_cuda(
-            seeds, values, polarities, jit_field, jit_grid, atol, max_deposits,
-            sum_q=sum_q, count=count, sum_pol=sum_pol, paint_step=paint_step, rtol=rtol, cfl=cfl,
-            max_steps=max_steps, chunk_size=chunk_size, device=device, precision=precision,
+            seeds,
+            values,
+            polarities,
+            jit_field,
+            jit_grid,
+            atol,
+            max_deposits,
+            sum_q=sum_q,
+            count=count,
+            sum_pol=sum_pol,
+            paint_step=paint_step,
+            rtol=rtol,
+            cfl=cfl,
+            max_steps=max_steps,
+            chunk_size=chunk_size,
+            device=device,
+            precision=precision,
             show_progress=show_progress,
         )
 
@@ -1017,8 +1103,14 @@ def _paint_lines_jit(
             voxels, counts, overflow = paint_batch(
                 np.ascontiguousarray(seeds[start:stop]),
                 np.ascontiguousarray(chunk_valid),
-                jit_field, jit_grid, atol, float(rtol), float(cfl), int(max_steps),
-                float(paint_step), int(max_deposits),
+                jit_field,
+                jit_grid,
+                atol,
+                float(rtol),
+                float(cfl),
+                int(max_steps),
+                float(paint_step),
+                int(max_deposits),
             )
             # Flatten the deduped per-line deposits and add each line's value once per swept voxel.
             selected = deposit_slot[None, :] < counts[:, None]
@@ -1128,8 +1220,15 @@ def _paint_lines_cuda(
             if t > 0 and replay:
                 for start, stop, flat, offsets in runs:
                     scatter_runs_cuda(
-                        flat, offsets, line_q_all[start:stop], line_pol_all[start:stop],
-                        d_sum_q, d_count, d_sum_pol, int(lo), int(hi),
+                        flat,
+                        offsets,
+                        line_q_all[start:stop],
+                        line_pol_all[start:stop],
+                        d_sum_q,
+                        d_count,
+                        d_sum_pol,
+                        int(lo),
+                        int(hi),
                     )
                     progress(t * n + stop)
             else:
@@ -1144,12 +1243,24 @@ def _paint_lines_cuda(
                         np.ascontiguousarray(valid_all[start:stop]),
                         np.ascontiguousarray(line_q_all[start:stop]),
                         np.ascontiguousarray(line_pol_all[start:stop]),
-                        jit_field, jit_grid, atol, float(rtol), float(cfl), int(max_steps),
-                        float(paint_step), int(max_deposits),
+                        jit_field,
+                        jit_grid,
+                        atol,
+                        float(rtol),
+                        float(cfl),
+                        int(max_steps),
+                        float(paint_step),
+                        int(max_deposits),
                     )
                     if t == 0 and replay:
                         overflow, flat, offsets = paint_scatter_collect_batch_cuda(
-                            *chunk_args, d_sum_q, d_count, d_sum_pol, int(lo), int(hi), d_bpad,
+                            *chunk_args,
+                            d_sum_q,
+                            d_count,
+                            d_sum_pol,
+                            int(lo),
+                            int(hi),
+                            d_bpad,
                             precision=precision,
                         )
                         runs.append((start, stop, flat, offsets))
@@ -1161,7 +1272,13 @@ def _paint_lines_cuda(
                                 runs.clear()
                     else:
                         overflow = paint_and_scatter_batch_cuda(
-                            *chunk_args, d_sum_q, d_count, d_sum_pol, int(lo), int(hi), d_bpad,
+                            *chunk_args,
+                            d_sum_q,
+                            d_count,
+                            d_sum_pol,
+                            int(lo),
+                            int(hi),
+                            d_bpad,
                             precision=precision,
                         )
                     if t == 0:
@@ -1285,9 +1402,18 @@ def build_volume_paint(
     )
     stage_start = time.perf_counter()
     inner_map, outer_map, n_theta_b, n_phi_b = _build_boundary_maps(
-        field, grid, supersample, rtol=rtol, cfl=cfl, max_steps=max_steps,
-        max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size, device=device,
-        precision=precision, show_progress=show_progress,
+        field,
+        grid,
+        supersample,
+        rtol=rtol,
+        cfl=cfl,
+        max_steps=max_steps,
+        max_reversals=max_reversals,
+        turn_guard=turn_guard,
+        chunk_size=chunk_size,
+        device=device,
+        precision=precision,
+        show_progress=show_progress,
     )
     if timings is not None:
         timings["boundary"] = time.perf_counter() - stage_start
@@ -1318,8 +1444,16 @@ def build_volume_paint(
 
         def trace_values(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
             lines = trace_field_lines(
-                field, chunk, rtol=rtol, cfl=cfl, max_steps=max_steps, max_reversals=max_reversals,
-                turn_guard=turn_guard, device=device, precision=precision, show_progress=False,
+                field,
+                chunk,
+                rtol=rtol,
+                cfl=cfl,
+                max_steps=max_steps,
+                max_reversals=max_reversals,
+                turn_guard=turn_guard,
+                device=device,
+                precision=precision,
+                show_progress=False,
             )
             null = lines.is_null
             stalled = lines.is_stalled
@@ -1340,8 +1474,12 @@ def build_volume_paint(
 
         stage_start = time.perf_counter()
         for start, stop, (chunk_values, chunk_polarity) in _stream_chunks(
-            seeds, trace_values, chunk_size=chunk_size, batch=_stream_batch(device),
-            label="Tracing field lines for Q⊥ values", show_progress=show_progress,
+            seeds,
+            trace_values,
+            chunk_size=chunk_size,
+            batch=_stream_batch(device),
+            label="Tracing field lines for Q⊥ values",
+            show_progress=show_progress,
         ):
             values[start:stop] = chunk_values
             polarities[start:stop] = chunk_polarity
@@ -1355,19 +1493,45 @@ def build_volume_paint(
             )
         stage_start = time.perf_counter()
         painted_lines = _paint_lines_jit(
-            field, seeds, grid, values, polarities, paint_step=paint_step, sum_q=sum_q,
-            count=count, sum_pol=sum_pol, rtol=rtol, cfl=cfl, max_steps=max_steps,
-            chunk_size=chunk_size, device=device, precision=precision,
+            field,
+            seeds,
+            grid,
+            values,
+            polarities,
+            paint_step=paint_step,
+            sum_q=sum_q,
+            count=count,
+            sum_pol=sum_pol,
+            rtol=rtol,
+            cfl=cfl,
+            max_steps=max_steps,
+            chunk_size=chunk_size,
+            device=device,
+            precision=precision,
             show_progress=show_progress,
         )
         if timings is not None:
             timings["paint"] = time.perf_counter() - stage_start
     else:
         painted_lines = _paint_lines_numpy(
-            field, seeds, grid, inner_map, outer_map, paint_step=paint_step, closed=closed,
-            sum_q=sum_q, count=count, sum_pol=sum_pol, rtol=rtol, cfl=cfl, max_steps=max_steps,
-            max_reversals=max_reversals, turn_guard=turn_guard, chunk_size=chunk_size,
-            device=device, show_progress=show_progress,
+            field,
+            seeds,
+            grid,
+            inner_map,
+            outer_map,
+            paint_step=paint_step,
+            closed=closed,
+            sum_q=sum_q,
+            count=count,
+            sum_pol=sum_pol,
+            rtol=rtol,
+            cfl=cfl,
+            max_steps=max_steps,
+            max_reversals=max_reversals,
+            turn_guard=turn_guard,
+            chunk_size=chunk_size,
+            device=device,
+            show_progress=show_progress,
         )
 
     # In-place finalize to bound host memory at very high resolution: with hundreds of millions of

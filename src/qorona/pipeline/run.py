@@ -374,9 +374,7 @@ def export_lines(
 
     apply_workers(export_cfg.workers)
     radius = (
-        export_cfg.seed_radius
-        if export_cfg.seed_radius is not None
-        else field.domain.inner_radius
+        export_cfg.seed_radius if export_cfg.seed_radius is not None else field.domain.inner_radius
     )
     seeds = lonlat_seeds(radius, n_theta=export_cfg.n_theta, n_phi=export_cfg.n_phi)
     return trace_field_lines(
@@ -466,8 +464,12 @@ def run(cfg: RunConfig, *, show_progress: bool = True) -> RenderResult:
     field = build_field(cfg.input, cfg.grid, show_progress=show_progress)
     volume = build_volume(field, volume_cfg, cfg.grid, show_progress=show_progress)
     return render_volume(
-        volume, cfg.camera, cfg.weighting, render_cfg,
-        density=field.density, show_progress=show_progress,
+        volume,
+        cfg.camera,
+        cfg.weighting,
+        render_cfg,
+        density=field.density,
+        show_progress=show_progress,
     )
 
 
@@ -665,9 +667,7 @@ def export_provenance(
     ``metadata`` block.
     """
     seed_radius = (
-        export_cfg.seed_radius
-        if export_cfg.seed_radius is not None
-        else field.domain.inner_radius
+        export_cfg.seed_radius if export_cfg.seed_radius is not None else field.domain.inner_radius
     )
     return {
         "version": __version__,

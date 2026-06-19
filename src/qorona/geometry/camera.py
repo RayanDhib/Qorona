@@ -115,9 +115,7 @@ class OrthographicCamera:
             As on :class:`OrthographicCamera`.
         """
         lon, lat = np.deg2rad(longitude), np.deg2rad(latitude)
-        look = np.array(
-            [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)]
-        )
+        look = np.array([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)])
         return cls(look=look, up=np.array([0.0, 0.0, 1.0]), fov=fov, pixels=pixels, roll=roll)
 
     def _basis(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

@@ -658,9 +658,7 @@ def _foot_gap_f32(
 
 
 @cuda.jit(device=True, inline=True, fastmath=_FASTMATH)
-def _localize_foot_f32(
-    state: np.ndarray, coeff: np.ndarray, step: float, r_target: float
-) -> float:
+def _localize_foot_f32(state: np.ndarray, coeff: np.ndarray, step: float, r_target: float) -> float:
     """float32 :func:`_localize_foot`: bisection of ``|x(theta)| = R`` over ``[0, 1]``."""
     tsq = r_target * r_target
     low = float32(0.0)
@@ -697,9 +695,25 @@ def _eval_rhs_3_full(
     """float32 position-only RHS: f32 unit field into ``out[3]`` (value-only f32 tricubic)."""
     b = cuda.local.array(3, float64)
     grad_b = cuda.local.array((3, 3), float64)
-    bmag = _sample_point_f32(kind, b_padded, n_r, n_theta, n_phi, spacing_code, r_inner, r_outer,
-                             exponent, moment, background, float64(state[0]), float64(state[1]),
-                             float64(state[2]), False, b, grad_b)
+    bmag = _sample_point_f32(
+        kind,
+        b_padded,
+        n_r,
+        n_theta,
+        n_phi,
+        spacing_code,
+        r_inner,
+        r_outer,
+        exponent,
+        moment,
+        background,
+        float64(state[0]),
+        float64(state[1]),
+        float64(state[2]),
+        False,
+        b,
+        grad_b,
+    )
     d = float32(direction)
     inv = float32(1.0) / float32(bmag)
     out[0] = d * float32(b[0]) * inv
@@ -738,15 +752,43 @@ def _dopri5_step_3_full(
             for j in range(stage):
                 inc += _A_F32[stage, j] * stages[j, k]
             tmp[k] = state[k] + step * inc
-        _eval_rhs_3_full(stages[stage], tmp, direction, kind, b_padded, n_r, n_theta, n_phi,
-                         spacing_code, r_inner, r_outer, exponent, moment, background)
+        _eval_rhs_3_full(
+            stages[stage],
+            tmp,
+            direction,
+            kind,
+            b_padded,
+            n_r,
+            n_theta,
+            n_phi,
+            spacing_code,
+            r_inner,
+            r_outer,
+            exponent,
+            moment,
+            background,
+        )
     for k in range(3):
         acc = float32(0.0)
         for j in range(6):
             acc += _B_F32[j] * stages[j, k]
         new_state[k] = state[k] + step * acc
-    _eval_rhs_3_full(stages[6], new_state, direction, kind, b_padded, n_r, n_theta, n_phi,
-                     spacing_code, r_inner, r_outer, exponent, moment, background)
+    _eval_rhs_3_full(
+        stages[6],
+        new_state,
+        direction,
+        kind,
+        b_padded,
+        n_r,
+        n_theta,
+        n_phi,
+        spacing_code,
+        r_inner,
+        r_outer,
+        exponent,
+        moment,
+        background,
+    )
     for k in range(3):
         acc = float32(0.0)
         for j in range(7):
@@ -755,9 +797,7 @@ def _dopri5_step_3_full(
 
 
 @cuda.jit(device=True, inline=True, fastmath=_FASTMATH)
-def _foot_gap(
-    state: np.ndarray, coeff: np.ndarray, step: float, theta: float, tsq: float
-) -> float:
+def _foot_gap(state: np.ndarray, coeff: np.ndarray, step: float, theta: float, tsq: float) -> float:
     """``|x(theta)|^2 - R^2`` on the dense-output position interpolant (the foot root function)."""
     th2 = theta * theta
     th3 = th2 * theta
@@ -785,9 +825,7 @@ def _sign(value: float) -> float:
 
 
 @cuda.jit(device=True, inline=True, fastmath=_FASTMATH)
-def _localize_foot(
-    state: np.ndarray, coeff: np.ndarray, step: float, r_target: float
-) -> float:
+def _localize_foot(state: np.ndarray, coeff: np.ndarray, step: float, r_target: float) -> float:
     """Vectorless bisection of ``|x(theta)| = R`` over ``[0, 1]`` (the dense-output foot)."""
     tsq = r_target * r_target
     low = 0.0
@@ -853,9 +891,25 @@ def _make_integrate_line(sd: int, mixed: bool = False) -> tuple[Any, Any, Any]:
         """Write the unit-field RHS into ``out`` (position, +deviation block if ``transport``)."""
         b = cuda.local.array(3, float64)
         grad_b = cuda.local.array((3, 3), float64)
-        bmag = sample_point(kind, b_padded, n_r, n_theta, n_phi, spacing_code, r_inner, r_outer,
-                            exponent, moment, background, state[0], state[1], state[2],
-                            transport, b, grad_b)
+        bmag = sample_point(
+            kind,
+            b_padded,
+            n_r,
+            n_theta,
+            n_phi,
+            spacing_code,
+            r_inner,
+            r_outer,
+            exponent,
+            moment,
+            background,
+            state[0],
+            state[1],
+            state[2],
+            transport,
+            b,
+            grad_b,
+        )
         inv = 1.0 / bmag
         bhx = b[0] * inv
         bhy = b[1] * inv
@@ -911,15 +965,43 @@ def _make_integrate_line(sd: int, mixed: bool = False) -> tuple[Any, Any, Any]:
                 for j in range(stage):
                     inc += _A_D[stage, j] * stages[j, k]
                 tmp[k] = state[k] + step * inc
-            eval_rhs(stages[stage], tmp, direction, kind, b_padded, n_r, n_theta, n_phi,
-                     spacing_code, r_inner, r_outer, exponent, moment, background)
+            eval_rhs(
+                stages[stage],
+                tmp,
+                direction,
+                kind,
+                b_padded,
+                n_r,
+                n_theta,
+                n_phi,
+                spacing_code,
+                r_inner,
+                r_outer,
+                exponent,
+                moment,
+                background,
+            )
         for k in range(sd):
             acc = 0.0
             for j in range(6):
                 acc += _B_D[j] * stages[j, k]
             new_state[k] = state[k] + step * acc
-        eval_rhs(stages[6], new_state, direction, kind, b_padded, n_r, n_theta, n_phi,
-                 spacing_code, r_inner, r_outer, exponent, moment, background)
+        eval_rhs(
+            stages[6],
+            new_state,
+            direction,
+            kind,
+            b_padded,
+            n_r,
+            n_theta,
+            n_phi,
+            spacing_code,
+            r_inner,
+            r_outer,
+            exponent,
+            moment,
+            background,
+        )
         for k in range(sd):
             acc = 0.0
             for j in range(7):
@@ -966,11 +1048,37 @@ def _make_integrate_line(sd: int, mixed: bool = False) -> tuple[Any, Any, Any]:
         for k in range(sd):
             state[k] = state0[k]
         derivative = cuda.local.array(sd, float64)
-        eval_rhs(derivative, state, direction, kind, b_padded, n_r, n_theta, n_phi, spacing_code,
-                 r_inner, r_outer, exponent, moment, background)
+        eval_rhs(
+            derivative,
+            state,
+            direction,
+            kind,
+            b_padded,
+            n_r,
+            n_theta,
+            n_phi,
+            spacing_code,
+            r_inner,
+            r_outer,
+            exponent,
+            moment,
+            background,
+        )
 
-        step = cfl * _char_len(kind, char_const, spacing_code, r_inner, r_outer, exponent, n_r,
-                               n_theta, n_phi, state[0], state[1], state[2])
+        step = cfl * _char_len(
+            kind,
+            char_const,
+            spacing_code,
+            r_inner,
+            r_outer,
+            exponent,
+            n_r,
+            n_theta,
+            n_phi,
+            state[0],
+            state[1],
+            state[2],
+        )
         err_prev = _ERR_PREV_FLOOR
         rejected_last = False
         arc_length = 0.0
@@ -994,13 +1102,42 @@ def _make_integrate_line(sd: int, mixed: bool = False) -> tuple[Any, Any, Any]:
             if not finite:
                 return _NULL, arc_length
 
-            ceiling = cfl * _char_len(kind, char_const, spacing_code, r_inner, r_outer, exponent,
-                                      n_r, n_theta, n_phi, state[0], state[1], state[2])
+            ceiling = cfl * _char_len(
+                kind,
+                char_const,
+                spacing_code,
+                r_inner,
+                r_outer,
+                exponent,
+                n_r,
+                n_theta,
+                n_phi,
+                state[0],
+                state[1],
+                state[2],
+            )
             step_now = step if step < ceiling else ceiling
 
-            dopri5_step(stages, new_state, error, state, derivative, step_now, direction, kind,
-                        b_padded, n_r, n_theta, n_phi, spacing_code, r_inner, r_outer, exponent,
-                        moment, background)
+            dopri5_step(
+                stages,
+                new_state,
+                error,
+                state,
+                derivative,
+                step_now,
+                direction,
+                kind,
+                b_padded,
+                n_r,
+                n_theta,
+                n_phi,
+                spacing_code,
+                r_inner,
+                r_outer,
+                exponent,
+                moment,
+                background,
+            )
 
             sq_sum = 0.0
             for k in range(sd):
@@ -1045,10 +1182,25 @@ def _make_integrate_line(sd: int, mixed: bool = False) -> tuple[Any, Any, Any]:
                     # rare corner passing the cheap turn and radius tests; takes precedence over the
                     # stall count when a step trips both.
                     if weak_threshold > 0.0 and dot < turn_cos and end_radius > turn_radius:
-                        bmag = sample_point(kind, b_padded, n_r, n_theta, n_phi, spacing_code,
-                                            r_inner, r_outer, exponent, moment, background,
-                                            new_state[0], new_state[1], new_state[2], False,
-                                            b_turn, grad_turn)
+                        bmag = sample_point(
+                            kind,
+                            b_padded,
+                            n_r,
+                            n_theta,
+                            n_phi,
+                            spacing_code,
+                            r_inner,
+                            r_outer,
+                            exponent,
+                            moment,
+                            background,
+                            new_state[0],
+                            new_state[1],
+                            new_state[2],
+                            False,
+                            b_turn,
+                            grad_turn,
+                        )
                         if bmag < weak_threshold:
                             n_turns += 1
                             if n_turns >= turn_min:
@@ -1162,9 +1314,31 @@ def _make_batch_kernel(integrate_line: Any, sd: int) -> Any:
         for k in range(sd):
             out[k] = math.nan
         code, length = integrate_line(
-            state0[i], directions[i], kind, b_padded, n_r, n_theta, n_phi, spacing_code, r_inner,
-            r_outer, exponent, moment, background, char_const, atol, rtol, cfl, max_steps,
-            max_reversals, turn_cos, turn_radius, weak_threshold, turn_min, out)
+            state0[i],
+            directions[i],
+            kind,
+            b_padded,
+            n_r,
+            n_theta,
+            n_phi,
+            spacing_code,
+            r_inner,
+            r_outer,
+            exponent,
+            moment,
+            background,
+            char_const,
+            atol,
+            rtol,
+            cfl,
+            max_steps,
+            max_reversals,
+            turn_cos,
+            turn_radius,
+            weak_threshold,
+            turn_min,
+            out,
+        )
         for k in range(sd):
             terminal_state[i, k] = out[k]
         ends[i] = code
@@ -1256,12 +1430,34 @@ def integrate_batch_cuda(
     else:
         kernel = _integrate_batch_kernel_3m if mixed else _integrate_batch_kernel_3
     kernel[blocks, _THREADS_PER_BLOCK](
-        d_state0, d_active, d_dirs, d_bpad, int(jit_field.kind), int(jit_field.n_r),
-        int(jit_field.n_theta), int(jit_field.n_phi), int(jit_field.spacing_code),
-        float(jit_field.r_inner), float(jit_field.r_outer), float(jit_field.exponent),
-        float(jit_field.moment), float(jit_field.background), float(jit_field.char_const),
-        d_atol, float(rtol), float(cfl), int(max_steps), int(max_reversals), float(turn_cos),
-        float(turn_radius), float(weak_threshold), int(turn_min), d_terminal, d_ends, d_lengths)
+        d_state0,
+        d_active,
+        d_dirs,
+        d_bpad,
+        int(jit_field.kind),
+        int(jit_field.n_r),
+        int(jit_field.n_theta),
+        int(jit_field.n_phi),
+        int(jit_field.spacing_code),
+        float(jit_field.r_inner),
+        float(jit_field.r_outer),
+        float(jit_field.exponent),
+        float(jit_field.moment),
+        float(jit_field.background),
+        float(jit_field.char_const),
+        d_atol,
+        float(rtol),
+        float(cfl),
+        int(max_steps),
+        int(max_reversals),
+        float(turn_cos),
+        float(turn_radius),
+        float(weak_threshold),
+        int(turn_min),
+        d_terminal,
+        d_ends,
+        d_lengths,
+    )
     return (d_terminal.copy_to_host(), d_ends.copy_to_host(), d_lengths.copy_to_host())
 
 
@@ -1515,11 +1711,37 @@ def _make_paint_half_line(
         for k in range(3):
             state[k] = seed[k]
         derivative = cuda.local.array(3, real)
-        eval_rhs(derivative, state, direction, kind, b_padded, n_r, n_theta, n_phi, spacing_code,
-                 r_inner, r_outer, exponent, moment, background)
+        eval_rhs(
+            derivative,
+            state,
+            direction,
+            kind,
+            b_padded,
+            n_r,
+            n_theta,
+            n_phi,
+            spacing_code,
+            r_inner,
+            r_outer,
+            exponent,
+            moment,
+            background,
+        )
 
-        step = cfl * char_len(kind, char_const, spacing_code, r_inner, r_outer, exponent, n_r,
-                              n_theta, n_phi, state[0], state[1], state[2])
+        step = cfl * char_len(
+            kind,
+            char_const,
+            spacing_code,
+            r_inner,
+            r_outer,
+            exponent,
+            n_r,
+            n_theta,
+            n_phi,
+            state[0],
+            state[1],
+            state[2],
+        )
         err_prev = _ERR_PREV_FLOOR
         rejected_last = False
 
@@ -1539,12 +1761,41 @@ def _make_paint_half_line(
             if not finite:
                 return count, last_flat, False
 
-            ceiling = cfl * char_len(kind, char_const, spacing_code, r_inner, r_outer, exponent,
-                                     n_r, n_theta, n_phi, state[0], state[1], state[2])
+            ceiling = cfl * char_len(
+                kind,
+                char_const,
+                spacing_code,
+                r_inner,
+                r_outer,
+                exponent,
+                n_r,
+                n_theta,
+                n_phi,
+                state[0],
+                state[1],
+                state[2],
+            )
             step_now = step if step < ceiling else ceiling
-            dopri5_step(stages, new_state, error, state, derivative, step_now, direction, kind,
-                        b_padded, n_r, n_theta, n_phi, spacing_code, r_inner, r_outer, exponent,
-                        moment, background)
+            dopri5_step(
+                stages,
+                new_state,
+                error,
+                state,
+                derivative,
+                step_now,
+                direction,
+                kind,
+                b_padded,
+                n_r,
+                n_theta,
+                n_phi,
+                spacing_code,
+                r_inner,
+                r_outer,
+                exponent,
+                moment,
+                background,
+            )
 
             sq_sum = 0.0
             for k in range(3):
@@ -1592,10 +1843,30 @@ def _make_paint_half_line(
                 # region where the volume cell shrinks (toward the inner boundary or a pole) still
                 # sub-samples finely enough not to skip a voxel.
                 dense_position(state, coeff, step_now, theta_end, point)
-                extent = vol_cell_extent(vn_r, vn_theta, vn_phi, vspacing, vr_inner, vr_outer,
-                                         vexp, state[0], state[1], state[2])
-                extent_end = vol_cell_extent(vn_r, vn_theta, vn_phi, vspacing, vr_inner, vr_outer,
-                                             vexp, point[0], point[1], point[2])
+                extent = vol_cell_extent(
+                    vn_r,
+                    vn_theta,
+                    vn_phi,
+                    vspacing,
+                    vr_inner,
+                    vr_outer,
+                    vexp,
+                    state[0],
+                    state[1],
+                    state[2],
+                )
+                extent_end = vol_cell_extent(
+                    vn_r,
+                    vn_theta,
+                    vn_phi,
+                    vspacing,
+                    vr_inner,
+                    vr_outer,
+                    vexp,
+                    point[0],
+                    point[1],
+                    point[2],
+                )
                 if extent_end < extent:
                     extent = extent_end
                 pitch = paint_step * extent
@@ -1603,8 +1874,18 @@ def _make_paint_half_line(
                 n_sub = int(arc / pitch) + 1 if pitch > 0.0 else 1
                 for j in range(1, n_sub + 1):
                     dense_position(state, coeff, step_now, (j / n_sub) * theta_end, point)
-                    flat = vol_flat(vn_r, vn_theta, vn_phi, vspacing, vr_inner, vr_outer, vexp,
-                                    point[0], point[1], point[2])
+                    flat = vol_flat(
+                        vn_r,
+                        vn_theta,
+                        vn_phi,
+                        vspacing,
+                        vr_inner,
+                        vr_outer,
+                        vexp,
+                        point[0],
+                        point[1],
+                        point[2],
+                    )
                     if flat != last_flat:
                         if count >= max_deposits:
                             return count, last_flat, True
@@ -1649,9 +1930,15 @@ _paint_half_line = _make_paint_half_line(_eval_rhs_3, _dopri5_step_3)
 _paint_half_line_m = _make_paint_half_line(_eval_rhs_3m, _dopri5_step_3m)
 # Fully-float32 painter (precision="float32"): f32 scratch + f32 voxel rasterization.
 _paint_half_line_full = _make_paint_half_line(
-    _eval_rhs_3_full, _dopri5_step_3_full, real=float32, char_len=_char_len_f32,
-    localize_foot=_localize_foot_f32, vol_cell_extent=_vol_cell_extent_f32, vol_flat=_vol_flat_f32,
-    dense_position=_dense_position_f32, dense_p=_DENSE_P_F32,
+    _eval_rhs_3_full,
+    _dopri5_step_3_full,
+    real=float32,
+    char_len=_char_len_f32,
+    localize_foot=_localize_foot_f32,
+    vol_cell_extent=_vol_cell_extent_f32,
+    vol_flat=_vol_flat_f32,
+    dense_position=_dense_position_f32,
+    dense_p=_DENSE_P_F32,
 )
 
 
@@ -1701,25 +1988,80 @@ def _make_paint_batch_kernel(paint_half_line: Any) -> Any:
         if i >= seeds.shape[0] or not valid[i]:
             return
         seed = seeds[i]
-        seed_flat = _vol_flat(vn_r, vn_theta, vn_phi, vspacing, vr_inner, vr_outer, vexp,
-                              seed[0], seed[1], seed[2])
+        seed_flat = _vol_flat(
+            vn_r, vn_theta, vn_phi, vspacing, vr_inner, vr_outer, vexp, seed[0], seed[1], seed[2]
+        )
         voxels[i, 0] = seed_flat
         count = 1
         # Both half-lines start at the seed voxel, so each dedups its first samples against it; the
         # seed is therefore deposited exactly once. The two halves diverge to opposite feet, so no
         # cross-half dedup is needed.
         count, _, overflow_back = paint_half_line(
-            seed, -1.0, kind, b_padded, n_r, n_theta, n_phi, spacing_code, r_inner, r_outer,
-            exponent, moment, background, char_const, vn_r, vn_theta, vn_phi, vspacing, vr_inner,
-            vr_outer, vexp, atol, rtol, cfl, max_steps, paint_step, voxels[i], count, seed_flat,
-            max_deposits)
+            seed,
+            -1.0,
+            kind,
+            b_padded,
+            n_r,
+            n_theta,
+            n_phi,
+            spacing_code,
+            r_inner,
+            r_outer,
+            exponent,
+            moment,
+            background,
+            char_const,
+            vn_r,
+            vn_theta,
+            vn_phi,
+            vspacing,
+            vr_inner,
+            vr_outer,
+            vexp,
+            atol,
+            rtol,
+            cfl,
+            max_steps,
+            paint_step,
+            voxels[i],
+            count,
+            seed_flat,
+            max_deposits,
+        )
         overflow_forward = False
         if not overflow_back:
             count, _, overflow_forward = paint_half_line(
-                seed, 1.0, kind, b_padded, n_r, n_theta, n_phi, spacing_code, r_inner, r_outer,
-                exponent, moment, background, char_const, vn_r, vn_theta, vn_phi, vspacing,
-                vr_inner, vr_outer, vexp, atol, rtol, cfl, max_steps, paint_step, voxels[i], count,
-                seed_flat, max_deposits)
+                seed,
+                1.0,
+                kind,
+                b_padded,
+                n_r,
+                n_theta,
+                n_phi,
+                spacing_code,
+                r_inner,
+                r_outer,
+                exponent,
+                moment,
+                background,
+                char_const,
+                vn_r,
+                vn_theta,
+                vn_phi,
+                vspacing,
+                vr_inner,
+                vr_outer,
+                vexp,
+                atol,
+                rtol,
+                cfl,
+                max_steps,
+                paint_step,
+                voxels[i],
+                count,
+                seed_flat,
+                max_deposits,
+            )
         counts[i] = count
         overflow[i] = overflow_back or overflow_forward
 
@@ -1779,14 +2121,37 @@ def _launch_paint(
     blocks = (n + _THREADS_PER_BLOCK - 1) // _THREADS_PER_BLOCK
     paint_kernel = _select_paint_kernel(precision)
     paint_kernel[blocks, _THREADS_PER_BLOCK](
-        d_seeds, d_valid, d_bpad, int(jit_field.kind), int(jit_field.n_r), int(jit_field.n_theta),
-        int(jit_field.n_phi), int(jit_field.spacing_code), float(jit_field.r_inner),
-        float(jit_field.r_outer), float(jit_field.exponent), float(jit_field.moment),
-        float(jit_field.background), float(jit_field.char_const), int(jit_grid.n_r),
-        int(jit_grid.n_theta), int(jit_grid.n_phi), int(jit_grid.spacing_code),
-        float(jit_grid.r_inner), float(jit_grid.r_outer), float(jit_grid.exponent), d_atol,
-        float(rtol), float(cfl), int(max_steps), float(paint_step), int(max_deposits), d_voxels,
-        d_counts, d_overflow)
+        d_seeds,
+        d_valid,
+        d_bpad,
+        int(jit_field.kind),
+        int(jit_field.n_r),
+        int(jit_field.n_theta),
+        int(jit_field.n_phi),
+        int(jit_field.spacing_code),
+        float(jit_field.r_inner),
+        float(jit_field.r_outer),
+        float(jit_field.exponent),
+        float(jit_field.moment),
+        float(jit_field.background),
+        float(jit_field.char_const),
+        int(jit_grid.n_r),
+        int(jit_grid.n_theta),
+        int(jit_grid.n_phi),
+        int(jit_grid.spacing_code),
+        float(jit_grid.r_inner),
+        float(jit_grid.r_outer),
+        float(jit_grid.exponent),
+        d_atol,
+        float(rtol),
+        float(cfl),
+        int(max_steps),
+        float(paint_step),
+        int(max_deposits),
+        d_voxels,
+        d_counts,
+        d_overflow,
+    )
     return d_voxels, d_counts, d_overflow, blocks
 
 
@@ -1843,8 +2208,18 @@ def paint_batch_cuda(
         shapes/semantics as :func:`paint_batch_jit`, so the host reads ``voxels[i, :counts[i]]``.
     """
     d_voxels, d_counts, d_overflow, _ = _launch_paint(
-        seeds, valid, jit_field, jit_grid, atol, rtol, cfl, max_steps, paint_step, max_deposits,
-        precision, None,
+        seeds,
+        valid,
+        jit_field,
+        jit_grid,
+        atol,
+        rtol,
+        cfl,
+        max_steps,
+        paint_step,
+        max_deposits,
+        precision,
+        None,
     )
     return (d_voxels.copy_to_host(), d_counts.copy_to_host(), d_overflow.copy_to_host())
 
@@ -1917,15 +2292,34 @@ def paint_and_scatter_batch_cuda(
     line count (for the per-line voxel-cap warning).
     """
     d_voxels, d_counts, d_overflow, blocks = _launch_paint(
-        seeds, valid, jit_field, jit_grid, atol, rtol, cfl, max_steps, paint_step, max_deposits,
-        precision, d_bpad,
+        seeds,
+        valid,
+        jit_field,
+        jit_grid,
+        atol,
+        rtol,
+        cfl,
+        max_steps,
+        paint_step,
+        max_deposits,
+        precision,
+        d_bpad,
     )
     d_line_q = cuda.to_device(np.ascontiguousarray(line_q, dtype=np.float64))
     d_line_pol = cuda.to_device(np.ascontiguousarray(line_pol, dtype=np.float64))
     _scatter_batch_kernel[blocks, _THREADS_PER_BLOCK](
-        d_voxels, d_counts, d_line_q, d_line_pol, d_sum_q, d_count, d_sum_pol,
-        np.int64(tile_lo), np.int64(tile_hi))
+        d_voxels,
+        d_counts,
+        d_line_q,
+        d_line_pol,
+        d_sum_q,
+        d_count,
+        d_sum_pol,
+        np.int64(tile_lo),
+        np.int64(tile_hi),
+    )
     return int(d_overflow.copy_to_host().sum())
+
 
 @cuda.jit
 def _compact_runs_kernel(
@@ -2015,14 +2409,32 @@ def paint_scatter_collect_batch_cuda(
         ``flat[offsets[i]:offsets[i + 1]]``.
     """
     d_voxels, d_counts, d_overflow, blocks = _launch_paint(
-        seeds, valid, jit_field, jit_grid, atol, rtol, cfl, max_steps, paint_step, max_deposits,
-        precision, d_bpad,
+        seeds,
+        valid,
+        jit_field,
+        jit_grid,
+        atol,
+        rtol,
+        cfl,
+        max_steps,
+        paint_step,
+        max_deposits,
+        precision,
+        d_bpad,
     )
     d_line_q = cuda.to_device(np.ascontiguousarray(line_q, dtype=np.float64))
     d_line_pol = cuda.to_device(np.ascontiguousarray(line_pol, dtype=np.float64))
     _scatter_batch_kernel[blocks, _THREADS_PER_BLOCK](
-        d_voxels, d_counts, d_line_q, d_line_pol, d_sum_q, d_count, d_sum_pol,
-        np.int64(tile_lo), np.int64(tile_hi))
+        d_voxels,
+        d_counts,
+        d_line_q,
+        d_line_pol,
+        d_sum_q,
+        d_count,
+        d_sum_pol,
+        np.int64(tile_lo),
+        np.int64(tile_hi),
+    )
     counts = d_counts.copy_to_host()
     offsets = np.zeros(counts.shape[0] + 1, dtype=np.int64)
     np.cumsum(counts, out=offsets[1:])
@@ -2056,5 +2468,13 @@ def scatter_runs_cuda(
     d_line_pol = cuda.to_device(np.ascontiguousarray(line_pol, dtype=np.float64))
     blocks = (n + _THREADS_PER_BLOCK - 1) // _THREADS_PER_BLOCK
     _scatter_runs_kernel[blocks, _THREADS_PER_BLOCK](
-        d_flat, d_offsets, d_line_q, d_line_pol, d_sum_q, d_count, d_sum_pol,
-        np.int64(tile_lo), np.int64(tile_hi))
+        d_flat,
+        d_offsets,
+        d_line_q,
+        d_line_pol,
+        d_sum_q,
+        d_count,
+        d_sum_pol,
+        np.int64(tile_lo),
+        np.int64(tile_hi),
+    )

@@ -183,8 +183,14 @@ def render_field_lines(
 
     seeds, n_front = _build_seeds(seeding, n_seeds, limb_seeds, inner_radius, camera)
     lines = trace_field_lines(
-        field, seeds, rtol=rtol, cfl=cfl, max_steps=max_steps, turn_guard=turn_guard,
-        store_path=True, show_progress=show_progress,
+        field,
+        seeds,
+        rtol=rtol,
+        cfl=cfl,
+        max_steps=max_steps,
+        turn_guard=turn_guard,
+        store_path=True,
+        show_progress=show_progress,
     )
     assert lines.paths is not None  # store_path=True always populates paths
 
@@ -199,8 +205,13 @@ def render_field_lines(
             else _flat_disk(shape, camera, inner_radius)
         )
         image = _draw(
-            kept_paths, kept_colours, camera, disk_layer=disk,
-            outer_radius=outer_radius, line_width=line_width, depth_fade=depth_fade,
+            kept_paths,
+            kept_colours,
+            camera,
+            disk_layer=disk,
+            outer_radius=outer_radius,
+            line_width=line_width,
+            depth_fade=depth_fade,
         )
 
     return FieldLineImage(
@@ -276,8 +287,12 @@ def _show_mask(lines: FieldLines, show: str) -> np.ndarray:
 
 
 def _line_colours(
-    colour: str, field: Field, lines: FieldLines, keep: np.ndarray,
-    inner_radius: float, outer_radius: float,
+    colour: str,
+    field: Field,
+    lines: FieldLines,
+    keep: np.ndarray,
+    inner_radius: float,
+    outer_radius: float,
 ) -> np.ndarray:
     """Return the ``(n_kept, 3)`` draw colour for the kept lines, in kept order."""
     if colour == "rainbow":
@@ -466,8 +481,13 @@ def _rasterise(
         radius = max(1, int(np.ceil(half + 0.5)))
         for lo in range(0, n, _SEGMENT_CHUNK):
             _splat_chunk(
-                colour_acc, alpha_acc, _select(segments, slice(lo, lo + _SEGMENT_CHUNK)),
-                width, height, half, radius,
+                colour_acc,
+                alpha_acc,
+                _select(segments, slice(lo, lo + _SEGMENT_CHUNK)),
+                width,
+                height,
+                half,
+                radius,
             )
 
     # Renormalise where overlapping coverage pushed alpha past 1, keeping the premultiplied
