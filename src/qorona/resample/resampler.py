@@ -105,12 +105,23 @@ class KnnMlsResampler(Resampler):
     so all requested variables, which share the node geometry, hence the same design matrix and
     weights, are fit together. Moving least squares: Lancaster & Salkauskas (1981).
 
+    The stencil adapts to the source mesh. A fixed neighbour count spans a physical region that
+    shrinks as the mesh refines, so a finer input is fit too locally and the reconstruction ripples;
+    the effective ``k`` therefore scales with the cell count (``n_neighbors`` and
+    ``reference_cell_count``) to hold the fit support at a consistent physical size. Coarser meshes
+    floor to ``n_neighbors`` and resample unchanged.
+
     Parameters
     ----------
     n_neighbors
-        Stencil size ``k``: nearest cell centres per fit. Must exceed the four linear unknowns;
-        larger smooths more (and conditions better on the anisotropic near-r=1 cells), smaller is
-        sharper but noisier.
+        Minimum stencil size ``k``: nearest cell centres per fit, and the size used at or below
+        ``reference_cell_count``. The effective size scales up in proportion to the cell count on
+        finer meshes. Must exceed the four linear unknowns; larger smooths more (and conditions
+        better on the anisotropic near-r=1 cells), smaller is sharper but noisier.
+    reference_cell_count
+        Source cell count at which the stencil equals ``n_neighbors``. Calibrated to the standard
+        COCONUT corona mesh; a mesh with ``N`` times more cells uses about ``N * n_neighbors``
+        neighbours, holding the physical support fixed. Coarser meshes floor to ``n_neighbors``.
     ridge
         Tikhonov regularization added to each node's normal-equations diagonal (relative to its
         largest entry), keeping one-sided boundary and near-degenerate stencils solvable and
@@ -120,16 +131,31 @@ class KnnMlsResampler(Resampler):
     """
 
     def __init__(
-        self, *, n_neighbors: int = 24, ridge: float = 1.0e-8, chunk_size: int = 500_000
+        self,
+        *,
+        n_neighbors: int = 30,
+        reference_cell_count: int = 2_000_000,
+        ridge: float = 1.0e-8,
+        chunk_size: int = 500_000,
     ) -> None:
         if n_neighbors <= 4:
             raise ValueError(
                 f"n_neighbors must exceed the four linear unknowns (1 + 3 gradient), "
                 f"got {n_neighbors}"
             )
+        if reference_cell_count <= 0:
+            raise ValueError(f"reference_cell_count must be positive, got {reference_cell_count}")
         self.n_neighbors = n_neighbors
+        self.reference_cell_count = reference_cell_count
         self.ridge = ridge
         self.chunk_size = chunk_size
+
+    def _effective_neighbors(self, n_cells: int) -> int:
+        """Stencil size for a mesh of ``n_cells`` cells: ``n_neighbors`` scaled by the cell count
+        past ``reference_cell_count``, floored at ``n_neighbors`` and capped at the cell count, so
+        the fit support stays a fixed physical size as the mesh refines."""
+        scaled = round(self.n_neighbors * n_cells / self.reference_cell_count)
+        return max(self.n_neighbors, min(scaled, n_cells))
 
     def resample(
         self,
@@ -145,21 +171,29 @@ class KnnMlsResampler(Resampler):
         shape = node_field.shape[:3]
         nodes = node_field.reshape(-1, 3)
         n_nodes = nodes.shape[0]
+        k = self._effective_neighbors(cell_centers.shape[0])
 
         with status("Building cell-centre index", enabled=show_progress):
             tree = cKDTree(cell_centers)
 
         fitted = np.empty((n_nodes, len(variables)))
-        label = f"Resampling {len(variables)} variables (k-NN MLS)"
+        label = f"Resampling {len(variables)} variables (k-NN MLS, k={k})"
         with progress_bar(label, n_nodes, enabled=show_progress) as progress:
             for start in range(0, n_nodes, self.chunk_size):
                 stop = min(start + self.chunk_size, n_nodes)
-                fitted[start:stop] = self._fit_chunk(nodes[start:stop], tree, cell_centers, values)
+                fitted[start:stop] = self._fit_chunk(
+                    nodes[start:stop], tree, cell_centers, values, k
+                )
                 progress(stop)
         return {name: fitted[:, v].reshape(shape) for v, name in enumerate(variables)}
 
     def _fit_chunk(
-        self, nodes: np.ndarray, tree: cKDTree, cell_centers: np.ndarray, values: np.ndarray
+        self,
+        nodes: np.ndarray,
+        tree: cKDTree,
+        cell_centers: np.ndarray,
+        values: np.ndarray,
+        k: int,
     ) -> np.ndarray:
         """Fit the degree-1 MLS model at a chunk of nodes; return node values ``(m, n_vars)``.
 
@@ -169,7 +203,7 @@ class KnnMlsResampler(Resampler):
         reproducing the NumPy reference below to float64 round-off. Without numba the NumPy
         einsum path is used directly.
         """
-        distance, neighbor = tree.query(nodes, k=self.n_neighbors, workers=-1)
+        distance, neighbor = tree.query(nodes, k=k, workers=-1)
         if HAVE_NUMBA:
             from qorona.resample._mls_jit import fit_mls_chunk
 
@@ -182,7 +216,7 @@ class KnnMlsResampler(Resampler):
                 float(self.ridge),
             )
         offset = cell_centers[neighbor] - nodes[:, None, :]  # (m, k, 3), local coordinates
-        # Gaussian weights with a per-node bandwidth = mean neighbour distance (floored for safety).
+        # Gaussian weights with a per-node bandwidth = mean neighbour distance (floored above zero).
         bandwidth = np.maximum(distance.mean(axis=1, keepdims=True), 1.0e-30)
         weight = np.exp(-((distance / bandwidth) ** 2))  # (m, k)
         design = np.concatenate([np.ones((*distance.shape, 1)), offset], axis=2)  # (m, k, 4)

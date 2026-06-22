@@ -67,9 +67,9 @@ qorona build data/hmi_lmax50.CFmesh.xz -o data/hmi_lmax50.qor \
     --timestamp 2025-10-09T18:19:52 --outer-radius 8
 
 # 3. Render any number of viewpoints off that volume (seconds each).
-qorona render data/hmi_lmax50.qor -o data/eclipse.png --fov 8 --longitude 317
-qorona render data/hmi_lmax50.qor -o data/polarity.png --fov 8 --longitude 317 --polarity-mode hue
-qorona render data/hmi_lmax50.qor -o data/sun.png --fov 3 --longitude 317 --occult opaque --preset small-fov --step 0.002
+qorona render data/hmi_lmax50.qor -o data/eclipse.png --fov 8 --longitude 317 --latitude 6.2
+qorona render data/hmi_lmax50.qor -o data/polarity.png --fov 8 --longitude 317 --latitude 6.2 --polarity-mode hue
+qorona render data/hmi_lmax50.qor -o data/sun.png --fov 3 --longitude 317 --latitude 6.2 --occult opaque --preset small-fov --step 0.002
 ```
 
 Or do it all in one shot:
@@ -83,6 +83,15 @@ For a field-line view:
 
 ```bash
 qorona fieldlines data/hmi_lmax50.CFmesh.xz -o data/fieldlines.png --fov 8 --longitude 317
+```
+
+For a Q-map (a longitude/latitude shell of signed-log Q⊥ at a fixed radius, the
+viewpoint-independent sibling of `render`), bake with the outer radius at the map radius:
+
+```bash
+qorona build data/hmi_lmax50.CFmesh.xz -o data/hmi_lmax50_r3.qor \
+    --timestamp 2025-10-09T18:19:52 --outer-radius 3
+qorona qmap data/hmi_lmax50_r3.qor -o data/qmap.png --radius 3
 ```
 
 Every command prints a polished end-of-run summary of its parameters and metrics, and the rendered
