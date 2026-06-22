@@ -8,6 +8,6 @@ same reader interface.
 
 from qorona.io import NativeSolution, read_solution
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = ["NativeSolution", "__version__", "read_solution"]
