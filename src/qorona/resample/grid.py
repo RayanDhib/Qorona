@@ -211,8 +211,7 @@ class SphericalGrid:
         bound this same ``1/sinθ`` amplification), so it carries no independent azimuthal variation
         at that vanishing scale. The azimuthal arc is therefore bounded below by the meridional arc,
         so a near-pole line steps at the genuinely-resolved radial/meridional scale instead of
-        stalling against ``max_steps`` on a sub-cell the field never resolves. This only relaxes the
-        ceiling (the adaptive error control remains the accuracy guarantee).
+        stalling against ``max_steps`` on a sub-cell the field never resolves.
 
         Parameters
         ----------

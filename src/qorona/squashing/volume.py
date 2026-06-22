@@ -60,6 +60,7 @@ from qorona.accel import (
 from qorona.console import print_success, print_warning, progress_bar, status
 from qorona.field.base import Field
 from qorona.field.interpolation import tricubic
+from qorona.field.sampled import SampledField
 from qorona.geometry import cartesian_to_spherical, spherical_to_cartesian
 from qorona.resample.grid import GHOST, SphericalGrid, pad_field, pad_phi, pad_theta
 from qorona.trace import DEFAULT_TURN_GUARD, Endpoint, TurnGuard, trace_field_lines
@@ -72,6 +73,7 @@ __all__ = [
     "build_volume_paint",
     "build_volume_per_voxel",
     "build_volume_reference",
+    "radial_sign_on_grid",
 ]
 
 #: Upper bound on the points a single build call may hold, capping the peak memory of the per-call
@@ -90,11 +92,11 @@ _CHUNK_SIZE = 500_000
 #: _STREAM_BATCH)``, so a caller can still drop below it for tighter memory.
 _STREAM_BATCH = 25_000
 
-#: Seeds per GPU kernel launch: distinct from the CPU :data:`_STREAM_BATCH` (whose 25k is tuned for
-#: ``prange`` re-balancing, wrong for the GPU's per-launch + PCIe transfer cost). On the display-
-#: shared card the batch also bounds per-launch wall-time (so a long float64 launch cannot stutter
-#: the desktop); 100k balances the two against per-launch overhead. The effective GPU batch
-#: is ``min(chunk_size, _GPU_STREAM_BATCH)``.
+#: Seeds per GPU kernel launch, sized for the GPU's per-launch + PCIe transfer cost (the CPU
+#: :data:`_STREAM_BATCH` granularity does not apply here). On the display-shared card the batch
+#: also bounds per-launch wall-time (so a long float64 launch cannot stutter the desktop); 100k
+#: balances the two against per-launch overhead. The effective GPU batch is
+#: ``min(chunk_size, _GPU_STREAM_BATCH)``.
 _GPU_STREAM_BATCH = 100_000
 
 #: Relative radial margin by which boundary-touching seeds are pulled inside the shell before
@@ -154,11 +156,20 @@ class QPerpVolume:
         ``{-1, 0, +1}`` (outward / neutral-or-closed / inward). A
         viewpoint-independent boundary-to-boundary channel for colouring the
         render by polarity; ``None`` when built without it.
+    radial_sign
+        Optional ghost-padded local radial sign ``sign(B·r̂)`` in ``{-1, 0, +1}`` on
+        :attr:`radial_sign_grid`, signing the Q-map; ``None`` when absent. Distinct from
+        :attr:`polarity`, the footpoint sign used by the render.
+    radial_sign_grid
+        The grid :attr:`radial_sign` is stored on (the field grid, coarser than :attr:`grid`);
+        ``None`` when no radial-sign channel is present.
     """
 
     grid: SphericalGrid
     log_q_perp: np.ndarray
     polarity: np.ndarray | None = None
+    radial_sign: np.ndarray | None = None
+    radial_sign_grid: SphericalGrid | None = None
 
     def sample(self, points: np.ndarray) -> np.ndarray:
         """Return ``(n,)`` interpolated log₁₀ Q⊥ at ``points``; ``NaN`` outside the shell.
@@ -221,6 +232,29 @@ class QPerpVolume:
             values[inside] = self.polarity[i0, i1, i2, 0]
         return values
 
+    def sample_radial_sign(self, points: np.ndarray) -> np.ndarray:
+        """Return ``(n,)`` local radial-field sign at ``points``; ``NaN`` if absent.
+
+        The Q-map's signing companion to :meth:`sample`: the stored ``sign(B·r̂)`` is interpolated
+        on :attr:`radial_sign_grid` and re-signed, so the warm↔cool boundary resolves to a smooth
+        curve rather than in grid cells. ``NaN`` where no radial-sign channel is present or the
+        point is outside that grid's radial shell.
+        """
+        points = np.asarray(points, dtype=np.float64)
+        values = np.full(points.shape[0], np.nan)
+        if self.radial_sign is None or self.radial_sign_grid is None:
+            return values
+        grid = self.radial_sign_grid
+        radius = np.sqrt(np.sum(points * points, axis=-1))
+        inside = (radius >= grid.radii[0]) & (radius <= grid.radii[-1])
+        if inside.any():
+            index, _ = grid.index_coordinates(points[inside])
+            coords = index + GHOST
+            coords[:, 0] = np.clip(coords[:, 0], 1.0, self.radial_sign.shape[0] - 3)
+            interpolated, _ = tricubic(self.radial_sign, coords, gradient=False)
+            values[inside] = np.sign(interpolated[:, 0])
+        return values
+
 
 def _pack_volume(
     grid: SphericalGrid, log_q_flat: np.ndarray, polarity_flat: np.ndarray | None = None
@@ -239,6 +273,18 @@ def _pack_volume(
             np.float32, copy=False
         )
     return QPerpVolume(grid=grid, log_q_perp=pad_field(grid_values), polarity=polarity)
+
+
+def radial_sign_on_grid(field: SampledField) -> np.ndarray:
+    """Return per-node ``sign(B·r̂)`` on the field grid as int8 ``{-1, 0, +1}``.
+
+    B at each grid node dotted with the node's outward radial direction, read from the resampled
+    field. The local radial polarity that signs the Q-map, distinct from the footpoint
+    :attr:`QPerpVolume.polarity`.
+    """
+    nodes = field.grid.node_points()
+    radial = np.sum(field.b_at_nodes() * nodes, axis=-1)
+    return np.sign(radial).ravel().astype(np.int8)
 
 
 def _safe_log10(q_perp: np.ndarray) -> np.ndarray:
@@ -726,7 +772,7 @@ def _combine_polarity(
     The polarity of a line is the sign of ``B·r̂`` at its **inner** footpoint, the photospheric
     rooting the structures of interest carry, matching the field-line view's convention
     (``render/fieldlines.py``). B is sampled at the inner feet and *then* signed, so the smooth
-    field is interpolated (legitimate) rather than a discrete sign (which cannot be interpolated).
+    field is interpolated rather than a discrete sign (which cannot be interpolated).
 
     An open line has one inner foot → its sign. A closed loop has two inner feet of opposite
     polarity; ``closed="neutral"`` (the default) averages their signs to ``0`` (no single rooting
@@ -765,8 +811,7 @@ def _combine_polarity(
         chosen = b_radial[np.arange(b_radial.shape[0]), pick]
         return np.where(is_inner.any(axis=1), np.sign(chosen), 0.0)
     # Sign of the summed inner-foot signs: a single inner foot keeps its sign, a closed loop's two
-    # opposite feet cancel to 0 (neutral), and a line with no inner foot is 0: the same result as a
-    # mean-then-sign, but with no all-NaN row to provoke an empty-slice warning.
+    # opposite feet cancel to 0 (neutral), and a line with no inner foot is 0.
     sign_sum = np.where(is_inner, np.sign(b_radial), 0.0).sum(axis=1)
     return np.where(is_inner.any(axis=1), np.sign(sign_sum), 0.0)
 
@@ -1235,9 +1280,7 @@ def _paint_lines_cuda(
                 for start in range(0, n, paint_chunk):
                     stop = min(start + paint_chunk, n)
                     # Host-side chunk inputs only; the device accumulators and the staged field are
-                    # passed separately so no reference to them outlives the chunk call (a lingering
-                    # reference would keep the previous tile's 8 GB-class accumulators alive across
-                    # the next tile's allocation).
+                    # passed separately so no reference to them outlives the chunk call.
                     chunk_args = (
                         np.ascontiguousarray(seeds[start:stop]),
                         np.ascontiguousarray(valid_all[start:stop]),

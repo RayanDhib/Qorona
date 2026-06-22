@@ -148,6 +148,11 @@ class SampledField(Field):
             self._reference_strength = float(np.max(magnitude))
         return self._reference_strength
 
+    def b_at_nodes(self) -> np.ndarray:
+        """Return ``(n_r, n_theta, n_phi, 3)`` Cartesian B at the grid nodes (the resampled field,
+        interpolation padding removed)."""
+        return self._b_padded[GHOST:-GHOST, GHOST:-GHOST, GHOST:-GHOST, :]
+
     def characteristic_length(self, points: np.ndarray) -> np.ndarray:
         """Return the smallest local grid-cell extent ``(n,)`` at ``points`` (the CFL metric).
 
@@ -183,8 +188,7 @@ class SampledField(Field):
             #   coordinate_jacobian[n, d, j] = ∂spherical_d/∂x_j
             # The ∂φ/∂x factor carries 1/(r sinθ): exactly on the polar axis this conversion
             # is a genuine coordinate singularity (the true Cartesian ∇B is finite, but this
-            # path is not), so a point landing precisely on the axis yields a non-finite
-            # Jacobian by design: no floor, since a floor would compute the wrong factor.
+            # path is not), so a point exactly on the polar axis yields a non-finite Jacobian.
             coordinate_jacobian = spherical_coordinate_jacobian(points)
             scaled = index_gradient * index_derivative[:, :, None]
             grad_b = np.einsum("ndi,ndj->nij", scaled, coordinate_jacobian, optimize=True)

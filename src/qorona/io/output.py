@@ -8,9 +8,8 @@ keeping :mod:`qorona.render` self-contained.
 The stamp is a corner text overlay (CR · UTC · sub-observer φ/θ · roll · FOV) drawn on the *saved*
 PNG so it sits at final resolution, following the frame-labelling convention of eclipse-prediction
 renders; ``annotate=False`` is a one-flag bypass. It needs a font renderer (**Pillow**), in the
-default install: when Pillow is absent (a deliberately leaned-out install) the overlay is skipped
-with a friendly note and the run still completes (the metrics still print). Non-ASCII glyphs
-degrade to ASCII surrogates only on the bitmap-font fallback.
+default install: when Pillow is absent the overlay is skipped with a note and the run continues.
+Non-ASCII glyphs degrade to ASCII surrogates only on the bitmap-font fallback.
 """
 
 from __future__ import annotations
@@ -18,13 +17,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from qorona.config import BrightnessConfig, OutputConfig
+from qorona.config import BrightnessConfig, OutputConfig, QMapConfig
 from qorona.console import print_warning
 from qorona.render.los import RenderResult
 
 if TYPE_CHECKING:
     from qorona.radiation.brightness import BrightnessResult
     from qorona.render.fieldlines import FieldLineImage
+    from qorona.render.shell import QMap
 
 #: Margin between the stamp text and the image edge, in pixels.
 _MARGIN_PX = 12
@@ -135,13 +135,55 @@ def write_brightness(
     return written
 
 
+def write_qmap(
+    result: QMap, qmap_cfg: QMapConfig, output_cfg: OutputConfig, provenance: dict[str, Any]
+) -> list[Path]:
+    """Write the Q-map figure (and optional ``.npz``) and return the paths written, image first.
+
+    The headline product is the publication figure (lon/lat axes, diverging colour bar, title),
+    drawn with matplotlib. Without matplotlib the bare colour raster is written instead, with the
+    provenance corner stamp (the figure carries its provenance in the title). When
+    ``qmap_cfg.export_npz`` the raw shell arrays ride alongside as a dependency-free ``.npz``.
+    """
+    import json
+
+    written: list[Path] = [output_cfg.path]
+    try:
+        result.save_figure(
+            output_cfg.path, slog_max=qmap_cfg.slog_max, title=_qmap_title(qmap_cfg, provenance)
+        )
+    except ImportError:
+        print_warning(
+            "matplotlib not found; writing the bare raster map instead of the axed figure "
+            "(install matplotlib, the figure backend, to enable it)"
+        )
+        result.save_png(output_cfg.path, slog_max=qmap_cfg.slog_max)
+        _apply_stamp(written, output_cfg, provenance)
+    if qmap_cfg.export_npz:
+        npz_path = output_cfg.export_path("npz")
+        result.save_npz(npz_path, meta=json.dumps(provenance, default=str))
+        written.append(npz_path)
+    return written
+
+
+def _qmap_title(qmap_cfg: QMapConfig, provenance: dict[str, Any]) -> str:
+    """Compose the figure title from radius and (if recorded) the source volume's Carrington
+    rotation."""
+    source = provenance.get("source_volume", {})
+    inp = source.get("input", {}) if isinstance(source, dict) else {}
+    title = r"signed $\log_{10} Q_\perp$ at r = " + f"{qmap_cfg.radius:g} " + r"R$_\odot$"
+    if isinstance(inp, dict) and inp.get("cr") is not None:
+        title += f"  ·  CR {inp['cr']}"
+    return title
+
+
 def export_brightness(
     result: BrightnessResult, output_cfg: OutputConfig, provenance: dict[str, Any]
 ) -> list[Path]:
     """Write the requested raw data sidecars for a brightness render, returning the paths.
 
-    The export carries the *raw, relative* frames — both the polarized ``pB`` and the total
-    white-light brightness — with the plane-of-sky coordinate axes (``x_rsun`` / ``y_rsun``) and the
+    The export carries the *raw, relative* frames (both the polarized ``pB`` and the total
+    white-light brightness) with the plane-of-sky coordinate axes (``x_rsun`` / ``y_rsun``) and the
     impact-parameter grid, independent of the displayed frame/treatment, so a downstream tool (NRGF,
     WOW, or a custom detrend) processes the unstyled data. Only the dependency-free ``.npz`` is
     written for now (FITS+WCS is deferred to M6b); the run provenance travels as a JSON string in
@@ -214,6 +256,9 @@ def _stamp_lines(provenance: dict[str, Any]) -> list[str]:
             f"roll={float(camera['roll']):+.2f}°"
         )
         lines.append(f"FOV {float(camera['fov']):g} R_sun")
+    qmap = provenance.get("qmap", {}) if isinstance(provenance.get("qmap"), dict) else {}
+    if qmap:
+        lines.append(f"Q-map  r = {float(qmap['radius']):g} R_sun")
     return lines
 
 
@@ -292,7 +337,7 @@ def _load_font(size: int) -> Any:
 
     candidates: list[str] = []
     try:
-        import matplotlib  # matplotlib bundles DejaVuSans; an optional, soft preference only.
+        import matplotlib  # matplotlib bundles DejaVuSans.
 
         candidates.append(
             str(Path(matplotlib.get_data_path()) / "fonts" / "ttf" / "DejaVuSans.ttf")

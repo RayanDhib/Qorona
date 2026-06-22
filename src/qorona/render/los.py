@@ -67,9 +67,7 @@ from qorona.geometry.camera import OrthographicCamera
 from qorona.squashing.volume import QPerpVolume
 
 if TYPE_CHECKING:
-    # Type-only: the Thomson weight is duck-typed at runtime, so importing it here would be a
-    # needless cycle (radiation/ imports the render helpers). Under ``from __future__ import
-    # annotations`` the annotations are strings, never evaluated at runtime.
+    # Type-only: the Thomson weight is duck-typed at runtime and imported here for annotations only.
     from qorona.radiation.thomson import RadialCoefficients, ThomsonWeight
 
 __all__ = [

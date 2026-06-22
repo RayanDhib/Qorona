@@ -36,6 +36,7 @@ from qorona.config import (
     GridConfig,
     InputConfig,
     OutputConfig,
+    QMapConfig,
     RenderConfig,
     RunConfig,
     VolumeConfig,
@@ -50,6 +51,7 @@ from qorona.radiation.brightness import BrightnessResult
 from qorona.radiation.brightness import render_brightness as _brightness_los
 from qorona.render.fieldlines import FieldLineImage, render_field_lines
 from qorona.render.los import LARGE_FOV, LOG_FLOOR, SMALL_FOV, RenderResult, WeightingPreset, render
+from qorona.render.shell import QMap
 from qorona.resample.grid import (
     GHOST,
     LogarithmicSpacing,
@@ -57,6 +59,7 @@ from qorona.resample.grid import (
     RadialSpacing,
     SphericalGrid,
     UniformSpacing,
+    pad_field,
 )
 from qorona.resample.resampler import KnnMlsResampler, NearestCellResampler, Resampler
 from qorona.squashing.volume import (
@@ -64,8 +67,10 @@ from qorona.squashing.volume import (
     build_volume_paint,
     build_volume_per_voxel,
     build_volume_reference,
+    radial_sign_on_grid,
 )
 from qorona.trace import FieldLines, TurnGuard, lonlat_seeds, trace_field_lines
+from qorona.trace.seeding import lonlat_grid, lonlat_shell
 
 #: Schema selector strings → the concrete strategy classes / preset instances they name. One place
 #: each, so the config names and the pipeline dispatch never drift.
@@ -90,9 +95,7 @@ def _resolved_backend(device: str) -> str:
 
     ``"gpu:NVIDIA GeForce RTX 4080"`` when the volume baked on the GPU, else ``"cpu"``. Resolved
     at stamp time (the ``.qor`` is cached and reused across cameras, so the *resolved* backend,
-    not the requested ``auto``, is the reproducible fact). The hardware tier only; a non-JIT-able
-    field that forced a CPU fallback at the dispatcher is not reflected here (it cannot occur for
-    the gridded production field, which is always JIT-able).
+    not the requested ``auto``, is the reproducible fact). The hardware tier only (gpu/cpu).
     """
     from qorona.accel import gpu_name, resolve_device
 
@@ -222,7 +225,7 @@ def build_volume(
         "show_progress": show_progress,
     }
     if volume_cfg.builder == "paint":
-        return build_volume_paint(
+        volume = build_volume_paint(
             field,
             grid,
             supersample=volume_cfg.supersample,
@@ -231,11 +234,22 @@ def build_volume(
             timings=timings,
             **common,
         )
-    if volume_cfg.builder == "per-voxel":
-        return build_volume_per_voxel(
+    elif volume_cfg.builder == "per-voxel":
+        volume = build_volume_per_voxel(
             field, grid, supersample=volume_cfg.supersample, closed=volume_cfg.closed, **common
         )
-    return build_volume_reference(field, grid, **common)
+    else:
+        volume = build_volume_reference(field, grid, **common)
+
+    # The Q-map's local radial sign, baked on the field grid (the production SampledField).
+    if isinstance(field, SampledField):
+        field_grid = field.grid
+        sign_flat = radial_sign_on_grid(field)
+        sign_padded = pad_field(
+            sign_flat.reshape(field_grid.n_r, field_grid.n_theta, field_grid.n_phi, 1)
+        ).astype(np.float32, copy=False)
+        volume = replace(volume, radial_sign=sign_padded, radial_sign_grid=field_grid)
+    return volume
 
 
 def render_volume(
@@ -299,6 +313,29 @@ def render_volume(
         polarity_mode=cast(Any, render_cfg.polarity_mode),
         workers=render_cfg.workers,
         show_progress=show_progress,
+    )
+
+
+def qmap_from_volume(volume: QPerpVolume, qmap_cfg: QMapConfig) -> QMap:
+    """Slice a Q-map from the cached Q⊥ volume at ``qmap_cfg.radius``.
+
+    Samples log₁₀ Q⊥ and the local radial-field sign (both interpolated) on an ``n_theta x n_phi``
+    longitude/latitude shell, a pure read of the cached volume, the viewpoint-independent sibling
+    of :func:`render_volume`. The shell radius is clamped to the outer boundary, so mapping at the
+    bake's outer radius (the ``[1, r]`` mapping domain) is supported.
+    """
+    n_theta, n_phi = qmap_cfg.n_theta, qmap_cfg.n_phi
+    radius = min(qmap_cfg.radius, float(volume.grid.radii[-1]) * (1.0 - 1e-9))
+    points = lonlat_shell(radius, n_theta, n_phi)
+    theta, phi = lonlat_grid(n_theta, n_phi)
+    log_q_perp = volume.sample(points).reshape(n_theta, n_phi)
+    radial_sign = volume.sample_radial_sign(points).reshape(n_theta, n_phi)
+    return QMap(
+        radius=qmap_cfg.radius,
+        theta=theta,
+        phi=phi,
+        log_q_perp=log_q_perp,
+        radial_sign=radial_sign,
     )
 
 
@@ -482,7 +519,7 @@ def _utc_time(timestamp: str) -> Any:
 
     try:
         return Time(timestamp, scale="utc")
-    except Exception as exc:  # astropy raises a variety of types for malformed input
+    except Exception as exc:
         raise ValueError(
             f"could not parse timestamp {timestamp!r} as a UTC ISO-8601 datetime "
             f"(e.g. '2024-04-08T18:17:00'): {exc}"
@@ -594,7 +631,7 @@ def render_provenance(
     A render off a baked volume recovers the date for the stamp from ``build_prov`` without
     re-supplying it; an explicit ``timestamp_override`` re-derives CR/JD for the stamp.
     """
-    prov = json.loads(json.dumps(build_prov))  # deep copy; build_prov is JSON-safe by construction
+    prov = json.loads(json.dumps(build_prov))  # deep copy
     if timestamp_override is not None:
         prov["input"] = {
             **prov.get("input", {}),
@@ -615,6 +652,30 @@ def render_provenance(
     }
     prov["output"] = output_cfg.to_provenance()
     return prov
+
+
+def qmap_provenance(
+    qmap_cfg: QMapConfig,
+    output_cfg: OutputConfig,
+    build_provenance: dict[str, Any],
+    result: QMap,
+) -> dict[str, Any]:
+    """Assemble the Q-map provenance: the source volume's build record + the shell parameters.
+
+    The Q-map is a slice of the cached volume (no re-ingest, no trace), so it carries the volume's
+    own build provenance as ``source_volume`` and adds the shell parameters and coverage metrics.
+    """
+    return {
+        "format": "qorona-qmap-v1",
+        "version": __version__,
+        "source_volume": build_provenance,
+        "qmap": {
+            **qmap_cfg.to_provenance(),
+            "coverage": result.coverage,
+            "sub_floor_fraction": result.sub_floor_fraction,
+        },
+        "output": output_cfg.to_provenance(),
+    }
 
 
 def fieldlines_provenance(
@@ -776,7 +837,7 @@ def save_volume(
     dtype: str = "float32",
     compress: bool = True,
 ) -> None:
-    """Persist a Q⊥ volume (+ optional polarity, density) + build provenance to a ``.npz``.
+    """Persist a Q⊥ volume (+ optional polarity, radial sign, density) and provenance to a ``.npz``.
 
     The padded ``log_q_perp`` payload is stored ``float32`` by default, lossless relative to the
     engine's ``rtol ≈ 1e-4`` (storing log Q⊥ keeps the precision uniform across the dynamic range,
@@ -787,7 +848,7 @@ def save_volume(
 
     When a ``density`` is supplied (the Thomson / brightness branch) its padded payload and grid
     ride the same archive, so a separate ``render`` has ``Nₑ`` for the optional pB weighting; an
-    artifact baked without it simply loads back with no density (backward-compatible).
+    artifact baked without it loads back with no density.
 
     Parameters
     ----------
@@ -814,15 +875,18 @@ def save_volume(
         "provenance": provenance,
     }
     # The polarity channel is the discrete sign {-1, 0, +1}, so it rides as int8 regardless of the
-    # float ``dtype`` (lossless, small); it is absent when the volume carries none. The padded
-    # ghosts go unused by the render's nearest-cell polarity lookup, so their values do not matter.
+    # float ``dtype`` (lossless, small); it is absent when the volume carries none.
     if volume.polarity is not None:
         arrays["polarity"] = volume.polarity.astype(np.int8)
+    # The local radial-field sign rides like the density channel: an int8 array on its own grid spec
+    # (the field grid, coarser than the volume grid), absent when the volume carries none.
+    if volume.radial_sign is not None and volume.radial_sign_grid is not None:
+        arrays["radial_sign"] = volume.radial_sign.astype(np.int8)
+        meta["radial_sign_grid"] = _grid_spec(volume.radial_sign_grid)
     if density is not None:
         arrays["density"] = density.density.astype(cast)
         meta["density_grid"] = _grid_spec(density.grid)
-    # ``np.savez``'s keyword-only ``allow_pickle`` makes the ``**arrays`` unpack ambiguous to the
-    # type checker (a dynamic key could shadow it), so the saver is typed loosely here.
+    # Select compressed vs plain savez.
     saver: Any = np.savez_compressed if compress else np.savez
     with open(path, "wb") as handle:
         saver(handle, meta=np.array(json.dumps(meta)), **arrays)
@@ -836,7 +900,8 @@ def load_volume(
     The stored arrays (``float32`` or ``float64``) are restored to the ``float64`` the render kernel
     consumes; the grids are reconstructed from their specs, so the loaded volume renders identically
     to the one that was baked. ``density`` is ``None`` for an artifact baked without it; the
-    polarity channel (int8 on disk) is restored to ``float32``, or ``None`` when it is absent.
+    polarity and radial-sign channels (int8 on disk) are restored to ``float32``, or ``None`` when
+    absent.
 
     Returns
     -------
@@ -853,6 +918,9 @@ def load_volume(
         polarity = None
         if "polarity" in archive.files:
             polarity = np.ascontiguousarray(archive["polarity"], dtype=np.float32)
+        radial_sign = None
+        if "radial_sign" in archive.files and "radial_sign_grid" in meta:
+            radial_sign = np.ascontiguousarray(archive["radial_sign"], dtype=np.float32)
         density = None
         if "density" in archive.files and "density_grid" in meta:
             density = DensityVolume(
@@ -860,8 +928,17 @@ def load_volume(
                 density=np.ascontiguousarray(archive["density"], dtype=np.float64),
             )
     grid = _grid_from_spec(meta["grid"])
+    radial_sign_grid = (
+        _grid_from_spec(meta["radial_sign_grid"]) if radial_sign is not None else None
+    )
     return (
-        QPerpVolume(grid=grid, log_q_perp=log_q_perp, polarity=polarity),
+        QPerpVolume(
+            grid=grid,
+            log_q_perp=log_q_perp,
+            polarity=polarity,
+            radial_sign=radial_sign,
+            radial_sign_grid=radial_sign_grid,
+        ),
         density,
         meta["provenance"],
     )

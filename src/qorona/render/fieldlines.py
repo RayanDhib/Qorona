@@ -491,7 +491,7 @@ def _rasterise(
             )
 
     # Renormalise where overlapping coverage pushed alpha past 1, keeping the premultiplied
-    # invariant (colour ≤ alpha); the divisor is ≥ 1 everywhere, so there is no divide by zero.
+    # invariant (colour ≤ alpha).
     divisor = np.where(alpha_acc > 1.0, alpha_acc, 1.0)
     colour = (colour_acc / divisor[:, None]).reshape(height, width, 3)
     alpha = np.clip(alpha_acc, 0.0, 1.0).reshape(height, width)
@@ -586,7 +586,7 @@ def _magnetogram_disk(
     b = field.sample(surface, gradient=False).b
     b_radial = np.sum(b * surface, axis=1) / norm[:, 0]
     scale = float(np.percentile(np.abs(b_radial), _MAGNETOGRAM_PERCENTILE))
-    if not (scale > 0.0 and np.isfinite(scale)):  # degenerate (NaN is truthy, so guard explicitly)
+    if not (scale > 0.0 and np.isfinite(scale)):  # degenerate |B_r| scale
         scale = 1.0
     signed = np.clip(b_radial / scale, -1.0, 1.0)
     outward = np.clip(signed, 0.0, 1.0)[:, None]

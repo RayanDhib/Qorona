@@ -44,9 +44,8 @@ EXPORT_FORMATS = ("npz",)
 DEVICE_MODES = ("auto", "gpu", "cpu")
 PRECISION_MODES = ("float64", "mixed", "float32")
 
-#: The theoretical Q⊥ floor in log₁₀: the render's default display lower clamp (pinned to
-#: ``qorona.render.los.LOG_FLOOR``, duplicated here so the heavy render module need not be
-#: imported just to name a default).
+#: The theoretical Q⊥ floor in log₁₀; the render's default display lower clamp (mirrors
+#: ``qorona.render.los.LOG_FLOOR``).
 _LOG_FLOOR = math.log10(2.0)
 
 
@@ -378,6 +377,41 @@ class RenderConfig:
             "polarity_mode": self.polarity_mode,
             "workers": self.workers,
             "device": self.device,
+        }
+
+
+@dataclass(frozen=True)
+class QMapConfig:
+    """The Q-map product: a signed-log-Q⊥ shell sliced from the cached Q⊥ volume.
+
+    ``radius`` (R☉) is the shell radius; ``n_theta``/``n_phi`` the longitude/latitude sample grid;
+    ``slog_max`` the colour ceiling (``None`` → :data:`~qorona.render.shell.DEFAULT_SLOG_MAX`);
+    ``export_npz`` also writes the raw shell arrays.
+    """
+
+    radius: float = 3.0
+    n_theta: int = 720
+    n_phi: int = 1440
+    slog_max: float | None = None
+    export_npz: bool = False
+
+    def __post_init__(self) -> None:
+        _require(self.radius > 0.0, f"radius must be positive, got {self.radius}")
+        _require(
+            self.n_theta > 0 and self.n_phi > 0,
+            f"resolution must be positive, got {self.n_theta}x{self.n_phi}",
+        )
+        _require(
+            self.slog_max is None or self.slog_max > 0.0,
+            f"slog_max must be positive, got {self.slog_max}",
+        )
+
+    def to_provenance(self) -> dict[str, object]:
+        return {
+            "radius": self.radius,
+            "resolution": f"{self.n_theta}x{self.n_phi}",
+            "slog_max": self.slog_max,
+            "export_npz": self.export_npz,
         }
 
 

@@ -1,7 +1,7 @@
 """Write traced field lines to a JSON file.
 
 :func:`write_fieldlines_json` is the single place the output format is built. A viewer-specific
-format (e.g. SunJSON for JHelioviewer) is added by changing the payload here — the seeding,
+format (e.g. SunJSON for JHelioviewer) is added by changing the payload here; the seeding,
 tracing, and CLI around it stay as they are. Current schema::
 
     {

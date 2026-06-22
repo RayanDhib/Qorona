@@ -15,6 +15,17 @@ from qorona.geometry.coordinates import spherical_to_cartesian
 _DOMAIN_MARGIN = 1.0e-9
 
 
+def lonlat_grid(n_theta: int, n_phi: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return the cell-centred ``(theta, phi)`` axes of a longitude/latitude sphere grid, radians.
+
+    Colatitude θ is cell-centred in ``(0, π)`` (no seed on a pole); azimuth φ is cell-centred in
+    ``[0, 2π)`` with no duplicate along the seam. Shared by :func:`lonlat_seeds` and the Q-map.
+    """
+    theta = (np.arange(n_theta) + 0.5) * (np.pi / n_theta)
+    phi = (np.arange(n_phi) + 0.5) * (2.0 * np.pi / n_phi)
+    return theta, phi
+
+
 def lonlat_seeds(radius: float, n_theta: int = 100, n_phi: int = 100) -> np.ndarray:
     """Return seeds on a uniform longitude/latitude grid on the sphere of ``radius``.
 
@@ -35,10 +46,24 @@ def lonlat_seeds(radius: float, n_theta: int = 100, n_phi: int = 100) -> np.ndar
     numpy.ndarray
         ``(n_theta * n_phi, 3)`` Cartesian seed points in R☉, θ-major.
     """
-    theta = (np.arange(n_theta) + 0.5) * (np.pi / n_theta)
-    phi = (np.arange(n_phi) + 0.5) * (2.0 * np.pi / n_phi)
+    theta, phi = lonlat_grid(n_theta, n_phi)
     theta_grid, phi_grid = np.meshgrid(theta, phi, indexing="ij")
     r_grid = np.full_like(theta_grid, radius * (1.0 + _DOMAIN_MARGIN))
+    return spherical_to_cartesian(
+        np.stack([r_grid.ravel(), theta_grid.ravel(), phi_grid.ravel()], axis=-1)
+    )
+
+
+def lonlat_shell(radius: float, n_theta: int, n_phi: int) -> np.ndarray:
+    """Return shell sample points on a longitude/latitude grid at exactly ``radius``, θ-major.
+
+    The cell-centred ``(θ, φ)`` grid of :func:`lonlat_seeds` placed on the shell with no
+    inward-domain nudge, for sampling the cached volume (the outer boundary included), not for
+    seeding the tracer.
+    """
+    theta, phi = lonlat_grid(n_theta, n_phi)
+    theta_grid, phi_grid = np.meshgrid(theta, phi, indexing="ij")
+    r_grid = np.full_like(theta_grid, radius)
     return spherical_to_cartesian(
         np.stack([r_grid.ravel(), theta_grid.ravel(), phi_grid.ravel()], axis=-1)
     )

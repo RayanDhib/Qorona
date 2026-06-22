@@ -1195,8 +1195,7 @@ def render_batch_jit(
             pz = oz + s * look[2]
             r_point, theta, phi = _spherical(px, py, pz)
             # Mirror QPerpVolume.sample: the point-radius shell mask (NaN outside) and the same
-            # index map. The in-shell test above is on sqrt(rho²+s²), equal to r_point to FP, so the
-            # two only disagree in the ~1-ULP boundary band.
+            # index map.
             if r_point < r_inner or r_point > r_outer:
                 continue
             parameter, _ = _radial_parameter_and_derivative(

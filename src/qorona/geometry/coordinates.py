@@ -69,8 +69,7 @@ def _spherical_basis_trig(points: np.ndarray) -> tuple[np.ndarray, ...]:
     """Return ``(sinθ, cosθ, sinφ, cosφ)`` of the spherical basis at Cartesian ``points``.
 
     On the polar axis the azimuth is undefined; ``φ`` is taken as zero there
-    (``cosφ = 1``, ``sinφ = 0``), a harmless choice for the axisymmetric validation
-    fields and for any vector with no azimuthal component on the axis.
+    (``cosφ = 1``, ``sinφ = 0``).
     """
     x = points[..., 0]
     y = points[..., 1]

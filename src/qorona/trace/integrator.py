@@ -119,13 +119,13 @@ _MIN_FACTOR = 0.2
 _MAX_FACTOR = 10.0
 _ERR_PREV_FLOOR = 1.0e-4  # floor / initial value of the previous-step error (PI memory term)
 
-# --- Pinned numerical floors (off the public signature; accuracy is the rtol knob) -------------
+# --- Pinned numerical floors ---
 #: Per-component position floor so the relative error weight stays well-defined where a Cartesian
 #: component passes through zero (loop apexes near the equatorial plane; a meridian crossing sends
-#: x or y → 0). Not an accuracy dial.
+#: x or y → 0).
 _ATOL_POS = 1.0e-7
 #: Step-size underflow guard, as a fraction of the local cell metric: a line whose step shrinks
-#: below this is surfaced as a flagged resource-guard termination, never silently accepted.
+#: below this is flagged as a resource-guard termination.
 _H_MIN_FRACTION = 1.0e-11
 
 
@@ -475,7 +475,7 @@ def _integrate(
     requested (paths are awkward in nopython and unused by the volume build). Otherwise this calls
     the NumPy :func:`_integrate_batch` with the caller's ``rhs`` closure. That NumPy core is the
     reference implementation: the fallback when numba is unavailable, and what the kernel is
-    validated against. Both engines produce the same results, so the choice is invisible to callers.
+    validated against.
 
     ``rhs`` (with its captured ``directions``) drives only the NumPy core; the kernel reads
     ``directions`` and ``transport`` directly. The signatures and outputs match

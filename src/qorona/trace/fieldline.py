@@ -44,8 +44,8 @@ class Endpoint(IntEnum):
     NULL = 2
     """Stopped at an exact magnetic null (non-finite ``B̂``): no clean foot; foot is ``NaN``."""
     MAX_STEPS = 3
-    """A resource guard (max steps, or step-size underflow) fired before landing: flagged
-    diagnostic, never silently accepted as valid; foot is ``NaN``."""
+    """A resource guard (max steps, or step-size underflow) fired before landing: a flagged
+    diagnostic; foot is ``NaN``."""
     STALLED = 4
     """The stall guard fired: the line reversed direction too many times, the signature of a line
     trapped and thrashing at a weak-field null (the current sheet), where the unit field ``B/|B|``

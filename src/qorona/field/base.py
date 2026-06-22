@@ -20,8 +20,7 @@ construction edge, never in the hot loop):
 - **Domain.** ``sample`` assumes points are inside :attr:`Domain` and does not guard the
   boundary (see :class:`Field`'s precondition paragraph). A traced line leaving the domain is
   the normal terminating event, owned by the tracer (it stops crossed lines and triggers
-  foot-landing), keeping the field branch-free and free of inf/nan arithmetic. This is unrelated
-  to the genuine ``Q⊥ → ∞`` at a separatrix (a physical feature, not a boundary event).
+  foot-landing), keeping the field branch-free and free of inf/nan arithmetic.
 """
 
 from __future__ import annotations
@@ -134,8 +133,7 @@ class Field(ABC):
     already carries an active-line mask, and uses the same predicate to detect boundary
     crossings and trigger foot-landing). Sampling outside the domain returns a meaningless
     value (a wrong interpolation off the ghost padding, or a non-finite closed-form value),
-    *not* a clean error, so out-of-domain policy stays with the caller that owns it and the
-    hot path stays branch-free. Pass ``validate=True`` during development to turn that silent
+    *not* a clean error. Pass ``validate=True`` during development to turn that silent
     precondition into an explicit :class:`OutOfDomainError`.
     """
 

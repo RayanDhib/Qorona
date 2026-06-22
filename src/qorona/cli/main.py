@@ -1,13 +1,13 @@
-"""The ``qorona`` CLI: ``build`` / ``render`` / ``run`` / ``fieldlines`` / ``export-lines`` /
-``info``.
+"""The ``qorona`` CLI: ``build`` / ``render`` / ``qmap`` / ``run`` / ``fieldlines`` /
+``export-lines`` / ``info``.
 
 A :mod:`click` group wired to the shared :mod:`qorona.console` Rich surface, so progress and styling
 stay uniform. It splits the two cost axes of the pipeline into separate commands: ``build`` bakes
 the viewpoint-independent Q⊥ volume **once** (the minutes-scale stage, where resolution / seeding /
 supersampling sweeps live), ``render`` integrates a baked volume for any camera / preset (seconds,
-where viewpoint / weighting sweeps live), and ``run`` chains both; ``fieldlines`` draws the
-field-line view, ``export-lines`` serialises traced field lines for external tools, and ``info``
-inspects a solution.
+where viewpoint / weighting sweeps live), and ``run`` chains both; ``qmap`` slices a fixed-radius
+signed-log-Q⊥ shell from a baked volume, ``fieldlines`` draws the field-line view, ``export-lines``
+serialises traced field lines for external tools, and ``info`` inspects a solution.
 
 Every flag populates the typed :mod:`qorona.config` schema (the single source of truth for defaults
 and validation); a flag left unset defers to the dataclass, so the help text's stated defaults are
@@ -54,17 +54,19 @@ from qorona.config import (
     GridConfig,
     InputConfig,
     OutputConfig,
+    QMapConfig,
     RenderConfig,
     VolumeConfig,
     WeightingConfig,
 )
-from qorona.console import console, print_step, print_success
+from qorona.console import console, print_step, print_success, print_warning
 from qorona.io.fieldlines_export import write_fieldlines_json
 from qorona.io.output import (
     export_brightness,
     write_brightness,
     write_fieldlines,
     write_outputs,
+    write_qmap,
 )
 
 #: Default image dimension used only when exactly one of ``--width`` / ``--height`` is supplied; the
@@ -719,6 +721,95 @@ def _brightness_config(kw: dict[str, Any], workers: int | None) -> BrightnessCon
     return BrightnessConfig(**fields)
 
 
+def _parse_resolution(text: str) -> tuple[int, int]:
+    """Parse a ``'NTHETAxNPHI'`` resolution string into ``(n_theta, n_phi)``."""
+    parts = text.lower().split("x")
+    if len(parts) != 2:
+        raise click.BadParameter("resolution must be 'NTHETAxNPHI', e.g. 720x1440")
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        raise click.BadParameter("resolution must be 'NTHETAxNPHI', e.g. 720x1440") from None
+
+
+def _qmap_config(kw: dict[str, Any]) -> QMapConfig:
+    fields = _present(kw, "radius", "slog_max")
+    if kw.get("export_npz") is not None:
+        fields["export_npz"] = kw["export_npz"]
+    if kw.get("resolution"):
+        fields["n_theta"], fields["n_phi"] = _parse_resolution(kw["resolution"])
+    return QMapConfig(**fields)
+
+
+#: Build-flag defaults; a provenance value equal to its default is left out of the rebuild command.
+_BUILD_DEFAULTS = {
+    "n_r": 192,
+    "n_theta": 180,
+    "n_phi": 360,
+    "inner_radius": 1.0,
+    "spacing": "logarithmic",
+    "resampler": "knn-mls",
+    "builder": "paint",
+    "resolution_factor": 2,
+    "supersample": 4,
+}
+
+
+def _rebuild_command(build_prov: dict[str, Any], outer_radius: float) -> str:
+    """Reconstruct the ``qorona build`` command from a volume's provenance, with the outer radius
+    set to ``outer_radius``, the bake of the canonical Q-map volume (mapping domain
+    ``[1, outer_radius]``). Flags left at their default are omitted."""
+    inp = build_prov["input"]
+    field = build_prov.get("field", {})
+    volume = build_prov.get("volume", {})
+    flags = []
+    if inp.get("timestamp"):
+        flags.append(f"--timestamp {inp['timestamp']}")
+    flags.append(f"--outer-radius {outer_radius:g}")
+    sources = (
+        (field, ("inner_radius", "n_r", "n_theta", "n_phi", "spacing", "resampler")),
+        (volume, ("builder", "resolution_factor", "supersample")),
+    )
+    for source, keys in sources:
+        for key in keys:
+            value = source.get(key)
+            if value is None or value == _BUILD_DEFAULTS[key]:
+                continue
+            rendered = f"{value:g}" if isinstance(value, float) else f"{value}"
+            flags.append(f"--{key.replace('_', '-')} {rendered}")
+    stem = Path(inp["path"]).name.split(".")[0]
+    out_name = f"{stem}_or{outer_radius:g}.qor"
+    return f"  qorona build {inp['path']} -o {out_name} \\\n      " + " ".join(flags)
+
+
+def _warn_qmap_outer_radius(
+    outer_radius: float, qmap_cfg: QMapConfig, build_prov: dict[str, Any]
+) -> None:
+    """Warn when the volume's outer radius does not sit at the Q-map radius.
+
+    The canonical Q-map maps the domain ``[1, r]``: baking with the outer radius at the map radius
+    puts the heliospheric current sheet on the Q⊥ ridges. A deeper volume slices the ``[1, outer]``
+    mapping, where the current sheet can drift off the ridges; a shallower one cannot reach that
+    radius, so the map is clamped to the boundary. Either way, print the build command that bakes it
+    right.
+    """
+    radius = qmap_cfg.radius
+    if radius > outer_radius * (1.0 + 1e-6):
+        print_warning(
+            f"r = {radius:g} R_sun is outside this volume (outer = {outer_radius:g}); the map was "
+            f"clamped to the boundary. To map at r = {radius:g}, rebake at that radius:"
+        )
+    elif outer_radius > radius * 1.01:
+        print_warning(
+            f"Q-map at r = {radius:g} R_sun sliced from an outer = {outer_radius:g} volume: the "
+            f"current sheet may sit off the Q⊥ ridges (a slice of the [1, {outer_radius:g}] "
+            "mapping). For the canonical map, rebake with the outer radius at the map radius:"
+        )
+    else:
+        return
+    console.print(f"[dim]{_rebuild_command(build_prov, radius)}[/dim]")
+
+
 # --- The command group -------------------------------------------------------------------------
 
 
@@ -729,11 +820,11 @@ def main() -> None:
 
     Render the line-of-sight magnetic squashing factor Q⊥ of a coronal MHD solution into
     eclipse-like imagery. Bake the viewpoint-independent volume once with `build`, then render any
-    number of viewpoints cheaply with `render`; `run` does both in one shot, `fieldlines` draws
-    the field-line view, `info` inspects a file.
+    number of viewpoints cheaply with `render`; `run` does both in one shot, `qmap` slices a
+    fixed-radius Q⊥ shell, `fieldlines` draws the field-line view, `export-lines` serialises traced
+    lines, and `info` inspects a file.
     """
-    # The numba CUDA dispatcher warns about low-occupancy launches on the one-seed kernel warm-up
-    # and the final partial chunks; both are deliberate, so the warning is noise on the CLI.
+    # Silence numba CUDA low-occupancy warnings from the one-seed warm-up and partial final chunks.
     try:
         from numba.core.errors import NumbaPerformanceWarning
 
@@ -872,6 +963,66 @@ def render(
     written = write_outputs(result, output_cfg, provenance)
     print_success(f"Wrote [bold]{output_path}[/bold]")
     _print_summary(provenance, {"render": render_time}, written=written, header="render")
+
+
+@main.command()
+@click.argument("volume_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "-o",
+    "--output",
+    "output_path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Destination figure (.png).",
+)
+@click.option("--radius", type=float, default=None, help="Shell radius in R_sun (default 3).")
+@click.option(
+    "--resolution",
+    default=None,
+    help="Display grid 'NTHETAxNPHI' (default 720x1440; interpolated, capped by the bake's pitch).",
+)
+@click.option(
+    "--slog-max",
+    "slog_max",
+    type=float,
+    default=None,
+    help="Colour ceiling for slog Q⊥ (default 5).",
+)
+@click.option(
+    "--export-npz/--no-export-npz",
+    "export_npz",
+    default=None,
+    help="Also write the raw shell arrays as a .npz beside the figure (default off).",
+)
+@_annotate_options
+@_quiet_option
+def qmap(volume_path: Path, output_path: Path, quiet: bool, **kw: Any) -> None:
+    """Slice a signed-log-Q⊥ map from a cached Q⊥ volume at a fixed radius.
+
+    Reads the `.qor` and samples log₁₀ Q⊥ and the local radial-field sign on a longitude/latitude
+    shell at `--radius`, with no re-ingest or tracing. The displayed quantity is sign(B·r̂)·log₁₀ Q⊥:
+    the heliospheric current sheet is the warm↔cool boundary, the S-web arcs the saturated ridges.
+    The viewpoint-independent sibling of `render`.
+    """
+    qmap_cfg = _qmap_config(kw)
+    output_cfg = _output_config(kw, output_path)
+
+    print_step(f"Slicing Q-map from [bold]{volume_path.name}[/bold]")
+    start = time.perf_counter()
+    volume, _density, build_prov = pipeline.load_volume(volume_path)
+    if volume.radial_sign is None:
+        raise click.ClickException(
+            f"{volume_path.name} has no radial-sign channel (baked before the Q-map feature); "
+            "re-run `qorona build` to add it."
+        )
+    _warn_qmap_outer_radius(float(volume.grid.radii[-1]), qmap_cfg, build_prov)
+    result = pipeline.qmap_from_volume(volume, qmap_cfg)
+    qmap_time = time.perf_counter() - start
+
+    provenance = pipeline.qmap_provenance(qmap_cfg, output_cfg, build_prov, result)
+    written = write_qmap(result, qmap_cfg, output_cfg, provenance)
+    print_success(f"Wrote [bold]{output_path}[/bold]")
+    _print_summary(provenance, {"qmap": qmap_time}, written=written, header="qmap")
 
 
 @main.command()
@@ -1195,7 +1346,7 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
 
 #: Timing keys that are whole pipeline stages (and therefore sum to the footer total); every other
 #: key is a sub-stage breakdown displayed inline on its stage's line.
-_TOP_LEVEL_TIMINGS = ("field", "build", "render", "fieldlines", "export", "brightness")
+_TOP_LEVEL_TIMINGS = ("field", "build", "render", "fieldlines", "export", "brightness", "qmap")
 
 
 def _input_line(prov: dict[str, Any]) -> str:
@@ -1328,6 +1479,20 @@ def _brightness_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
     return " · ".join(parts)
 
 
+def _qmap_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
+    qm = prov["qmap"]
+    parts = [
+        f"Q⊥ · r = {float(qm['radius']):g} R☉ · {qm.get('resolution', '')}",
+        f"coverage {float(qm['coverage']):.1%}",
+        f"sub-floor {float(qm['sub_floor_fraction']):.1%}",
+    ]
+    if qm.get("export_npz"):
+        parts.append("export npz (raw shell)")
+    if "qmap" in timings:
+        parts.append(f"slice {timings['qmap']:.1f} s")
+    return " · ".join(parts)
+
+
 def _output_line(written: list[Path] | None, volume_path: Path | None) -> str:
     if volume_path is not None:
         return f"wrote {volume_path.name}"
@@ -1359,11 +1524,14 @@ def _print_summary(
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold cyan", justify="right")
     table.add_column()
-    table.add_row("Input", _input_line(provenance))
+    if "input" in provenance:
+        table.add_row("Input", _input_line(provenance))
     if "field" in provenance:
         table.add_row("Field", _field_line(provenance, timings))
     if "volume" in provenance:
         table.add_row("Volume", _volume_line(provenance, timings))
+    if "qmap" in provenance:
+        table.add_row("Q-map", _qmap_line(provenance, timings))
     if "fieldlines" in provenance:
         table.add_row("Field lines", _fieldlines_line(provenance, timings))
     if "export" in provenance:

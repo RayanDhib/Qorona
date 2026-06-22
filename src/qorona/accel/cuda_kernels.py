@@ -59,7 +59,7 @@ from qorona.trace.integrator import (
     _SAFETY,
 )
 
-# Endpoint codes as plain ints (the IntEnum does not survive device code; kept in sync with it).
+# Endpoint codes as plain ints (the IntEnum does not survive device code).
 _INNER = int(Endpoint.INNER)
 _OUTER = int(Endpoint.OUTER)
 _NULL = int(Endpoint.NULL)
@@ -86,8 +86,7 @@ _DENSE_P_F32 = np.ascontiguousarray(_DENSE_P, dtype=np.float32)
 # per-launch line/seed count.
 _THREADS_PER_BLOCK = 256
 
-# fastmath is off; NVVM contracts a*b+c (FMA) regardless, and that contraction is accepted
-# (see the module docstring).
+# fastmath is off; NVVM still contracts a*b+c into an FMA regardless.
 _FASTMATH = False
 
 #: Kernel precision modes, received as an explicit ``precision`` argument threaded down from
@@ -499,8 +498,7 @@ def _sample_point_f32(
     coordinate map and the Jacobian chain rule in float64 but reads the float32 ``b_padded`` and
     accumulates the stencil in float32 (:func:`_tricubic_point_f32`), casting the f32 value/index
     gradient up to float64 before the chain rule. The dipole (``kind == 1``) branch is the float64
-    closed form verbatim (no gather; keeping it all-double preserves the dipole validation gates'
-    agreement margin).
+    closed form verbatim (no gather).
     """
     if kind == 0:
         r, theta, phi = _spherical(x, y, z)
@@ -1477,10 +1475,10 @@ def _vol_flat(
     vn_r: int,
     vn_theta: int,
     vn_phi: int,
-    vspacing: int,
+    vspacing_code: int,
     vr_inner: float,
     vr_outer: float,
-    vexp: float,
+    vexponent: float,
     x: float,
     y: float,
     z: float,
@@ -1492,7 +1490,7 @@ def _vol_flat(
     to match :func:`~qorona.squashing.volume._pack_volume`.
     """
     r, theta, phi = _spherical(x, y, z)
-    parameter, _ = _radial_parameter_and_derivative(r, vspacing, vr_inner, vr_outer, vexp)
+    parameter, _ = _radial_parameter_and_derivative(r, vspacing_code, vr_inner, vr_outer, vexponent)
     r_index = parameter * (vn_r - 1)
     theta_index = theta / (math.pi / vn_theta) - 0.5
     phi_index = phi / (_TWO_PI / vn_phi)
@@ -1518,10 +1516,10 @@ def _vol_cell_extent(
     vn_r: int,
     vn_theta: int,
     vn_phi: int,
-    vspacing: int,
+    vspacing_code: int,
     vr_inner: float,
     vr_outer: float,
-    vexp: float,
+    vexponent: float,
     x: float,
     y: float,
     z: float,
@@ -1533,7 +1531,7 @@ def _vol_cell_extent(
     deposits inside one cell of one another.
     """
     r, theta, _ = _spherical(x, y, z)
-    _, dr_du = _radial_parameter_and_derivative(r, vspacing, vr_inner, vr_outer, vexp)
+    _, dr_du = _radial_parameter_and_derivative(r, vspacing_code, vr_inner, vr_outer, vexponent)
     radial = dr_du / (vn_r - 1)
     meridional = r * (math.pi / vn_theta)
     # Azimuthal arc floored at the meridional arc: the pole de-singularization (see cell_extent).
@@ -1567,17 +1565,19 @@ def _vol_flat_f32(
     vn_r: int,
     vn_theta: int,
     vn_phi: int,
-    vspacing: int,
+    vspacing_code: int,
     vr_inner: float,
     vr_outer: float,
-    vexp: float,
+    vexponent: float,
     x: float,
     y: float,
     z: float,
 ) -> int:
     """float32 :func:`_vol_flat`: the volume voxel flat index via the f32 spherical SFU path."""
     r, theta, phi = _spherical_f32(x, y, z)
-    parameter, _ = _radial_parameter_and_derivative_f32(r, vspacing, vr_inner, vr_outer, vexp)
+    parameter, _ = _radial_parameter_and_derivative_f32(
+        r, vspacing_code, vr_inner, vr_outer, vexponent
+    )
     r_index = parameter * (vn_r - 1)
     theta_index = theta / (float32(math.pi) / vn_theta) - float32(0.5)
     phi_index = phi / (_TWO_PI_F32 / vn_phi)
@@ -1601,17 +1601,17 @@ def _vol_cell_extent_f32(
     vn_r: int,
     vn_theta: int,
     vn_phi: int,
-    vspacing: int,
+    vspacing_code: int,
     vr_inner: float,
     vr_outer: float,
-    vexp: float,
+    vexponent: float,
     x: float,
     y: float,
     z: float,
 ) -> float:
     """float32 :func:`_vol_cell_extent`: smallest local cell extent (the paint-pitch metric)."""
     r, theta, _ = _spherical_f32(x, y, z)
-    _, dr_du = _radial_parameter_and_derivative_f32(r, vspacing, vr_inner, vr_outer, vexp)
+    _, dr_du = _radial_parameter_and_derivative_f32(r, vspacing_code, vr_inner, vr_outer, vexponent)
     radial = dr_du / (vn_r - 1)
     meridional = r * (float32(math.pi) / vn_theta)
     azimuthal = r * math.sin(theta) * (_TWO_PI_F32 / vn_phi)
@@ -1659,8 +1659,8 @@ def _make_paint_half_line(
     (``_char_len_f32`` / ``_vol_flat_f32`` / ``_vol_cell_extent_f32`` / ``_dense_position_f32`` /
     ``_localize_foot_f32`` / ``_DENSE_P_F32``),
     so the per-step scratch and the voxel rasterization run in float32 (the rasterization's
-    spherical transcendentals then hit the fast SFU path). The error norm still accumulates in f64 (
-    division by the f64 ``scale`` widens the per-component error), keeping accept/reject stable.
+    spherical transcendentals then hit the fast SFU path). The error norm still accumulates in
+    float64 (the per-component error is divided by the f64 ``scale``).
     """
 
     @cuda.jit(device=True, fastmath=_FASTMATH)
@@ -1682,10 +1682,10 @@ def _make_paint_half_line(
         vn_r: int,
         vn_theta: int,
         vn_phi: int,
-        vspacing: int,
+        vspacing_code: int,
         vr_inner: float,
         vr_outer: float,
-        vexp: float,
+        vexponent: float,
         atol: np.ndarray,
         rtol: float,
         cfl: float,
@@ -1847,10 +1847,10 @@ def _make_paint_half_line(
                     vn_r,
                     vn_theta,
                     vn_phi,
-                    vspacing,
+                    vspacing_code,
                     vr_inner,
                     vr_outer,
-                    vexp,
+                    vexponent,
                     state[0],
                     state[1],
                     state[2],
@@ -1859,10 +1859,10 @@ def _make_paint_half_line(
                     vn_r,
                     vn_theta,
                     vn_phi,
-                    vspacing,
+                    vspacing_code,
                     vr_inner,
                     vr_outer,
-                    vexp,
+                    vexponent,
                     point[0],
                     point[1],
                     point[2],
@@ -1878,10 +1878,10 @@ def _make_paint_half_line(
                         vn_r,
                         vn_theta,
                         vn_phi,
-                        vspacing,
+                        vspacing_code,
                         vr_inner,
                         vr_outer,
-                        vexp,
+                        vexponent,
                         point[0],
                         point[1],
                         point[2],
@@ -1964,10 +1964,10 @@ def _make_paint_batch_kernel(paint_half_line: Any) -> Any:
         vn_r: int,
         vn_theta: int,
         vn_phi: int,
-        vspacing: int,
+        vspacing_code: int,
         vr_inner: float,
         vr_outer: float,
-        vexp: float,
+        vexponent: float,
         atol: np.ndarray,
         rtol: float,
         cfl: float,
@@ -1989,7 +1989,16 @@ def _make_paint_batch_kernel(paint_half_line: Any) -> Any:
             return
         seed = seeds[i]
         seed_flat = _vol_flat(
-            vn_r, vn_theta, vn_phi, vspacing, vr_inner, vr_outer, vexp, seed[0], seed[1], seed[2]
+            vn_r,
+            vn_theta,
+            vn_phi,
+            vspacing_code,
+            vr_inner,
+            vr_outer,
+            vexponent,
+            seed[0],
+            seed[1],
+            seed[2],
         )
         voxels[i, 0] = seed_flat
         count = 1
@@ -2014,10 +2023,10 @@ def _make_paint_batch_kernel(paint_half_line: Any) -> Any:
             vn_r,
             vn_theta,
             vn_phi,
-            vspacing,
+            vspacing_code,
             vr_inner,
             vr_outer,
-            vexp,
+            vexponent,
             atol,
             rtol,
             cfl,
@@ -2048,10 +2057,10 @@ def _make_paint_batch_kernel(paint_half_line: Any) -> Any:
                 vn_r,
                 vn_theta,
                 vn_phi,
-                vspacing,
+                vspacing_code,
                 vr_inner,
                 vr_outer,
-                vexp,
+                vexponent,
                 atol,
                 rtol,
                 cfl,
