@@ -27,7 +27,8 @@ from astropy import units as u
 
 from qorona.console import status
 from qorona.io.native import Boundary, NativeSolution, SolutionMetadata
-from qorona.io.readers.base import SolutionReader, open_solution_text
+from qorona.io.readers.base import SolutionReader
+from qorona.io.textio import open_solution_text
 
 
 class CFmeshReader(SolutionReader):

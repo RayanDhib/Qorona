@@ -2,45 +2,19 @@
 
 A reader converts one model/format into a :class:`~qorona.io.native.NativeSolution`.
 Supporting a new coronal model means adding one ``SolutionReader`` subclass; nothing
-downstream changes.
+downstream changes. A model may own more than one format (one reader each); the container
+parsing they share lives in :mod:`qorona.io.formats`.
 """
 
 from __future__ import annotations
 
-import gzip
-import lzma
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TextIO
 
 from qorona.io.native import NativeSolution
+from qorona.io.textio import open_solution_text, payload_suffix
 
-#: Compression suffixes a stored solution may carry. A large ASCII mesh shrinks markedly when
-#: compressed, so a solution may be stored compressed; the payload format is recognised behind
-#: the compression suffix and the file is opened through the matching standard-library decompressor,
-#: so a ``.CFmesh.xz`` reads exactly like a plain ``.CFmesh`` with no extra dependency.
-_COMPRESSION_SUFFIXES = (".xz", ".gz")
-
-
-def payload_suffix(path: str | Path) -> str:
-    """Return a path's format suffix, ignoring a trailing compression suffix.
-
-    Both ``corona.CFmesh`` and ``corona.CFmesh.xz`` yield ``".CFmesh"``.
-    """
-    suffixes = Path(path).suffixes
-    if suffixes and suffixes[-1] in _COMPRESSION_SUFFIXES:
-        suffixes = suffixes[:-1]
-    return suffixes[-1] if suffixes else ""
-
-
-def open_solution_text(path: str | Path) -> TextIO:
-    """Open a solution file for line-oriented text reading, decompressing ``.xz`` / ``.gz``."""
-    suffix = Path(path).suffix
-    if suffix == ".xz":
-        return lzma.open(path, "rt")
-    if suffix == ".gz":
-        return gzip.open(path, "rt")
-    return Path(path).open()
+__all__ = ["SolutionReader", "open_solution_text", "payload_suffix"]
 
 
 class SolutionReader(ABC):
@@ -70,3 +44,15 @@ class SolutionReader(ABC):
     def handles(cls, path: str | Path) -> bool:
         """Return whether this reader recognises ``path`` by its (payload) extension."""
         return payload_suffix(path) in cls.extensions
+
+    @classmethod
+    def identifies(cls, path: str | Path) -> bool:
+        """Return whether the file's *content* identifies it as this reader's model.
+
+        The disambiguation seam for a format that more than one model can write (e.g. a
+        Tecplot ``.plt``): when several readers share an extension, the registry consults
+        this content check to pick one. The default returns ``False`` (no claim); a reader
+        overrides it only when it must be told apart from a sibling on the same extension.
+        Unused today (each extension has a single claimant); kept as the documented hook.
+        """
+        return False
