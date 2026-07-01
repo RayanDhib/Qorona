@@ -27,8 +27,10 @@ from qorona.squashing import QPerpVolume
 def test_camera_orientation_and_handedness() -> None:
     # Observer on +x looking at the Sun, solution-north +z up.
     camera = OrthographicCamera(
-        look=np.array([1.0, 0.0, 0.0]), up=np.array([0.0, 0.0, 1.0]),
-        fov=4.0 * u.R_sun, pixels=(8, 8),
+        look=np.array([1.0, 0.0, 0.0]),
+        up=np.array([0.0, 0.0, 1.0]),
+        fov=4.0 * u.R_sun,
+        pixels=(8, 8),
     )
     rays = camera.rays()
     north = np.array([0.0, 0.0, 1.0])
@@ -48,8 +50,11 @@ def test_camera_orientation_and_handedness() -> None:
     # A positive roll rotates solar north counter-clockwise: north -> (-sin a, cos a) in the image.
     angle = np.deg2rad(35.0)
     rolled = OrthographicCamera(
-        look=np.array([1.0, 0.0, 0.0]), up=np.array([0.0, 0.0, 1.0]), roll=angle,
-        fov=4.0 * u.R_sun, pixels=(8, 8),
+        look=np.array([1.0, 0.0, 0.0]),
+        up=np.array([0.0, 0.0, 1.0]),
+        roll=angle,
+        fov=4.0 * u.R_sun,
+        pixels=(8, 8),
     ).rays()
     assert np.allclose(
         [north @ rolled.right, north @ rolled.up], [-np.sin(angle), np.cos(angle)], atol=1e-12

@@ -125,8 +125,8 @@ Indicative volume-build timings (RTX 4080 vs 32-core CPU, mixed precision; not a
 
 | Q⊥ volume                            | GPU    | CPU            |
 |--------------------------------------|--------|----------------|
-| Quickstart, 384×360×720 (100 M vox)  | ~75 s  | ~9 min         |
-| High-res, 512×800×1600 (655 M vox)   | ~3 min | not practical  |
+| Quickstart, 384×360×720 (100 M vox)  | ~85 s  | ~9 min         |
+| High-res, 576×540×1080 (336 M vox)   | ~3 min | ~22 min        |
 
 ## On a cluster
 

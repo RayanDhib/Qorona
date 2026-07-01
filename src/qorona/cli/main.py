@@ -138,6 +138,16 @@ _grid_options = _compose(
         default=None,
         help="Cell→grid resampler (default knn-mls).",
     ),
+    click.option(
+        "--mls-k",
+        "n_neighbors",
+        type=int,
+        default=None,
+        help=(
+            "k-NN MLS neighbour count for resampling (advanced; default 30, scales up on "
+            "finer meshes; try 48 if a solution shows resampling artefacts)."
+        ),
+    ),
 )
 #: Sharp-turn guard knobs, shared (hidden/advanced) by `build`/`run` and `fieldlines`. The
 #: defaults apply automatically; `--max-turn-angle 0` disables the guard.
@@ -569,7 +579,15 @@ def _input_config(kw: dict[str, Any]) -> InputConfig:
 def _grid_config(kw: dict[str, Any]) -> GridConfig:
     return GridConfig(
         **_present(
-            kw, "n_r", "n_theta", "n_phi", "inner_radius", "outer_radius", "spacing", "resampler"
+            kw,
+            "n_r",
+            "n_theta",
+            "n_phi",
+            "inner_radius",
+            "outer_radius",
+            "spacing",
+            "resampler",
+            "n_neighbors",
         )
     )
 

@@ -1,8 +1,8 @@
 """Parser correctness for the solution readers (CFmesh and Tecplot).
 
 Both COCONUT formats are checked on the same hand-written minimal mesh (one triangle extruded
-into two stacked prisms, shells at r = 1, 2, 3) so the shared contract -- state-to-cell mapping,
-prism-centre averaging, the canonical variable layout, and inner/outer boundary tagging -- is
+into two stacked prisms, shells at r = 1, 2, 3) so the shared contract (state-to-cell mapping,
+prism-centre averaging, the canonical variable layout, and inner/outer boundary tagging) is
 verified without large data files, alongside each format's own provenance.
 """
 

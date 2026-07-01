@@ -1,8 +1,8 @@
 """Reader registry and the ``read_solution`` entry point.
 
 Readers register themselves here. ``read_solution`` selects one by resolving the file extension to
-the readers that recognise it, narrowing by an explicit model when given, and — only when an
-extension is shared by more than one model — by the readers' content check. A model may own several
+the readers that recognise it, narrowing by an explicit model when given, and (only when an
+extension is shared by more than one model) by the readers' content check. A model may own several
 formats (e.g. COCONUT's ``.CFmesh`` and ``.plt``); each is a separate reader sharing the model name.
 """
 

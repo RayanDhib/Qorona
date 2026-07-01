@@ -49,8 +49,7 @@ class CoconutTecplotReader(SolutionReader):
         ----------
         variables
             Not supported: a Tecplot file is self-describing (the names come from its
-            ``VARIABLES`` line). Passing a value raises, so a stray ``--variables`` meant for the
-            CFmesh reader fails loudly rather than being silently ignored.
+            ``VARIABLES`` line), so passing a value raises :class:`ValueError`.
         """
         if variables is not None:
             raise ValueError(

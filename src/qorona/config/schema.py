@@ -110,7 +110,8 @@ class GridConfig:
     """The internal regular spherical (r, θ, φ) grid the resampler and interpolant operate on.
 
     Node counts in each direction, the inner/outer shell radii, the radial spacing law, and the
-    cell→grid resampler. :class:`VolumeConfig`'s ``resolution_factor`` scales these node counts to
+    cell→grid resampler with its k-NN neighbour count (``n_neighbors``).
+    :class:`VolumeConfig`'s ``resolution_factor`` scales these node counts to
     the finer volume grid; the spacing law and radii are shared, so the field grid and the volume
     grid sit on the same shell at different pitch.
     """
@@ -122,6 +123,7 @@ class GridConfig:
     outer_radius: float = 12.5
     spacing: str = "logarithmic"
     resampler: str = "knn-mls"
+    n_neighbors: int = 30
 
     def __post_init__(self) -> None:
         _require(self.n_r >= 4, f"n_r must be >= 4, got {self.n_r}")
@@ -137,6 +139,10 @@ class GridConfig:
         )
         _one_of(self.spacing, SPACING_LAWS, "spacing")
         _one_of(self.resampler, RESAMPLERS, "resampler")
+        _require(
+            self.n_neighbors > 4,
+            f"n_neighbors must exceed the four linear unknowns, got {self.n_neighbors}",
+        )
 
     def to_provenance(self) -> dict[str, object]:
         return {
@@ -147,6 +153,7 @@ class GridConfig:
             "outer_radius": self.outer_radius,
             "spacing": self.spacing,
             "resampler": self.resampler,
+            "n_neighbors": self.n_neighbors,
         }
 
 

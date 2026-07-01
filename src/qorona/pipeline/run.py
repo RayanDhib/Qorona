@@ -177,7 +177,11 @@ def build_field(
     if timings is not None:
         timings["read"] = time.perf_counter() - start
     grid = _field_grid(grid_cfg)
-    resampler = _RESAMPLERS[grid_cfg.resampler]()
+    resampler: Resampler
+    if grid_cfg.resampler == "knn-mls":
+        resampler = KnnMlsResampler(n_neighbors=grid_cfg.n_neighbors)
+    else:
+        resampler = _RESAMPLERS[grid_cfg.resampler]()
     start = time.perf_counter()
     field = SampledField.from_solution(
         solution, grid, resampler=resampler, show_progress=show_progress
