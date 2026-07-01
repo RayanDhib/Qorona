@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import zipfile
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -915,9 +916,32 @@ def load_volume(
         The reconstructed electron-density volume, or ``None`` if the artifact carries none.
     provenance : dict
         The build provenance recorded at bake time.
+
+    Raises
+    ------
+    ValueError
+        If ``path`` is not a readable Qorona volume artifact, or was written in a volume
+        format this version does not read.
     """
-    with np.load(path, allow_pickle=False) as archive:
+    try:
+        archive = np.load(path, allow_pickle=False)
+    except (OSError, ValueError, zipfile.BadZipFile) as error:
+        raise ValueError(
+            f"{path} is not a readable Qorona volume artifact (.qor): {error}"
+        ) from error
+    with archive:
+        if "meta" not in archive.files:
+            raise ValueError(
+                f"{path} is not a Qorona volume artifact: it carries no 'meta' record. "
+                "Bake one with `qorona build`."
+            )
         meta = json.loads(str(archive["meta"].item()))
+        stored_format = meta.get("format")
+        if stored_format != _ARTIFACT_FORMAT:
+            raise ValueError(
+                f"{path} was written in volume format {stored_format!r}, but this Qorona reads "
+                f"{_ARTIFACT_FORMAT!r}; rebuild it with `qorona build`."
+            )
         log_q_perp = np.ascontiguousarray(archive["log_q_perp"], dtype=np.float64)
         polarity = None
         if "polarity" in archive.files:

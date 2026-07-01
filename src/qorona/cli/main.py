@@ -962,7 +962,10 @@ def render(
     output_cfg = _output_config(kw, output_path)
 
     print_step(f"Loading volume [bold]{volume_path.name}[/bold]")
-    volume, density, build_prov = pipeline.load_volume(volume_path)
+    try:
+        volume, density, build_prov = pipeline.load_volume(volume_path)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
     start = time.perf_counter()
     result = pipeline.render_volume(
         volume, camera_cfg, weighting_cfg, render_cfg, density=density, show_progress=show_progress
@@ -1027,7 +1030,10 @@ def qmap(volume_path: Path, output_path: Path, quiet: bool, **kw: Any) -> None:
 
     print_step(f"Slicing Q-map from [bold]{volume_path.name}[/bold]")
     start = time.perf_counter()
-    volume, _density, build_prov = pipeline.load_volume(volume_path)
+    try:
+        volume, _density, build_prov = pipeline.load_volume(volume_path)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
     if volume.radial_sign is None:
         raise click.ClickException(
             f"{volume_path.name} has no radial-sign channel (baked before the Q-map feature); "
