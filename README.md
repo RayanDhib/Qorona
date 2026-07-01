@@ -1,6 +1,7 @@
 ![Qorona: eclipse-like synthetic imagery from coronal MHD models](https://raw.githubusercontent.com/RayanDhib/Qorona/main/assets/banner.png)
 
 <p align="center">
+  <a href="https://github.com/RayanDhib/Qorona/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/RayanDhib/Qorona/ci.yml?branch=main&label=CI" alt="CI"></a>
   <a href="https://doi.org/10.5281/zenodo.20630699"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20630699-blue" alt="DOI"></a>
   <a href="https://pypi.org/project/qorona/"><img src="https://img.shields.io/pypi/v/qorona" alt="PyPI"></a>
 </p>
@@ -32,17 +33,24 @@ conda env create -f environment.yml
 conda activate qorona
 ```
 
-### Minimal install (advanced, optional)
+## On a cluster
 
-Two dependencies have graceful fallbacks and can be left out for a smaller footprint. Qorona detects
-their absence and degrades automatically, so this is an off-road choice, not the default:
-
-- **numba**: drop for a pure-NumPy build/render (identical output, much slower).
-- **pillow**: drop to skip the on-image stamp (the run still completes and prints its provenance).
+Qorona installs from PyPI into a plain virtual environment; no conda needed:
 
 ```bash
-pip install qorona --no-deps
-pip install numpy scipy astropy sunpy rich click   # hard core; add back numba / pillow as wanted
+module purge            # optional; stops other modules leaking packages via PYTHONPATH
+module load python      # any Python ≥ 3.11
+python -m venv ~/envs/qorona && source ~/envs/qorona/bin/activate
+pip install qorona
+```
+
+On GPU nodes, load the site's CUDA module (`module load cuda`) so numba finds the toolkit;
+`--device gpu` errors loudly if the GPU is unusable rather than silently falling back. Two flags
+are made for batch jobs: `--workers` pins the kernel threads to your allocation (numba otherwise
+takes every core it sees), and `--quiet` keeps job logs readable:
+
+```bash
+qorona build <solution> -o <solution>.qor --device gpu --workers $SLURM_CPUS_PER_TASK --quiet
 ```
 
 ## Example data
@@ -127,26 +135,6 @@ Indicative volume-build timings (RTX 4080 vs 32-core CPU, mixed precision; not a
 |--------------------------------------|--------|----------------|
 | Quickstart, 384×360×720 (100 M vox)  | ~85 s  | ~9 min         |
 | High-res, 576×540×1080 (336 M vox)   | ~3 min | ~22 min        |
-
-## On a cluster
-
-Qorona installs from PyPI into a plain virtual environment; no conda needed:
-
-```bash
-module purge            # optional; stops other modules leaking packages via PYTHONPATH
-module load python      # any Python ≥ 3.11
-python -m venv ~/envs/qorona && source ~/envs/qorona/bin/activate
-pip install qorona
-```
-
-On GPU nodes, load the site's CUDA module (`module load cuda`) so numba finds the toolkit;
-`--device gpu` errors loudly if the GPU is unusable rather than silently falling back. Two flags
-are made for batch jobs: `--workers` pins the kernel threads to your allocation (numba otherwise
-takes every core it sees), and `--quiet` keeps job logs readable:
-
-```bash
-qorona build <solution> -o <solution>.qor --device gpu --workers $SLURM_CPUS_PER_TASK --quiet
-```
 
 ## How it works
 
