@@ -13,10 +13,10 @@ license-files = ["LICENSE"]
 authors = [{ name = "Rayan Dhib" }]
 dependencies = [
     # The default install is the complete Qorona: every runtime dependency needed to use every
-    # feature, so it works out of the box. Three of these carry graceful runtime fallbacks and can
-    # be dropped for a leaner footprint via ``pip install --no-deps`` plus the core set (an
-    # off-road choice, never the default): numba (→ pure-NumPy path, no GPU), pillow (→ on-image
-    # stamp skipped), and matplotlib (→ bare-raster Q-map instead of the publication figure).
+    # feature. Three of these carry graceful runtime fallbacks and can be dropped for a leaner
+    # footprint via ``pip install --no-deps`` plus the core set (an off-road choice, never the
+    # default): numba (→ pure-NumPy path, no GPU), pillow (→ on-image stamp skipped), and
+    # matplotlib (→ bare-raster Q-map).
     "numpy>=1.24",
     "scipy>=1.10",
     "astropy>=6.0",

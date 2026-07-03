@@ -19,6 +19,7 @@ printed counterpart of the on-image stamp.
 
 from __future__ import annotations
 
+import os
 import time
 import warnings
 from collections.abc import Callable
@@ -91,6 +92,37 @@ def _compose(*options: Callable[[Callable], Callable]) -> Callable[[Callable], C
     return wrap
 
 
+def _writable_output(ctx: click.Context, param: click.Parameter, value: Path | None) -> Path | None:
+    """Validate an output path at parse time, before any expensive work runs.
+
+    Creates a missing parent directory (so ``-o results/run/out.png`` just works) and errors
+    clearly when the destination cannot be written, instead of crashing at the final save.
+    """
+    if value is None:
+        return value
+    parent = value.parent
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise click.BadParameter(f"cannot create output directory {parent}: {error}") from error
+    if not os.access(parent, os.W_OK):
+        raise click.BadParameter(f"output directory is not writable: {parent}")
+    if value.exists() and not os.access(value, os.W_OK):
+        raise click.BadParameter(f"output file is not writable: {value}")
+    return value
+
+
+def _valid_timestamp(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
+    """Reject an unparseable ``--timestamp`` at parse time, not after the build."""
+    if value is None:
+        return value
+    try:
+        pipeline.derive_jd(value)
+    except Exception as error:
+        raise click.BadParameter(str(error)) from error
+    return value
+
+
 _input_options = _compose(
     click.option(
         "--model", default=None, help="Solution model; inferred from the extension if unset."
@@ -98,6 +130,7 @@ _input_options = _compose(
     click.option(
         "--timestamp",
         default=None,
+        callback=_valid_timestamp,
         help="UTC ISO-8601 observation time → Carrington rotation + Julian date.",
     ),
     click.option(
@@ -859,6 +892,7 @@ def main() -> None:
     "output_path",
     required=True,
     type=click.Path(dir_okay=False, path_type=Path),
+    callback=_writable_output,
     help="Destination volume artifact (.qor / .npz).",
 )
 @_input_options
@@ -925,11 +959,13 @@ def build(
     "output_path",
     required=True,
     type=click.Path(dir_okay=False, path_type=Path),
+    callback=_writable_output,
     help="Destination image (.png).",
 )
 @click.option(
     "--timestamp",
     default=None,
+    callback=_valid_timestamp,
     help="Override the volume's timestamp for the stamp (re-derives CR/JD).",
 )
 @_camera_options
@@ -994,6 +1030,7 @@ def render(
     "output_path",
     required=True,
     type=click.Path(dir_okay=False, path_type=Path),
+    callback=_writable_output,
     help="Destination figure (.png).",
 )
 @click.option("--radius", type=float, default=None, help="Shell radius in R_sun (default 3).")
@@ -1057,6 +1094,7 @@ def qmap(volume_path: Path, output_path: Path, quiet: bool, **kw: Any) -> None:
     "output_path",
     required=True,
     type=click.Path(dir_okay=False, path_type=Path),
+    callback=_writable_output,
     help="Destination image (.png).",
 )
 @click.option(
@@ -1064,6 +1102,7 @@ def qmap(volume_path: Path, output_path: Path, quiet: bool, **kw: Any) -> None:
     "save_volume_path",
     default=None,
     type=click.Path(dir_okay=False, path_type=Path),
+    callback=_writable_output,
     help="Also persist the baked volume to this .qor/.npz.",
 )
 @_input_options
@@ -1201,6 +1240,7 @@ def info(input_path: Path, quiet: bool, **kw: Any) -> None:
     "output_path",
     required=True,
     type=click.Path(dir_okay=False, path_type=Path),
+    callback=_writable_output,
     help="Destination image (.png).",
 )
 @_input_options
@@ -1260,6 +1300,7 @@ def fieldlines(
     "output_path",
     required=True,
     type=click.Path(dir_okay=False, path_type=Path),
+    callback=_writable_output,
     help="Destination field-line file (.json).",
 )
 @_input_options
@@ -1311,6 +1352,7 @@ def export_lines(
     "output_path",
     required=True,
     type=click.Path(dir_okay=False, path_type=Path),
+    callback=_writable_output,
     help="Destination image (.png).",
 )
 @_input_options
