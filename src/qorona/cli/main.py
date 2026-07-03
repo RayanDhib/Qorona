@@ -11,10 +11,13 @@ serialises traced field lines for external tools, and ``info`` inspects a soluti
 
 Every flag populates the typed :mod:`qorona.config` schema (the single source of truth for defaults
 and validation); a flag left unset defers to the dataclass, so the help text's stated defaults are
-documentation, not a second behavioural source (the two documented exceptions: the single-axis
-image-dimension fallback and the volume-cache write options). After any command that produces a
-result, a polished end-of-run summary prints the run's parameters and quantitative metrics, the
-printed counterpart of the on-image stamp.
+documentation, not a second behavioural source (the documented exceptions: the single-axis
+image-dimension fallback, the volume-cache write options, and the ``--quality`` preset, a second
+layer of resolution defaults resolved before the schema). Help has two levels
+(:mod:`qorona.cli.help`): ``--help`` lists a command's common options, ``--help-all`` every option
+grouped by pipeline stage. After any command that produces a result, a polished end-of-run summary
+prints the run's parameters and quantitative metrics, the printed counterpart of the on-image
+stamp.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from typing import Any
 import click
 
 from qorona import __version__, pipeline
+from qorona.cli.help import QoronaGroup, option
 from qorona.config import (
     ANNOTATE_POSITIONS,
     BRIGHTNESS_FRAMES,
@@ -44,6 +48,7 @@ from qorona.config import (
     OCCULT_MODES,
     POLARITY_MODES,
     PRECISION_MODES,
+    QUALITY_PRESETS,
     RESAMPLERS,
     SPACING_LAWS,
     VOLUME_BUILDERS,
@@ -85,8 +90,8 @@ def _compose(*options: Callable[[Callable], Callable]) -> Callable[[Callable], C
     """Apply a sequence of click option decorators in declaration order."""
 
     def wrap(func: Callable) -> Callable:
-        for option in reversed(options):
-            func = option(func)
+        for decorator in reversed(options):
+            func = decorator(func)
         return func
 
     return wrap
@@ -124,470 +129,675 @@ def _valid_timestamp(ctx: click.Context, param: click.Parameter, value: str | No
 
 
 _input_options = _compose(
-    click.option(
-        "--model", default=None, help="Solution model; inferred from the extension if unset."
+    option(
+        "--model",
+        default=None,
+        section="Input",
+        advanced=True,
+        help="Solution model; inferred from the extension if unset.",
     ),
-    click.option(
+    option(
         "--timestamp",
         default=None,
         callback=_valid_timestamp,
+        section="Input",
         help="UTC ISO-8601 observation time → Carrington rotation + Julian date.",
     ),
-    click.option(
+    option(
         "--variables",
         default=None,
-        help="Comma-separated state-variable names (advanced; reader override).",
+        section="Input",
+        advanced=True,
+        help="Comma-separated state-variable names (reader override).",
     ),
 )
 _grid_options = _compose(
-    click.option("--n-r", type=int, default=None, help="Radial field-grid nodes (default 192)."),
-    click.option(
-        "--n-theta", type=int, default=None, help="Colatitude field-grid nodes (default 180)."
+    option(
+        "--n-r",
+        type=int,
+        default=None,
+        section="Field grid",
+        advanced=True,
+        help="Radial field-grid nodes (default 192).",
     ),
-    click.option(
-        "--n-phi", type=int, default=None, help="Azimuth field-grid nodes, even (default 360)."
+    option(
+        "--n-theta",
+        type=int,
+        default=None,
+        section="Field grid",
+        advanced=True,
+        help="Colatitude field-grid nodes (default 180).",
     ),
-    click.option(
+    option(
+        "--n-phi",
+        type=int,
+        default=None,
+        section="Field grid",
+        advanced=True,
+        help="Azimuth field-grid nodes, even (default 360).",
+    ),
+    option(
         "--inner-radius",
         type=float,
         default=None,
+        section="Field grid",
+        advanced=True,
         help="Inner shell radius in R_sun (default 1.0).",
     ),
-    click.option(
+    option(
         "--outer-radius",
         type=float,
         default=None,
+        section="Field grid",
         help="Outer shell radius in R_sun (default 12.5).",
     ),
-    click.option(
+    option(
         "--spacing",
         type=click.Choice(SPACING_LAWS),
         default=None,
+        section="Field grid",
+        advanced=True,
         help="Radial spacing law (default logarithmic).",
     ),
-    click.option(
+    option(
         "--resampler",
         type=click.Choice(RESAMPLERS),
         default=None,
+        section="Field grid",
+        advanced=True,
         help="Cell→grid resampler (default knn-mls).",
     ),
-    click.option(
+    option(
         "--mls-k",
         "n_neighbors",
         type=int,
         default=None,
+        section="Field grid",
+        advanced=True,
         help=(
-            "k-NN MLS neighbour count for resampling (advanced; default 30, scales up on "
-            "finer meshes; try 48 if a solution shows resampling artefacts)."
+            "k-NN MLS neighbour count for resampling (default 30, scales up on finer meshes; "
+            "try 48 if a solution shows resampling artefacts)."
         ),
     ),
 )
-#: Sharp-turn guard knobs, shared (hidden/advanced) by `build`/`run` and `fieldlines`. The
-#: defaults apply automatically; `--max-turn-angle 0` disables the guard.
-_turn_guard_options = (
-    click.option(
-        "--max-turn-angle",
-        type=float,
-        default=None,
-        hidden=True,
-        help="Sharp-turn guard: terminate a line that turns more than this many degrees in one "
-        "step in the weak-field outer corona, a deflection at a null (default 45; 0 disables).",
-    ),
-    click.option(
-        "--turn-guard-radius",
-        type=float,
-        default=None,
-        hidden=True,
-        help="Sharp-turn guard: fire only above this radius in R_sun (default 2.0).",
-    ),
-    click.option(
-        "--turn-guard-weak-fraction",
-        type=float,
-        default=None,
-        hidden=True,
-        help="Sharp-turn guard: fire only where |B| is below this fraction of the field's peak |B| "
-        "(default 1e-5).",
-    ),
-    click.option(
-        "--min-turns",
-        type=int,
-        default=None,
-        hidden=True,
-        help="Sharp-turn guard: number of qualifying sharp turns that triggers termination; "
-        "occasional null grazes are kept (default 1 for volume builds, 3 for fieldlines).",
-    ),
-)
+
+
+def _turn_guard_options(section: str) -> tuple[Callable[[Callable], Callable], ...]:
+    """The sharp-turn guard knobs, shared by the volume, field-line, and export tracers.
+
+    The defaults apply automatically; ``--max-turn-angle 0`` disables the guard. In the
+    ``--help-all`` view the flags appear under ``section``, the config they feed.
+    """
+    return (
+        option(
+            "--max-turn-angle",
+            type=float,
+            default=None,
+            section=section,
+            advanced=True,
+            help="Sharp-turn guard: terminate a line that turns more than this many degrees in one "
+            "step in the weak-field outer corona, a deflection at a null (default 45; 0 disables).",
+        ),
+        option(
+            "--turn-guard-radius",
+            type=float,
+            default=None,
+            section=section,
+            advanced=True,
+            help="Sharp-turn guard: fire only above this radius in R_sun (default 2.0).",
+        ),
+        option(
+            "--turn-guard-weak-fraction",
+            type=float,
+            default=None,
+            section=section,
+            advanced=True,
+            help="Sharp-turn guard: fire only where |B| is below this fraction of the field's "
+            "peak |B| (default 1e-5).",
+        ),
+        option(
+            "--min-turns",
+            type=int,
+            default=None,
+            section=section,
+            advanced=True,
+            help="Sharp-turn guard: number of qualifying sharp turns that triggers termination; "
+            "occasional null grazes are kept (default 1 for volume builds, 3 for fieldlines).",
+        ),
+    )
+
+
 _volume_options = _compose(
-    click.option(
+    option(
         "--builder",
         type=click.Choice(VOLUME_BUILDERS),
         default=None,
+        section="Volume",
+        advanced=True,
         help="Q⊥ volume builder: paint (fast production fill), per-voxel (every voxel traced "
         "to its feet; complete coverage, cost grows with voxels), reference (validation "
         "ground truth). Default paint.",
     ),
-    click.option(
+    option(
         "--resolution-factor",
         type=int,
         default=None,
+        section="Volume",
+        advanced=True,
         help="Volume grid = field grid refined by this factor (default 2).",
     ),
-    click.option(
+    option(
         "--supersample",
         type=int,
         default=None,
+        section="Volume",
+        advanced=True,
         help="Boundary/seed angular supersampling (default 4).",
     ),
-    click.option(
+    option(
         "--paint-step",
         type=float,
         default=None,
+        section="Volume",
+        advanced=True,
         help="Paint along-line pitch as a fraction of the cell extent (default 0.5).",
     ),
-    click.option(
+    option(
         "--closed",
         type=click.Choice(CLOSED_TREATMENTS),
         default=None,
+        section="Volume",
+        advanced=True,
         help="Closed-loop polarity: neutral (feet cancel to 0) or dominant (default neutral).",
     ),
-    click.option(
+    option(
         "--rtol",
         type=float,
         default=None,
+        section="Volume",
+        advanced=True,
         help="Tracer/transport relative tolerance (default 1e-4).",
     ),
-    click.option(
-        "--cfl", type=float, default=None, help="CFL step ceiling, 0<cfl<1 (default 0.5)."
+    option(
+        "--cfl",
+        type=float,
+        default=None,
+        section="Volume",
+        advanced=True,
+        help="CFL step ceiling, 0<cfl<1 (default 0.5).",
     ),
-    click.option(
-        "--max-steps", type=int, default=None, help="Per-half-line step guard (default 10000)."
+    option(
+        "--max-steps",
+        type=int,
+        default=None,
+        section="Volume",
+        advanced=True,
+        help="Per-half-line step guard (default 10000).",
     ),
-    click.option(
+    option(
         "--max-reversals",
         type=int,
         default=None,
-        hidden=True,
+        section="Volume",
+        advanced=True,
         help="Stall guard: terminate a line after this many >90° direction reversals, a line "
         "trapped at a weak-field null (default 8; 0 disables).",
     ),
-    click.option(
+    option(
         "--precision",
         type=click.Choice(PRECISION_MODES),
         default=None,
+        section="Volume",
+        advanced=True,
         help="CUDA kernel precision: mixed (f32 field interpolation, f64 elsewhere; default), "
         "float64 (all-double reference), float32 (experimental fully-float32 painter). GPU only.",
     ),
-    *_turn_guard_options,
+    *_turn_guard_options("Volume"),
 )
 _cache_options = _compose(
-    click.option(
+    option(
         "--cache-dtype",
         type=click.Choice(("float32", "float64")),
         default=None,
+        section="Cache",
+        advanced=True,
         help="Stored volume dtype (default float32).",
     ),
-    click.option(
+    option(
         "--compress/--no-compress",
         "compress",
         default=None,
+        section="Cache",
+        advanced=True,
         help="DEFLATE-compress the volume artifact (default on).",
     ),
 )
 _camera_options = _compose(
-    click.option(
+    option(
         "--longitude",
         type=float,
         default=None,
+        section="Camera",
         help="Sub-observer heliographic longitude in degrees (default 0).",
     ),
-    click.option(
+    option(
         "--latitude",
         type=float,
         default=None,
+        section="Camera",
         help="Sub-observer heliographic latitude in degrees (default 0).",
     ),
-    click.option(
+    option(
         "--roll",
         type=float,
         default=None,
+        section="Camera",
         help="Camera roll about the line of sight in degrees (default 0).",
     ),
-    click.option(
-        "--fov", type=float, default=None, help="Field of view (full width) in R_sun (default 25)."
+    option(
+        "--fov",
+        type=float,
+        default=None,
+        section="Camera",
+        help="Field of view (full width) in R_sun (default 25).",
     ),
-    click.option("--width", type=int, default=None, help="Image width in pixels (default 1024)."),
-    click.option("--height", type=int, default=None, help="Image height in pixels (default 1024)."),
+    option(
+        "--width",
+        type=int,
+        default=None,
+        section="Camera",
+        help="Image width in pixels (default 1024).",
+    ),
+    option(
+        "--height",
+        type=int,
+        default=None,
+        section="Camera",
+        help="Image height in pixels (default 1024).",
+    ),
 )
 _weighting_options = _compose(
-    click.option(
+    option(
         "--preset",
         type=click.Choice(WEIGHTING_PRESETS),
         default=None,
+        section="Render",
         help="Geometric depth-weighting preset (default large-fov).",
     ),
 )
 _render_options = _compose(
-    click.option(
+    option(
         "--display",
         type=click.Choice(DISPLAY_MODES),
         default=None,
+        section="Render",
+        advanced=True,
         help="Depth-colour reconstruction (default balanced).",
     ),
-    click.option(
+    option(
         "--polarity-mode",
         type=click.Choice(POLARITY_MODES),
         default=None,
+        section="Render",
         help="Colour by magnetic polarity: hue=warm outward/cool inward (default none).",
     ),
-    click.option(
+    option(
         "--occult",
         type=click.Choice(OCCULT_MODES),
         default=None,
+        section="Render",
         help="Occultation mode (default eclipse).",
     ),
-    click.option(
-        "--r-occult", type=float, default=None, help="Body/occulter radius in R_sun (default 1.0)."
+    option(
+        "--r-occult",
+        type=float,
+        default=None,
+        section="Render",
+        advanced=True,
+        help="Body/occulter radius in R_sun (default 1.0).",
     ),
-    click.option(
+    option(
         "--occult-softness",
         type=float,
         default=None,
+        section="Render",
+        advanced=True,
         help="Eclipse-edge feather in R_sun (default 0.03).",
     ),
-    click.option(
+    option(
         "--clamp",
         type=float,
         nargs=2,
         default=None,
+        section="Render",
+        advanced=True,
         help="Display log10 Q⊥ clamp 'LOW HIGH' (default log10(2) 7.0).",
     ),
-    click.option(
-        "--raw/--no-raw",
-        "raw",
+    option(
+        "--floor/--no-floor",
+        "floor",
         default=None,
-        help="Keep the sub-floor tail (skip the lower clamp).",
+        section="Render",
+        advanced=True,
+        help="Apply the lower display clamp; --no-floor keeps the sub-floor tail (default on).",
     ),
-    click.option(
+    option(
         "--step",
         type=float,
         default=None,
+        section="Render",
         help="Line-of-sight sample spacing in R_sun (default 0.02).",
     ),
-    click.option(
+    option(
         "--percentiles",
         type=float,
         nargs=2,
         default=None,
+        section="Render",
+        advanced=True,
         help="Per-channel stretch percentiles 'LOW HIGH' (default 1.0 99.5).",
     ),
 )
 _annotate_options = _compose(
-    click.option(
+    option(
         "--annotate/--no-annotate",
         "annotate",
         default=None,
+        section="Output",
+        advanced=True,
         help="Burn the provenance stamp onto the PNG (default on).",
     ),
-    click.option(
+    option(
         "--annotate-position",
         type=click.Choice(ANNOTATE_POSITIONS),
         default=None,
+        section="Output",
+        advanced=True,
         help="Stamp corner (default bottom-left).",
     ),
 )
 _output_options = _compose(
-    click.option(
+    option(
         "--grayscale/--no-grayscale",
         "grayscale",
         default=None,
+        section="Output",
+        advanced=True,
         help="Also write the grayscale measurement PNG (default off).",
     ),
     _annotate_options,
 )
 _fieldlines_options = _compose(
-    click.option(
+    option(
         "--seeding",
         type=click.Choice(FIELDLINE_SEEDING),
         default=None,
+        section="Field lines",
         help="Seeding: limb (front loops + limb fan) or uniform sphere (default limb).",
     ),
-    click.option(
+    option(
         "--seeds",
         "n_seeds",
         type=int,
         default=None,
+        section="Field lines",
         help="Fibonacci seed budget: full sphere (uniform) or front-loop source (limb) "
         "(default 1500).",
     ),
-    click.option(
+    option(
         "--limb-seeds",
         type=int,
         default=None,
+        section="Field lines",
+        advanced=True,
         help="Seeds around the limb ring (the open fan; limb seeding) (default 375).",
     ),
-    click.option(
+    option(
         "--front-loop-length",
         type=float,
         default=None,
+        section="Field lines",
+        advanced=True,
         help="Max arc length R_sun for a kept near-side closed loop (limb seeding) (default 1.2).",
     ),
-    click.option(
+    option(
         "--colour",
         type=click.Choice(FIELDLINE_COLOUR),
         default=None,
+        section="Field lines",
         help="Line colour: rainbow (per-line hue) or polarity (B_r sign) (default polarity).",
     ),
-    click.option(
+    option(
         "--magnetogram/--no-magnetogram",
         "magnetogram",
         default=None,
+        section="Field lines",
+        advanced=True,
         help="Render the disk as a B_r magnetogram from the data (default on).",
     ),
-    click.option(
-        "--line-width", type=float, default=None, help="Drawn line width in pixels (default 1.5)."
+    option(
+        "--line-width",
+        type=float,
+        default=None,
+        section="Field lines",
+        advanced=True,
+        help="Drawn line width in pixels (default 1.5).",
     ),
-    click.option(
+    option(
         "--show",
         type=click.Choice(FIELDLINE_SHOW),
         default=None,
+        section="Field lines",
         help="Which lines to draw: all / open / closed (default all).",
     ),
-    click.option(
+    option(
         "--depth-fade",
         type=float,
         default=None,
+        section="Field lines",
+        advanced=True,
         help="Dim far-side lines by up to this fraction, 0-1 (default 0.4).",
     ),
-    click.option(
-        "--rtol", type=float, default=None, help="Tracer relative tolerance (default 1e-4)."
+    option(
+        "--rtol",
+        type=float,
+        default=None,
+        section="Field lines",
+        advanced=True,
+        help="Tracer relative tolerance (default 1e-4).",
     ),
-    click.option(
-        "--cfl", type=float, default=None, help="CFL step ceiling, 0<cfl<1 (default 0.5)."
+    option(
+        "--cfl",
+        type=float,
+        default=None,
+        section="Field lines",
+        advanced=True,
+        help="CFL step ceiling, 0<cfl<1 (default 0.5).",
     ),
-    click.option(
-        "--max-steps", type=int, default=None, help="Per-half-line step guard (default 10000)."
+    option(
+        "--max-steps",
+        type=int,
+        default=None,
+        section="Field lines",
+        advanced=True,
+        help="Per-half-line step guard (default 10000).",
     ),
-    *_turn_guard_options,
+    *_turn_guard_options("Field lines"),
 )
 _export_options = _compose(
-    click.option(
+    option(
         "--seeds",
         "seed_grid",
         type=int,
         nargs=2,
         default=None,
+        section="Export",
         help="Seed grid resolution 'N_THETA N_PHI' on the seed sphere (default 100 100).",
     ),
-    click.option(
+    option(
         "--seed-radius",
         type=float,
         default=None,
+        section="Export",
         help="Seed sphere radius in R_sun (default: the inner boundary).",
     ),
-    click.option(
-        "--rtol", type=float, default=None, help="Tracer relative tolerance (default 1e-4)."
+    option(
+        "--rtol",
+        type=float,
+        default=None,
+        section="Export",
+        advanced=True,
+        help="Tracer relative tolerance (default 1e-4).",
     ),
-    click.option(
-        "--cfl", type=float, default=None, help="CFL step ceiling, 0<cfl<1 (default 0.5)."
+    option(
+        "--cfl",
+        type=float,
+        default=None,
+        section="Export",
+        advanced=True,
+        help="CFL step ceiling, 0<cfl<1 (default 0.5).",
     ),
-    click.option(
-        "--max-steps", type=int, default=None, help="Per-half-line step guard (default 10000)."
+    option(
+        "--max-steps",
+        type=int,
+        default=None,
+        section="Export",
+        advanced=True,
+        help="Per-half-line step guard (default 10000).",
     ),
-    *_turn_guard_options,
+    *_turn_guard_options("Export"),
 )
 _brightness_options = _compose(
-    click.option(
+    option(
         "--frame",
         type=click.Choice(BRIGHTNESS_FRAMES),
         default=None,
+        section="Brightness",
         help="Brightness frame: polarized (pB) or total (white-light) (default polarized).",
     ),
-    click.option(
+    option(
         "--treatment",
         type=click.Choice(BRIGHTNESS_TREATMENTS),
         default=None,
+        section="Brightness",
         help="Display treatment (applied to the selected --frame): raw / radial rho-power filter / "
         "newkirk radial vignette / mgn fine-structure enhancement (default raw).",
     ),
-    click.option(
+    option(
         "--radial-power",
         type=float,
         default=None,
+        section="Brightness",
+        advanced=True,
         help="Exponent for --treatment radial: brightness is scaled by rho**power (rho = "
         "plane-of-sky radius in R_sun); below the radial-falloff power it lifts the outer corona "
         "while staying bright near the limb (default 3.0).",
     ),
-    click.option(
+    option(
         "--export",
         "export_formats",
         type=click.Choice(EXPORT_FORMATS),
         multiple=True,
+        section="Output",
+        advanced=True,
         help="Also write the raw data (both pB and total B + plane-of-sky coordinates) to this "
         "format beside the PNG; repeatable. Currently only npz.",
     ),
-    click.option(
+    option(
         "--limb-darkening",
         "limb_darkening",
         type=float,
         default=None,
+        section="Brightness",
+        advanced=True,
         help="Thomson limb-darkening coefficient u, 0-1 (default 0.6).",
     ),
-    click.option(
+    option(
         "--crossover",
         type=float,
         default=None,
+        section="Brightness",
+        advanced=True,
         help="Closed-form→asymptotic coefficient crossover radius in R_sun (default 10).",
     ),
-    click.option(
+    option(
         "--step",
         type=float,
         default=None,
+        section="Brightness",
         help="Line-of-sight sample spacing in R_sun (default 0.02).",
     ),
-    click.option(
+    option(
         "--occult",
         type=click.Choice(OCCULT_MODES),
         default=None,
+        section="Brightness",
         help="Occultation mode (default eclipse).",
     ),
-    click.option(
-        "--r-occult", type=float, default=None, help="Body/occulter radius in R_sun (default 1.0)."
+    option(
+        "--r-occult",
+        type=float,
+        default=None,
+        section="Brightness",
+        advanced=True,
+        help="Body/occulter radius in R_sun (default 1.0).",
     ),
-    click.option(
+    option(
         "--occult-softness",
         type=float,
         default=None,
+        section="Brightness",
+        advanced=True,
         help="Eclipse-edge feather in R_sun (default 0.03).",
     ),
-    click.option(
+    option(
         "--scaling",
         type=click.Choice(BRIGHTNESS_SCALINGS),
         default=None,
+        section="Brightness",
+        advanced=True,
         help="Intensity stretch: log or linear (default log; linear for mgn).",
     ),
-    click.option(
+    option(
         "--percentiles",
         type=float,
         nargs=2,
         default=None,
+        section="Brightness",
+        advanced=True,
         help="Per-image stretch percentiles 'LOW HIGH' (default 1.0 99.5).",
     ),
 )
-_workers_option = click.option(
+_workers_option = option(
     "--workers",
     type=int,
     default=None,
+    section="Execution",
     help="Worker threads for the numba kernels (default all cores).",
 )
-_device_option = click.option(
+_device_option = option(
     "--device",
     type=click.Choice(DEVICE_MODES),
     default=None,
+    section="Execution",
     help="Compute backend for the volume build: auto (GPU when present, else CPU), gpu (force; "
     "errors if absent), cpu. Renders always run on the CPU. Default auto.",
 )
-_quiet_option = click.option(
-    "--quiet", is_flag=True, default=False, help="Suppress progress bars and the spinner."
+_quiet_option = option(
+    "--quiet",
+    is_flag=True,
+    default=False,
+    section="Execution",
+    help="Suppress progress bars and the spinner.",
+)
+_quality_option = option(
+    "--quality",
+    type=click.Choice(tuple(QUALITY_PRESETS)),
+    default=None,
+    section="Volume",
+    help="Volume quality preset: fast (= --resolution-factor 1 --supersample 2, ~12M voxels at "
+    "the default grid), standard (= 2/4, ~100M, the default), high (= 3/6, ~336M). Explicit "
+    "--resolution-factor / --supersample override the preset.",
 )
 
 
@@ -626,6 +836,14 @@ def _grid_config(kw: dict[str, Any]) -> GridConfig:
 
 
 def _volume_config(kw: dict[str, Any], workers: int | None) -> VolumeConfig:
+    # The --quality preset is a second layer of resolution defaults: it fills resolution_factor /
+    # supersample only where no explicit flag was given; the schema supplies everything else.
+    if kw.get("quality") is not None:
+        preset_factor, preset_supersample = QUALITY_PRESETS[kw["quality"]]
+        if kw.get("resolution_factor") is None:
+            kw["resolution_factor"] = preset_factor
+        if kw.get("supersample") is None:
+            kw["supersample"] = preset_supersample
     fields = _present(
         kw,
         "builder",
@@ -672,8 +890,8 @@ def _render_config(kw: dict[str, Any], workers: int | None) -> RenderConfig:
         fields["clamp"] = tuple(kw["clamp"])
     if kw.get("percentiles") is not None:
         fields["percentiles"] = tuple(kw["percentiles"])
-    if kw.get("raw") is not None:
-        fields["raw"] = kw["raw"]
+    if kw.get("floor") is not None:
+        fields["floor"] = kw["floor"]
     if workers is not None:
         fields["workers"] = workers
     return RenderConfig(**fields)
@@ -864,7 +1082,12 @@ def _warn_qmap_outer_radius(
 # --- The command group -------------------------------------------------------------------------
 
 
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.group(
+    cls=QoronaGroup,
+    context_settings={"help_option_names": ["-h", "--help"]},
+    epilog="Each command's --help lists its common options; --help-all shows every option, "
+    "grouped by pipeline stage.",
+)
 @click.version_option(__version__, "-V", "--version", prog_name="qorona")
 def main() -> None:
     """Qorona: synthetic coronal imagery from global MHD solutions.
@@ -895,6 +1118,7 @@ def main() -> None:
     callback=_writable_output,
     help="Destination volume artifact (.qor / .npz).",
 )
+@_quality_option
 @_input_options
 @_grid_options
 @_volume_options
@@ -962,10 +1186,12 @@ def build(
     callback=_writable_output,
     help="Destination image (.png).",
 )
-@click.option(
+@option(
     "--timestamp",
     default=None,
     callback=_valid_timestamp,
+    section="Input",
+    advanced=True,
     help="Override the volume's timestamp for the stamp (re-derives CR/JD).",
 )
 @_camera_options
@@ -973,14 +1199,12 @@ def build(
 @_render_options
 @_output_options
 @_workers_option
-@_device_option
 @_quiet_option
 def render(
     volume_path: Path,
     output_path: Path,
     timestamp: str | None,
     workers: int | None,
-    device: str | None,
     quiet: bool,
     **kw: Any,
 ) -> None:
@@ -988,9 +1212,8 @@ def render(
 
     The seconds-scale stage: load the volume, integrate it for one camera / preset / display, write
     the PNG(s) with the on-image stamp, and print the metrics. Repeat for new viewpoints off the
-    same volume.
+    same volume. Renders always run on the CPU, so there is no `--device` here.
     """
-    kw["device"] = device
     show_progress = not quiet
     camera_cfg = _camera_config(kw)
     weighting_cfg = _weighting_config(kw)
@@ -1033,23 +1256,28 @@ def render(
     callback=_writable_output,
     help="Destination figure (.png).",
 )
-@click.option("--radius", type=float, default=None, help="Shell radius in R_sun (default 3).")
-@click.option(
+@option(
+    "--radius", type=float, default=None, section="Q-map", help="Shell radius in R_sun (default 3)."
+)
+@option(
     "--resolution",
     default=None,
+    section="Q-map",
     help="Display grid 'NTHETAxNPHI' (default 720x1440; interpolated, capped by the bake's pitch).",
 )
-@click.option(
+@option(
     "--slog-max",
     "slog_max",
     type=float,
     default=None,
+    section="Q-map",
     help="Colour ceiling for slog Q⊥ (default 5).",
 )
-@click.option(
+@option(
     "--export-npz/--no-export-npz",
     "export_npz",
     default=None,
+    section="Q-map",
     help="Also write the raw shell arrays as a .npz beside the figure (default off).",
 )
 @_annotate_options
@@ -1097,6 +1325,7 @@ def qmap(volume_path: Path, output_path: Path, quiet: bool, **kw: Any) -> None:
     callback=_writable_output,
     help="Destination image (.png).",
 )
+@_quality_option
 @click.option(
     "--save-volume",
     "save_volume_path",

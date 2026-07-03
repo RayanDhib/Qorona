@@ -80,6 +80,9 @@ qorona render data/hmi_lmax50.qor -o data/polarity.png --fov 8 --longitude 317 -
 qorona render data/hmi_lmax50.qor -o data/sun.png --fov 3 --longitude 317 --latitude 6.2 --occult opaque --preset small-fov --step 0.002
 ```
 
+`--quality` picks the baked volume's resolution: `fast` for a quick preview, `standard` (the
+default), or `high` for the finest structure (timings below).
+
 Or do it all in one shot:
 
 ```bash
@@ -104,8 +107,9 @@ qorona qmap data/hmi_lmax50_r3.qor -o data/qmap.png --radius 3
 
 Every command prints a polished end-of-run summary of its parameters and metrics, and the rendered
 PNG carries a corner stamp (CR · timestamp · sub-observer angles · roll · FOV) for reproducibility. Run
-`qorona <command> --help` for the full flag list (grid resolution, builder, weighting preset,
-occultation, display mode, and more); the defaults reproduce the published whole-corona Q⊥ render.
+`qorona <command> --help` for the common options, or `--help-all` for the complete flag reference
+(grid resolution, builder, engine tolerances, and more); the defaults reproduce the published
+whole-corona Q⊥ render.
 
 ## GPU acceleration
 
@@ -131,10 +135,10 @@ qorona build ... --device gpu --precision float64   # all-double reference (~2×
 
 Indicative volume-build timings (RTX 4080 vs 32-core CPU, mixed precision; not a benchmark):
 
-| Q⊥ volume                            | GPU    | CPU            |
-|--------------------------------------|--------|----------------|
-| Quickstart, 384×360×720 (100 M vox)  | ~85 s  | ~9 min         |
-| High-res, 576×540×1080 (336 M vox)   | ~3 min | ~22 min        |
+| Q⊥ volume                                                | GPU    | CPU     |
+|----------------------------------------------------------|--------|---------|
+| `--quality standard` (default), 384×360×720 (100 M vox)  | ~85 s  | ~9 min  |
+| `--quality high`, 576×540×1080 (336 M vox)               | ~3 min | ~22 min |
 
 ## How it works
 

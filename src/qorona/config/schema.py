@@ -244,6 +244,17 @@ class VolumeConfig:
         }
 
 
+#: Named ``(resolution_factor, supersample)`` bundles behind the CLI's ``--quality`` preset.
+#: ``standard`` derives from :class:`VolumeConfig`, so the preset and the schema defaults cannot
+#: drift apart; the preset is a CLI shorthand and never appears in provenance (the resolved
+#: ``resolution_factor`` / ``supersample`` do).
+QUALITY_PRESETS: dict[str, tuple[int, int]] = {
+    "fast": (1, 2),
+    "standard": (VolumeConfig.resolution_factor, VolumeConfig.supersample),
+    "high": (3, 6),
+}
+
+
 @dataclass(frozen=True)
 class CameraConfig:
     """The orthographic plane-of-sky viewpoint: sub-observer angles (deg), roll, FOV, and pixels.
@@ -336,7 +347,7 @@ class RenderConfig:
     r_occult: float = 1.0
     occult_softness: float = 0.03
     clamp: tuple[float, float] = (_LOG_FLOOR, 7.0)
-    raw: bool = False
+    floor: bool = True
     step: float = 0.02
     percentiles: tuple[float, float] = (1.0, 99.5)
     polarity_mode: str = "none"
@@ -378,7 +389,7 @@ class RenderConfig:
             "r_occult": self.r_occult,
             "occult_softness": self.occult_softness,
             "clamp": list(self.clamp),
-            "raw": self.raw,
+            "floor": self.floor,
             "step": self.step,
             "percentiles": list(self.percentiles),
             "polarity_mode": self.polarity_mode,

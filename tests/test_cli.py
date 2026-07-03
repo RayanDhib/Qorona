@@ -1,11 +1,11 @@
-"""CLI smoke test: the build -> .qor -> render spine runs end to end, and a non-artifact is
-rejected with a clean error instead of a traceback.
+"""CLI smoke test: the build -> .qor -> render spine runs end to end, the two-level help wiring
+holds, and a non-artifact is rejected with a clean error instead of a traceback.
 
 The numerical kernels have their own analytic tests; this guards the command wiring (argument
-parsing, config assembly, volume save/load, PNG output) they never touch. It runs on the tiny
-hand-written mesh from :mod:`test_readers`, with the cheapest grid, the nearest-cell resampler
-(the k-NN default needs more cells than the mesh has), and a 64x64 image, pinned to ``--device
-cpu`` so it is deterministic and GPU-free.
+parsing, help levels, config assembly, volume save/load, PNG output) they never touch. It runs on
+the tiny hand-written mesh from :mod:`test_readers`, with the cheapest grid, the nearest-cell
+resampler (the k-NN default needs more cells than the mesh has), the ``fast`` quality preset, and
+a 64x64 image, pinned to ``--device cpu`` so it is deterministic and GPU-free.
 """
 
 from __future__ import annotations
@@ -24,6 +24,18 @@ def test_cli_build_render_roundtrip(tmp_path: Path) -> None:
     volume = tmp_path / "mini.qor"
     image = tmp_path / "mini.png"
     runner = CliRunner()
+
+    # The two-level help: the default view keeps the engine knobs out and points to --help-all;
+    # the full view shows them under their pipeline-stage section. Hand-rolled formatter wiring
+    # that click no longer guarantees, so it is guarded here with the rest of the CLI plumbing.
+    curated = runner.invoke(main, ["run", "-h"])
+    assert curated.exit_code == 0, curated.output
+    assert "--rtol" not in curated.output
+    assert "--help-all" in curated.output
+    full = runner.invoke(main, ["run", "--help-all"])
+    assert full.exit_code == 0, full.output
+    assert "--rtol" in full.output
+    assert "Volume:" in full.output
 
     build = runner.invoke(
         main,
@@ -46,8 +58,8 @@ def test_cli_build_render_roundtrip(tmp_path: Path) -> None:
             "6",
             "--n-phi",
             "12",
-            "--supersample",
-            "2",
+            "--quality",
+            "fast",
             "--device",
             "cpu",
             "--quiet",
@@ -71,8 +83,6 @@ def test_cli_build_render_roundtrip(tmp_path: Path) -> None:
             "64",
             "--height",
             "64",
-            "--device",
-            "cpu",
             "--quiet",
         ],
     )
@@ -92,8 +102,6 @@ def test_cli_build_render_roundtrip(tmp_path: Path) -> None:
             "2.5",
             "--longitude",
             "0",
-            "--device",
-            "cpu",
             "--quiet",
         ],
     )

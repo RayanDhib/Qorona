@@ -30,7 +30,7 @@ These details are load-bearing:
   (including the real-data sub-floor tail); the render clamps to ``[log₁₀2, log_max]`` for an 8-bit
   range (the lower bound lifts the retained sub-floor tail to the floor, the upper tames the
   separatrix singularities) and reports the fraction clamped at each end, so nothing is silently
-  discarded. A ``raw`` mode skips the lower clamp for diagnostics.
+  discarded. ``floor=False`` skips the lower clamp for diagnostics.
 
 - **Occultation is two orthogonal mechanisms.** An *in-integral* far-side mask (what a line of sight
   sees past an opaque body) and an *image-level* dark disk (the eclipse occulter). The ``occult``
@@ -591,7 +591,7 @@ def _render_numpy(
     preset: WeightingPreset,
     thomson: ThomsonWeight | None,
     clamp: tuple[float, float],
-    raw: bool,
+    floor: bool,
     step: float,
     occult: Literal["eclipse", "opaque", "none"],
     r_occult: float,
@@ -615,7 +615,7 @@ def _render_numpy(
     accumulators only (the geometric on-path / coverage budgets stay scalar-free), via the same
     radial coefficient table the kernel reads, so the two paths stay parity-exact.
     """
-    floor, log_max = clamp
+    log_floor, log_max = clamp
     occult_body = occult == "opaque"
     thomson_table = thomson.coefficient_table() if thomson is not None else None
     rays = camera.rays()
@@ -655,11 +655,11 @@ def _render_numpy(
                 on_path = on_path & ~_occultation_mask(batch_impact, s, r_occult)
             valid = on_path & np.isfinite(log_q)
 
-            lower_clamped += int(np.count_nonzero(valid & (log_q < floor)))
+            lower_clamped += int(np.count_nonzero(valid & (log_q < log_floor)))
             upper_clamped += int(np.count_nonzero(valid & (log_q > log_max)))
             valid_total += int(np.count_nonzero(valid))
 
-            clamped = np.clip(log_q, None if raw else floor, log_max)
+            clamped = np.clip(log_q, log_floor if floor else None, log_max)
             weights = preset.channel_weights(s, radius)  # (3, m, n_steps)
             # Thomson enters the average weight only; on-path/coverage budgets below stay geometric.
             average_weights = weights
@@ -725,7 +725,7 @@ def _render_numba(
     preset: WeightingPreset,
     thomson: ThomsonWeight | None,
     clamp: tuple[float, float],
-    raw: bool,
+    floor: bool,
     step: float,
     occult: Literal["eclipse", "opaque", "none"],
     r_occult: float,
@@ -752,8 +752,8 @@ def _render_numba(
     from qorona.accel.kernels import render_batch_jit
 
     apply_workers(workers)
-    floor, log_max = clamp
-    clamp_lower = not raw
+    log_floor, log_max = clamp
+    clamp_lower = floor
     occult_body = occult == "opaque"
     rays = camera.rays()
     height, width = camera.pixels
@@ -820,7 +820,7 @@ def _render_numba(
                 use_powers,
                 scales,
                 use_scales,
-                float(floor),
+                float(log_floor),
                 float(log_max),
                 clamp_lower,
                 float(r_occult),
@@ -877,7 +877,7 @@ def render(
     preset: WeightingPreset = LARGE_FOV,
     thomson: ThomsonWeight | None = None,
     clamp: tuple[float, float] = (LOG_FLOOR, 7.0),
-    raw: bool = False,
+    floor: bool = True,
     step: float = 0.02,
     occult: Literal["eclipse", "opaque", "none"] = "eclipse",
     r_occult: float = 1.0,
@@ -923,11 +923,11 @@ def render(
         plasma (``"K"`` total-brightness or ``"pB"`` polarized emphasis); the depth colour and
         coverage are unaffected. Composes with ``preset`` on an orthogonal axis.
     clamp
-        Display ``(floor, log_max)`` applied to log₁₀ Q⊥ before integrating: the floor lifts the
-        retained sub-floor tail, ``log_max`` tames the separatrix singularities.
-    raw
-        When ``True`` skip the lower clamp (keep sub-floor values) for diagnostics; the upper clamp
-        still applies.
+        Display ``(log_floor, log_max)`` applied to log₁₀ Q⊥ before integrating: the floor lifts
+        the retained sub-floor tail, ``log_max`` tames the separatrix singularities.
+    floor
+        When ``False`` skip the lower clamp (keep the sub-floor tail) for diagnostics; the upper
+        clamp still applies.
     step
         Line-of-sight sample spacing in R☉.
     occult
@@ -990,7 +990,7 @@ def render(
             preset=preset,
             thomson=thomson,
             clamp=clamp,
-            raw=raw,
+            floor=floor,
             step=step,
             occult=occult,
             r_occult=r_occult,
@@ -1007,7 +1007,7 @@ def render(
         preset=preset,
         thomson=thomson,
         clamp=clamp,
-        raw=raw,
+        floor=floor,
         step=step,
         occult=occult,
         r_occult=r_occult,

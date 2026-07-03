@@ -35,8 +35,8 @@ Repository = "https://github.com/RayanDhib/Qorona"
 qorona = "qorona.cli.main:main"
 
 [project.optional-dependencies]
-# Contributor tooling only; not needed to *use* Qorona, so it stays an opt-in extra.
-dev = ["ruff>=0.15,<0.16", "mypy>=1.9", "pytest>=8.0"]
+# Contributor tooling only; not needed to *use* Qorona.
+dev = ["ruff>=0.15,<0.16", "mypy>=2.1,<2.2", "pytest>=8.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -63,10 +63,15 @@ warn_redundant_casts = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
-# astropy, scipy, sunpy, and numba/llvmlite ship no type information (no py.typed marker or
-# bundled stubs); ignore their missing imports rather than vendoring stub packages.
-module = [
-    "astropy", "astropy.*", "scipy", "scipy.*", "sunpy", "sunpy.*",
-    "numba", "numba.*", "llvmlite", "llvmlite.*",
-]
+# astropy, scipy, and sunpy ship no type information (no py.typed marker or bundled stubs); ignore
+# their missing imports rather than vendoring stub packages.
+module = ["astropy", "astropy.*", "scipy", "scipy.*", "sunpy", "sunpy.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# numba/llvmlite ship a py.typed marker from 0.66 on, but their public types are incomplete and
+# flag correct kernel code (prange typed non-iterable, cuda.jit / NUMBA_NUM_THREADS / the Dispatcher
+# call signatures). Skip analysing them so their symbols stay untyped, as they were before 0.66.
+module = ["numba", "numba.*", "llvmlite", "llvmlite.*"]
+follow_imports = "skip"
 ignore_missing_imports = true

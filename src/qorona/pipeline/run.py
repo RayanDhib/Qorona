@@ -308,7 +308,7 @@ def render_volume(
         preset=_PRESETS[weighting_cfg.preset],
         thomson=thomson,
         clamp=render_cfg.clamp,
-        raw=render_cfg.raw,
+        floor=render_cfg.floor,
         step=render_cfg.step,
         occult=cast(Any, render_cfg.occult),
         r_occult=render_cfg.r_occult,
