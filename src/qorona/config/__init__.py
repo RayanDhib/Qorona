@@ -11,6 +11,7 @@ from __future__ import annotations
 from qorona.config.schema import (
     ANNOTATE_POSITIONS,
     BRIGHTNESS_FRAMES,
+    BRIGHTNESS_OCCULT_MODES,
     BRIGHTNESS_SCALINGS,
     BRIGHTNESS_TREATMENTS,
     CLOSED_TREATMENTS,
@@ -47,6 +48,7 @@ from qorona.config.schema import (
 __all__ = [
     "ANNOTATE_POSITIONS",
     "BRIGHTNESS_FRAMES",
+    "BRIGHTNESS_OCCULT_MODES",
     "BRIGHTNESS_SCALINGS",
     "BRIGHTNESS_TREATMENTS",
     "CLOSED_TREATMENTS",

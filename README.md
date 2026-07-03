@@ -78,6 +78,7 @@ qorona build data/hmi_lmax50.CFmesh.xz -o data/hmi_lmax50.qor \
 qorona render data/hmi_lmax50.qor -o data/eclipse.png --fov 8 --longitude 317 --latitude 6.2
 qorona render data/hmi_lmax50.qor -o data/polarity.png --fov 8 --longitude 317 --latitude 6.2 --polarity-mode hue
 qorona render data/hmi_lmax50.qor -o data/sun.png --fov 3 --longitude 317 --latitude 6.2 --occult opaque --preset small-fov --step 0.002
+qorona render data/hmi_lmax50.qor -o data/composite.png --fov 8 --longitude 317 --latitude 6.2 --occult composite
 ```
 
 `--quality` picks the baked volume's resolution: `fast` for a quick preview, `standard` (the

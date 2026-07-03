@@ -89,6 +89,30 @@ def test_cli_build_render_roundtrip(tmp_path: Path) -> None:
     assert render.exit_code == 0, render.output
     assert image.exists()
 
+    # The composite mode (disk filled with its near-side structure) shares the wiring but takes
+    # the opaque integration path and the layered finalize; guard it end to end too.
+    composite_image = tmp_path / "mini_composite.png"
+    composite = runner.invoke(
+        main,
+        [
+            "render",
+            str(volume),
+            "-o",
+            str(composite_image),
+            "--fov",
+            "2.5",
+            "--occult",
+            "composite",
+            "--width",
+            "64",
+            "--height",
+            "64",
+            "--quiet",
+        ],
+    )
+    assert composite.exit_code == 0, composite.output
+    assert composite_image.exists()
+
     # A non-artifact (the mesh fed where a .qor is expected) is rejected as a clean ClickException,
     # not a traceback: SystemExit from click, with the loader's message reaching the user.
     rejected = runner.invoke(

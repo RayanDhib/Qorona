@@ -313,6 +313,8 @@ def render_volume(
         occult=cast(Any, render_cfg.occult),
         r_occult=render_cfg.r_occult,
         occult_softness=render_cfg.occult_softness,
+        disk_tone=render_cfg.disk_tone,
+        disk_desat=render_cfg.disk_desat,
         percentiles=render_cfg.percentiles,
         display=cast(Any, render_cfg.display),
         polarity_mode=cast(Any, render_cfg.polarity_mode),

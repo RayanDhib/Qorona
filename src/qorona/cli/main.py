@@ -36,6 +36,7 @@ from qorona.cli.help import QoronaGroup, option
 from qorona.config import (
     ANNOTATE_POSITIONS,
     BRIGHTNESS_FRAMES,
+    BRIGHTNESS_OCCULT_MODES,
     BRIGHTNESS_SCALINGS,
     BRIGHTNESS_TREATMENTS,
     CLOSED_TREATMENTS,
@@ -446,7 +447,9 @@ _render_options = _compose(
         type=click.Choice(OCCULT_MODES),
         default=None,
         section="Render",
-        help="Occultation mode (default eclipse).",
+        help="Body treatment: eclipse (dark disk), opaque (solid 3-D body), composite (the "
+        "eclipse view with the disk filled by its near-side structure, toned down), none "
+        "(default eclipse).",
     ),
     option(
         "--r-occult",
@@ -463,6 +466,22 @@ _render_options = _compose(
         section="Render",
         advanced=True,
         help="Eclipse-edge feather in R_sun (default 0.03).",
+    ),
+    option(
+        "--disk-tone",
+        type=float,
+        default=None,
+        section="Render",
+        advanced=True,
+        help="Composite mode: disk brightness relative to the inner corona (default 0.8).",
+    ),
+    option(
+        "--disk-desat",
+        type=float,
+        default=None,
+        section="Render",
+        advanced=True,
+        help="Composite mode: disk desaturation, 0-1 (default 0.4).",
     ),
     option(
         "--clamp",
@@ -729,7 +748,7 @@ _brightness_options = _compose(
     ),
     option(
         "--occult",
-        type=click.Choice(OCCULT_MODES),
+        type=click.Choice(BRIGHTNESS_OCCULT_MODES),
         default=None,
         section="Brightness",
         help="Occultation mode (default eclipse).",
@@ -884,7 +903,16 @@ def _weighting_config(kw: dict[str, Any]) -> WeightingConfig:
 
 def _render_config(kw: dict[str, Any], workers: int | None) -> RenderConfig:
     fields = _present(
-        kw, "display", "occult", "r_occult", "occult_softness", "step", "polarity_mode", "device"
+        kw,
+        "display",
+        "occult",
+        "r_occult",
+        "occult_softness",
+        "disk_tone",
+        "disk_desat",
+        "step",
+        "polarity_mode",
+        "device",
     )
     if kw.get("clamp") is not None:
         fields["clamp"] = tuple(kw["clamp"])

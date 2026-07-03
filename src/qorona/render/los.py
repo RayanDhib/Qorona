@@ -36,9 +36,11 @@ These details are load-bearing:
   sees past an opaque body) and an *image-level* dark disk (the eclipse occulter). The ``occult``
   mode selects them: ``"eclipse"`` (default, the primary synthetic-eclipse image) integrates the
   full off-limb corona and darkens the disk; ``"opaque"`` keeps the body opaque (a 3-D view);
-  ``"none"`` disables both. The in-integral mask is the only part in the hot loop (kept kernel/NumPy
-  parity-exact); the dark disk is a post-stretch radial vignette in :func:`_finalize`, identical
-  across both paths.
+  ``"composite"`` renders the eclipse view with the disk filled by its own near-side structure,
+  toned down (two passes of the standard machinery combined by :func:`_composite_image`);
+  ``"none"`` disables both. The in-integral mask is the only part in the hot loop (kept
+  kernel/NumPy parity-exact); the dark disk is a post-stretch radial vignette in
+  :func:`_finalize`, identical across both paths.
 
 The two default weighting profiles reproduce the published total-eclipse squashing-factor render
 recipe: the explicit large- and small-field-of-view weightings of Mikić et al. (2018),
@@ -54,7 +56,7 @@ from __future__ import annotations
 
 import struct
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -95,6 +97,15 @@ _RENDER_PROGRESS_CHUNKS = 64
 #: Diverging warm/cool colours for ``--polarity-mode``: inward (-1), neutral (0), outward (+1); the
 #: standard slog-Q magnetic palette applied to the line-of-sight net polarity. A display choice.
 _POLARITY_STOPS = ((0.13, 0.40, 0.92), (0.97, 0.97, 0.97), (0.82, 0.12, 0.12))
+
+#: Outer edge of the composite mode's disk rim glow, in units of ``r_occult``: the disk layer keeps
+#: full weight inside the limb and decays smoothly to nothing here.
+_COMPOSITE_GLOW_OUTER = 1.15
+
+#: Line-of-sight step ceiling (R☉) for the composite mode's disk pass: the small-fov weighting's
+#: sharpest channel has a 21 Mm (~0.03 R☉) scale height, which the default 0.02 R☉ step aliases
+#: into concentric rings on the disk. The base pass keeps the caller's ``step``.
+_COMPOSITE_DISK_STEP = 0.005
 
 
 @dataclass(frozen=True)
@@ -492,6 +503,51 @@ def _thomson_kernel_args(
     )
 
 
+def _composite_image(
+    base: np.ndarray,
+    disk: np.ndarray,
+    impact: np.ndarray,
+    r_occult: float,
+    disk_tone: float,
+    disk_desat: float,
+) -> np.ndarray:
+    """Screen the composite mode's toned disk layer over the eclipse ``base`` image.
+
+    ``base`` is the finished eclipse render and ``disk`` the finished small-fov opaque render of
+    the same volume and camera (``(H, W, 3)`` in ``[0, 1]``, with ``impact`` the matching per-pixel
+    impact parameter). The disk layer is desaturated by ``disk_desat``, scaled to sit under the
+    corona (its limb annulus matched to the base's inner corona and damped by ``disk_tone``), and
+    screen-blended: full weight inside the limb, decaying to zero at :data:`_COMPOSITE_GLOW_OUTER`
+    (the disk's rim glow). Screen keeps the streamer roots visible through the glow and reduces to
+    the pure disk layer over the black occulter core; a hand-off that instead fades the layer into
+    the occulter's feather produces a dark band at the limb.
+    """
+    layer = disk
+    if disk_desat > 0.0:
+        luminance = layer.mean(axis=2, keepdims=True)
+        layer = luminance + (1.0 - disk_desat) * (layer - luminance)
+
+    # Ring match: the disk layer's limb annulus lands at disk_tone times the base's inner corona,
+    # keeping the balance stable across solutions; disk_tone is the taste knob.
+    base_ring = (impact > 1.02 * r_occult) & (impact < 1.10 * r_occult)
+    layer_ring = (impact > 0.90 * r_occult) & (impact < 0.98 * r_occult)
+    tone = disk_tone
+    if base_ring.any() and layer_ring.any():
+        ring_level = layer[layer_ring].mean()
+        if ring_level > 0.0:
+            tone = disk_tone * base[base_ring].mean() / ring_level
+
+    on_disk = impact < r_occult
+    ramp = np.clip(
+        (_COMPOSITE_GLOW_OUTER * r_occult - impact) / ((_COMPOSITE_GLOW_OUTER - 1.0) * r_occult),
+        0.0,
+        1.0,
+    )
+    weight = np.where(on_disk, 1.0, ramp * ramp * (3.0 - 2.0 * ramp))
+    overlay = np.clip(layer * tone * weight[..., None], 0.0, 1.0)
+    return 1.0 - (1.0 - base) * (1.0 - overlay)
+
+
 def _finalize(
     signal: np.ndarray,
     coverage: np.ndarray,
@@ -541,7 +597,8 @@ def _finalize(
     partially-visible feather annulus stays as computed and both images are faded at the limb by the
     :func:`_eclipse_alpha` vignette. The scalar clamp fractions are left full-column: a volume
     dynamic-range diagnostic, not a per-pixel visible metric. ``"opaque"`` and ``"none"`` leave the
-    images untouched here.
+    images untouched here. The ``"composite"`` mode never reaches here: :func:`render` assembles it
+    from an eclipse pass and a small-fov opaque pass (:func:`_composite_image`).
     """
     if occult == "eclipse":
         alpha = _eclipse_alpha(impact, r_occult, occult_softness)
@@ -879,9 +936,11 @@ def render(
     clamp: tuple[float, float] = (LOG_FLOOR, 7.0),
     floor: bool = True,
     step: float = 0.02,
-    occult: Literal["eclipse", "opaque", "none"] = "eclipse",
+    occult: Literal["eclipse", "opaque", "composite", "none"] = "eclipse",
     r_occult: float = 1.0,
     occult_softness: float = 0.03,
+    disk_tone: float = 0.8,
+    disk_desat: float = 0.4,
     percentiles: tuple[float, float] = (1.0, 99.5),
     display: Literal["balanced", "raw", "coverage"] = "balanced",
     polarity_mode: Literal["none", "hue"] = "none",
@@ -905,7 +964,10 @@ def render(
     body) and an *image-level* dark disk (the eclipse occulter). ``"eclipse"`` (the default, the
     primary synthetic-eclipse image) integrates the full off-limb corona on both sides and darkens
     the disk image-side; ``"opaque"`` keeps the body opaque so near-side structure shows
-    (a 3-D view); ``"none"`` disables both for a fully translucent corona.
+    (a 3-D view); ``"composite"`` renders the eclipse view with the disk filled by its own
+    near-side structure, separately stretched, toned by ``disk_tone`` / ``disk_desat``, and
+    finished with a rim glow (a disk-corona composite; see :func:`_composite_disk`); ``"none"``
+    disables both for a fully translucent corona.
 
     Parameters
     ----------
@@ -933,14 +995,24 @@ def render(
     occult
         Occultation mode. ``"eclipse"``: dark solar disk, off-limb corona only (the total-eclipse
         look); ``"opaque"``: opaque body, near-side corona over the disk shows (a 3-D view);
-        ``"none"``: no occultation, full corona on both sides including behind the disk.
+        ``"composite"``: the eclipse view with the disk filled by its own near-side structure,
+        toned down (a disk-corona composite); ``"none"``: no occultation, full corona on both
+        sides including behind the disk.
     r_occult
         Body / occulter radius in R☉, the photosphere. Shared by both mechanisms: the far side of
-        this body is dropped in ``"opaque"``, and the eclipse disk has this radius.
+        this body is dropped in ``"opaque"`` / ``"composite"``, and the eclipse disk has this
+        radius.
     occult_softness
         Radial feather width in R☉ of the eclipse disk edge: ``0`` is a hard black circle; ``> 0``
         ramps the opacity ``0 → 1`` (smoothstep) across ``[r_occult - occult_softness, r_occult]``
-        for a soft, slightly-transparent limb. Ignored unless ``occult == "eclipse"``.
+        for a soft, slightly-transparent limb. Used by ``"eclipse"`` and by ``"composite"``'s
+        base layer.
+    disk_tone
+        Composite mode: the disk layer's brightness relative to the base's inner corona
+        (its limb annulus lands at this fraction of the corona's). Ignored by the other modes.
+    disk_desat
+        Composite mode: desaturation of the disk layer, ``0`` (untouched) to ``1`` (grayscale).
+        Ignored by the other modes.
     percentiles
         Low/high percentiles for the per-channel intensity stretch.
     display
@@ -970,8 +1042,56 @@ def render(
         The depth-coloured image, the grayscale measurement image, coverage, the raw per-channel
         signal, and clamp provenance.
     """
-    if occult not in ("eclipse", "opaque", "none"):
-        raise ValueError(f"occult must be 'eclipse', 'opaque', or 'none', not {occult!r}")
+    if occult not in ("eclipse", "opaque", "composite", "none"):
+        raise ValueError(
+            f"occult must be 'eclipse', 'opaque', 'composite', or 'none', not {occult!r}"
+        )
+    if occult == "composite":
+        # The composite is two passes of the standard machinery: the eclipse base, and the disk
+        # layer as a small-fov opaque render (its scale-height weighting and disk-anchored log
+        # stretch are what keep the on-disk structure legible and coloured), screened together
+        # image-side. The result carries the eclipse base's quantitative arrays: the composite is
+        # a presentation of the same data, not a new measurement.
+        base = render(
+            volume,
+            camera,
+            preset=preset,
+            thomson=thomson,
+            clamp=clamp,
+            floor=floor,
+            step=step,
+            occult="eclipse",
+            r_occult=r_occult,
+            occult_softness=occult_softness,
+            percentiles=percentiles,
+            display=display,
+            polarity_mode=polarity_mode,
+            chunk_size=chunk_size,
+            workers=workers,
+            show_progress=show_progress,
+        )
+        disk = render(
+            volume,
+            camera,
+            preset=SMALL_FOV,
+            thomson=thomson,
+            clamp=clamp,
+            floor=floor,
+            step=min(step, _COMPOSITE_DISK_STEP),
+            occult="opaque",
+            r_occult=r_occult,
+            occult_softness=occult_softness,
+            percentiles=percentiles,
+            display=display,
+            polarity_mode=polarity_mode,
+            chunk_size=chunk_size,
+            workers=workers,
+            show_progress=show_progress,
+        )
+        image = _composite_image(
+            base.image, disk.image, camera.rays().impact, r_occult, disk_tone, disk_desat
+        )
+        return replace(base, image=image)
     if display not in ("balanced", "raw", "coverage"):
         raise ValueError(f"display must be 'balanced', 'raw', or 'coverage', not {display!r}")
     if polarity_mode not in ("none", "hue"):

@@ -32,7 +32,8 @@ POLARITY_MODES = ("none", "hue")
 WEIGHTING_PRESETS = ("large-fov", "small-fov")
 THOMSON_MODES = ("K", "pB")
 DISPLAY_MODES = ("balanced", "raw", "coverage")
-OCCULT_MODES = ("eclipse", "opaque", "none")
+OCCULT_MODES = ("eclipse", "opaque", "composite", "none")
+BRIGHTNESS_OCCULT_MODES = ("eclipse", "opaque", "none")
 ANNOTATE_POSITIONS = ("bottom-left", "bottom-right", "top-left", "top-right")
 FIELDLINE_SHOW = ("all", "open", "closed")
 FIELDLINE_SEEDING = ("limb", "uniform")
@@ -337,15 +338,19 @@ class WeightingConfig:
 class RenderConfig:
     """The LOS render knobs: display reconstruction, occultation, clamp, and sampling.
 
-    Defaults mirror :func:`qorona.render.los.render` exactly. ``workers`` maps to that function's
-    numba thread count (``None`` = all cores). ``device`` is accepted for a uniform surface; the
-    render runs on the CPU regardless (it has no GPU backend).
+    Defaults mirror :func:`qorona.render.los.render` exactly. ``disk_tone`` and ``disk_desat``
+    shape the ``composite`` occultation mode's disk layer (its brightness relative to the inner
+    corona and its desaturation) and are ignored by the other modes. ``workers`` maps to the
+    render's numba thread count (``None`` = all cores). ``device`` is accepted for a uniform
+    surface; the render runs on the CPU regardless (it has no GPU backend).
     """
 
     display: str = "balanced"
     occult: str = "eclipse"
     r_occult: float = 1.0
     occult_softness: float = 0.03
+    disk_tone: float = 0.8
+    disk_desat: float = 0.4
     clamp: tuple[float, float] = (_LOG_FLOOR, 7.0)
     floor: bool = True
     step: float = 0.02
@@ -365,6 +370,10 @@ class RenderConfig:
         _require(self.r_occult > 0.0, f"r_occult must be > 0 R_sun, got {self.r_occult}")
         _require(
             self.occult_softness >= 0.0, f"occult_softness must be >= 0, got {self.occult_softness}"
+        )
+        _require(self.disk_tone > 0.0, f"disk_tone must be > 0, got {self.disk_tone}")
+        _require(
+            0.0 <= self.disk_desat <= 1.0, f"disk_desat must be in [0, 1], got {self.disk_desat}"
         )
         _require(
             self.clamp[0] < self.clamp[1],
@@ -388,6 +397,8 @@ class RenderConfig:
             "occult": self.occult,
             "r_occult": self.r_occult,
             "occult_softness": self.occult_softness,
+            "disk_tone": self.disk_tone,
+            "disk_desat": self.disk_desat,
             "clamp": list(self.clamp),
             "floor": self.floor,
             "step": self.step,
@@ -609,7 +620,7 @@ class BrightnessConfig:
         )
         _one_of(self.frame, BRIGHTNESS_FRAMES, "frame")
         _one_of(self.treatment, BRIGHTNESS_TREATMENTS, "treatment")
-        _one_of(self.occult, OCCULT_MODES, "occult")
+        _one_of(self.occult, BRIGHTNESS_OCCULT_MODES, "occult")
         scaling = self.scaling
         if scaling is None:
             scaling = "linear" if self.treatment == "mgn" else "log"
