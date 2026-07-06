@@ -24,7 +24,6 @@ Implemented from Inhester (2015), "Thomson Scattering in the Solar Corona", arXi
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -40,16 +39,13 @@ from qorona.radiation.thomson import (
     RadialCoefficients,
     build_coefficient_table,
 )
-from qorona.render.los import _eclipse_alpha, _occultation_mask, _scale_intensity, _write_png
+from qorona.render.image import eclipse_alpha
 
 __all__ = ["BrightnessResult", "render_brightness"]
 
 #: Number of ray-chunks the kernel brightness render splits the image into, for progress only (the
 #: kernel touches one sample at a time and needs no memory bound); mirrors the Q⊥ render.
 _PROGRESS_CHUNKS = 64
-
-#: Which frame a bare :meth:`BrightnessResult.save_png` writes: the reference pB product.
-_DEFAULT_FRAME: Literal["polarized", "total"] = "polarized"
 
 
 @dataclass(frozen=True)
@@ -70,10 +66,13 @@ class BrightnessResult:
         ``(W,)`` and ``(H,)`` plane-of-sky pixel-centre coordinates (R☉): ``x`` increases to
         image-right, ``y`` to image-up with row 0 at the top, so ``rho = hypot(x, y)``. Carried so
         a data export is self-describing without re-deriving the camera geometry.
+    r_inner, r_outer
+        The radial shell (R☉) the integral covered; the display vignette integrates its reference
+        model over the same shell.
     u
         The limb-darkening ``u`` the coefficient table was built with (recorded for provenance).
     occult
-        The occultation mode the frames were finished with (``"eclipse"`` / ``"opaque"`` /
+        The occultation mode the frames were finished with (``"eclipse"`` /
         ``"none"``); recorded for provenance.
     r_occult, occult_softness
         The occulter radius and eclipse-edge feather (R☉) used; recorded for provenance.
@@ -84,6 +83,8 @@ class BrightnessResult:
     impact: np.ndarray
     x_rsun: np.ndarray
     y_rsun: np.ndarray
+    r_inner: float
+    r_outer: float
     u: float
     occult: str
     r_occult: float
@@ -102,30 +103,6 @@ class BrightnessResult:
         decades = np.log10(polarized.max() / polarized.min())
         median_p = float(np.median(self.polarization()[self.total > 0.0]))
         return f"median polarization {median_p:.2f} · pB spans {decades:.1f} decades"
-
-    def save_png(
-        self,
-        path: str | Path,
-        *,
-        frame: Literal["polarized", "total"] = _DEFAULT_FRAME,
-        percentiles: tuple[float, float] = (1.0, 99.5),
-        scaling: Literal["linear", "log"] = "log",
-    ) -> None:
-        """Write a brightness frame to ``path`` as a stretched 8-bit grayscale PNG.
-
-        The chosen frame (``"polarized"`` pB by default, or ``"total"``) is percentile-stretched,
-        logarithmically by default, matching how pB is conventionally displayed. The disk is already
-        occulted in the frame for ``"eclipse"`` mode. The stretch percentiles are anchored on the
-        pixels carrying positive brightness, so the zeroed occulted disk and off-shell background do
-        not collapse the corona's dynamic range (a log stretch would otherwise read those zeros as
-        ``log10(0)`` and wash the corona to white).
-        """
-        image = self.polarized if frame == "polarized" else self.total
-        flat = image.reshape(-1)
-        stretched = _scale_intensity(flat[:, None], scaling, percentiles, anchor=flat > 0.0)[:, 0]
-        gray = (np.clip(np.nan_to_num(stretched), 0.0, 1.0) * 255.0).round().astype(np.uint8)
-        rgb = np.repeat(gray.reshape(*image.shape, 1), 3, axis=2)
-        _write_png(Path(path), np.ascontiguousarray(rgb))
 
 
 def _ray_geometry(
@@ -150,6 +127,7 @@ def _finalize_brightness(
     ds: float,
     *,
     camera: OrthographicCamera,
+    density: DensityVolume,
     u: float,
     occult: str,
     r_occult: float,
@@ -161,10 +139,10 @@ def _finalize_brightness(
     In ``"eclipse"`` mode the occulter is opaque to all light at ``rho < r_occult``, so the frames
     are darkened image-side (the observable eclipse product: a dark disk, off-limb corona only) by
     the eclipse vignette, the same darkening the Q⊥ render applies, but baked into the frame here so
-    the display treatments and the saved image all see the occulted pB. ``"opaque"`` (the 3-D view,
-    near-side corona over the disk) and ``"none"`` leave the frames as integrated. The plane-of-sky
-    pixel axes are derived from the camera (the same layout as :meth:`OrthographicCamera.rays`) and
-    carried on the result so a data export is self-describing.
+    the display treatments and the saved image all see the occulted pB. ``"none"`` leaves the
+    frames as integrated. The plane-of-sky pixel axes are derived from the camera (the same layout
+    as :meth:`OrthographicCamera.rays`) and carried on the result so a data export is
+    self-describing.
     """
     height, width = camera.pixels
     pixel_scale = camera.fov.to_value(R_sun) / width
@@ -174,7 +152,7 @@ def _finalize_brightness(
     polarized = (k_pol * ds).reshape(height, width)
     total = ((2.0 * k_tan - k_pol) * ds).reshape(height, width)
     if occult == "eclipse":
-        alpha = _eclipse_alpha(impact_grid, r_occult, occult_softness)
+        alpha = eclipse_alpha(impact_grid, r_occult, occult_softness)
         polarized = polarized * alpha
         total = total * alpha
     result = BrightnessResult(
@@ -183,6 +161,8 @@ def _finalize_brightness(
         impact=impact_grid,
         x_rsun=x_rsun,
         y_rsun=y_rsun,
+        r_inner=float(density.grid.radii[0]),
+        r_outer=float(density.grid.radii[-1]),
         u=u,
         occult=occult,
         r_occult=r_occult,
@@ -212,7 +192,6 @@ def _brightness_numpy(
     n_rays = origins.shape[0]
     inner_radius = float(density.grid.radii[0])
     outer_radius = float(density.grid.radii[-1])
-    occult_body = occult == "opaque"
 
     k_tan = np.zeros(n_rays)
     k_pol = np.zeros(n_rays)
@@ -225,12 +204,12 @@ def _brightness_numpy(
             radius = np.sqrt(batch_impact[:, None] ** 2 + s_grid[None, :] ** 2)
 
             on_path = (radius >= inner_radius) & (radius <= outer_radius)
-            if occult_body:
-                on_path = on_path & ~_occultation_mask(batch_impact, s_grid, r_occult)
             density_sample = density.sample(points.reshape(-1, 3)).reshape(radius.shape)
             with np.errstate(invalid="ignore", divide="ignore"):
                 c_tan, c_pol = table.evaluate(radius)
-                sin_sq_chi = batch_impact[:, None] ** 2 / radius**2
+            sin_sq_chi = np.divide(
+                batch_impact[:, None] ** 2, radius**2, out=np.zeros_like(radius), where=radius > 0.0
+            )
             weighted = np.where(on_path, density_sample, 0.0)
             k_tan[start:stop] = np.sum(weighted * c_tan, axis=1)
             k_pol[start:stop] = np.sum(weighted * c_pol * sin_sq_chi, axis=1)
@@ -242,6 +221,7 @@ def _brightness_numpy(
         impact,
         ds,
         camera=camera,
+        density=density,
         u=u,
         occult=occult,
         r_occult=r_occult,
@@ -270,7 +250,6 @@ def _brightness_numba(
     apply_workers(workers)
     origins, impact, look, s_grid, ds = _ray_geometry(camera, density, step)
     n_rays = origins.shape[0]
-    occult_body = occult == "opaque"
     density_vol = np.ascontiguousarray(density.density)
     density_grid = density.grid._jit_grid()
     c_tan_table = np.ascontiguousarray(table.c_tan)
@@ -290,7 +269,7 @@ def _brightness_numba(
                 density_vol,
                 density_grid,
                 float(r_occult),
-                occult_body,
+                False,
                 table.log_inner,
                 table.inv_dlog,
                 c_tan_table,
@@ -306,6 +285,7 @@ def _brightness_numba(
         impact,
         ds,
         camera=camera,
+        density=density,
         u=u,
         occult=occult,
         r_occult=r_occult,
@@ -321,7 +301,7 @@ def render_brightness(
     u: float = LIMB_DARKENING,
     crossover: float = ASYMPTOTIC_CROSSOVER,
     step: float = 0.02,
-    occult: Literal["eclipse", "opaque", "none"] = "eclipse",
+    occult: Literal["eclipse", "none"] = "eclipse",
     r_occult: float = 1.0,
     occult_softness: float = 0.03,
     chunk_size: int = 500_000,
@@ -349,9 +329,9 @@ def render_brightness(
     step
         Line-of-sight sample spacing in R☉.
     occult
-        Occultation mode. ``"eclipse"`` (default) integrates the full off-limb corona and darkens
-        the disk image-side after integration; ``"opaque"`` drops the far side behind the body in
-        the integral; ``"none"`` disables both.
+        Occultation mode. ``"eclipse"`` (default) integrates the full line of sight and darkens
+        the disk image-side after integration; ``"none"`` leaves the frames as integrated. Both
+        integrate the same full-line geometry as the display vignettes' model curves.
     r_occult, occult_softness
         Occulter radius and eclipse-edge feather in R☉ (carried into the result for the display).
     chunk_size
@@ -368,8 +348,8 @@ def render_brightness(
         The polarized and total brightness frames, the impact-parameter grid, and a record of the
         limb-darkening and occultation settings the frames were built with.
     """
-    if occult not in ("eclipse", "opaque", "none"):
-        raise ValueError(f"occult must be 'eclipse', 'opaque', or 'none', not {occult!r}")
+    if occult not in ("eclipse", "none"):
+        raise ValueError(f"occult must be 'eclipse' or 'none', not {occult!r}")
     table = build_coefficient_table(
         float(density.grid.radii[0]), float(density.grid.radii[-1]), u=u, crossover=crossover
     )

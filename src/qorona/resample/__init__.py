@@ -14,7 +14,12 @@ from qorona.resample.grid import (
     SphericalGrid,
     UniformSpacing,
 )
-from qorona.resample.resampler import KnnMlsResampler, NearestCellResampler, Resampler
+from qorona.resample.resampler import (
+    KnnMlsResampler,
+    NearestCellResampler,
+    Resampler,
+    StructuredGridResampler,
+)
 
 __all__ = [
     "KnnMlsResampler",
@@ -24,5 +29,6 @@ __all__ = [
     "RadialSpacing",
     "Resampler",
     "SphericalGrid",
+    "StructuredGridResampler",
     "UniformSpacing",
 ]

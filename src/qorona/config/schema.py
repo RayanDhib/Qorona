@@ -25,7 +25,7 @@ from qorona import __version__
 #: Allowed values for the string-keyed selectors, surfaced in the friendly validation messages and
 #: dispatched on by :mod:`qorona.pipeline`.
 SPACING_LAWS = ("logarithmic", "power", "uniform")
-RESAMPLERS = ("knn-mls", "nearest-cell")
+RESAMPLERS = ("auto", "knn-mls", "nearest-cell", "structured")
 VOLUME_BUILDERS = ("paint", "per-voxel", "reference")
 CLOSED_TREATMENTS = ("neutral", "dominant")
 POLARITY_MODES = ("none", "hue")
@@ -33,13 +33,13 @@ WEIGHTING_PRESETS = ("large-fov", "small-fov")
 THOMSON_MODES = ("K", "pB")
 DISPLAY_MODES = ("balanced", "raw", "coverage")
 OCCULT_MODES = ("eclipse", "opaque", "composite", "none")
-BRIGHTNESS_OCCULT_MODES = ("eclipse", "opaque", "none")
+BRIGHTNESS_OCCULT_MODES = ("eclipse", "none")
 ANNOTATE_POSITIONS = ("bottom-left", "bottom-right", "top-left", "top-right")
 FIELDLINE_SHOW = ("all", "open", "closed")
 FIELDLINE_SEEDING = ("limb", "uniform")
 FIELDLINE_COLOUR = ("rainbow", "polarity")
 BRIGHTNESS_FRAMES = ("polarized", "total")
-BRIGHTNESS_TREATMENTS = ("raw", "radial", "newkirk", "mgn")
+BRIGHTNESS_VIGNETTES = ("adaptive", "newkirk", "none")
 BRIGHTNESS_SCALINGS = ("linear", "log")
 EXPORT_FORMATS = ("npz",)
 DEVICE_MODES = ("auto", "gpu", "cpu")
@@ -112,6 +112,8 @@ class GridConfig:
 
     Node counts in each direction, the inner/outer shell radii, the radial spacing law, and the
     cell→grid resampler with its k-NN neighbour count (``n_neighbors``).
+    ``auto`` resolves per solution: ``structured`` when the input carries structured axes,
+    ``knn-mls`` otherwise.
     :class:`VolumeConfig`'s ``resolution_factor`` scales these node counts to
     the finer volume grid; the spacing law and radii are shared, so the field grid and the volume
     grid sit on the same shell at different pitch.
@@ -123,7 +125,7 @@ class GridConfig:
     inner_radius: float = 1.0
     outer_radius: float = 12.5
     spacing: str = "logarithmic"
-    resampler: str = "knn-mls"
+    resampler: str = "auto"
     n_neighbors: int = 30
 
     def __post_init__(self) -> None:
@@ -585,33 +587,37 @@ class ExportConfig:
 
 @dataclass(frozen=True)
 class BrightnessConfig:
-    """The white-light / polarized-brightness (pB) render: frame, display treatment, and knobs.
+    """The white-light / polarized-brightness (pB) render: frame, display stages, and knobs.
 
     The viewpoint-independent inputs to the standalone brightness product (the camera is a separate
     config, as for the Q⊥ render). ``frame`` selects the polarized brightness ``pB`` (the default,
-    the reference target) or the total white-light brightness; ``treatment`` finishes the selected
-    frame raw, with the ``radial`` power-law filter (brightness times ``rho**radial_power``, lifting
-    the outer corona while staying bright near the limb), with the Newkirk radial vignette, or with
-    multi-scale Gaussian-normalization enhancement. MGN is calibrated for the steep-gradient pB
-    frame; on the total frame it still runs but is less physically meaningful. ``u`` and
-    ``crossover`` are the Thomson coefficient knobs, ``scaling`` / ``percentiles`` the display
-    stretch; the line-of-sight ``step`` and the occultation triple mirror :class:`RenderConfig`.
-    ``scaling`` defaults to ``None`` and resolves to ``"linear"`` for the already-normalised MGN
-    treatment, else ``"log"``.
+    the reference target) or the total white-light brightness. The selected frame is finished by
+    two display stages, applied in order: the ``vignette`` radial detrend (``"newkirk"`` divides by
+    the brightness of the smooth Newkirk background corona; ``"adaptive"`` self-calibrates the same
+    curve family to the image's own falloff and amplifies its structure, for coronae whose
+    stratification departs from the Newkirk profile; ``"none"`` keeps the raw falloff) and the
+    optional ``mgn`` local fine-structure enhancement (calibrated for the steep-gradient pB frame;
+    on the total frame it still runs but is less physically meaningful). ``u`` and ``crossover``
+    are the Thomson coefficient knobs, ``scaling`` / ``percentiles`` the display stretch; the
+    line-of-sight ``step`` and the occultation triple mirror :class:`RenderConfig`, with the
+    occulter edge just above the limb by default so the overwhelming near-limb ring does not eat
+    the stretch. ``scaling`` defaults to ``None`` and resolves to ``"log"`` only for the raw
+    falloff (``vignette="none"`` without ``mgn``), else ``"linear"`` (the detrended frames are
+    already flat). ``percentiles`` default to the full range (a global min/max stretch); clip them
+    for inputs with pathological bright spots.
     """
 
     frame: str = "polarized"
-    treatment: str = "raw"
-    #: Exponent of the ``radial`` power-law filter; mirrors ``display.RADIAL_FILTER_POWER``.
-    radial_power: float = 3.0
+    vignette: str = "newkirk"
+    mgn: bool = False
     u: float = 0.6
     crossover: float = 10.0
     step: float = 0.02
     occult: str = "eclipse"
-    r_occult: float = 1.0
+    r_occult: float = 1.02
     occult_softness: float = 0.03
     scaling: str | None = None
-    percentiles: tuple[float, float] = (1.0, 99.5)
+    percentiles: tuple[float, float] = (0.0, 100.0)
     workers: int | None = None
 
     def __post_init__(self) -> None:
@@ -619,16 +625,15 @@ class BrightnessConfig:
             self, "percentiles", (float(self.percentiles[0]), float(self.percentiles[1]))
         )
         _one_of(self.frame, BRIGHTNESS_FRAMES, "frame")
-        _one_of(self.treatment, BRIGHTNESS_TREATMENTS, "treatment")
+        _one_of(self.vignette, BRIGHTNESS_VIGNETTES, "vignette")
         _one_of(self.occult, BRIGHTNESS_OCCULT_MODES, "occult")
         scaling = self.scaling
         if scaling is None:
-            scaling = "linear" if self.treatment == "mgn" else "log"
+            scaling = "log" if (self.vignette == "none" and not self.mgn) else "linear"
             object.__setattr__(self, "scaling", scaling)
         _one_of(scaling, BRIGHTNESS_SCALINGS, "scaling")
         _require(0.0 <= self.u <= 1.0, f"limb darkening u must be in [0, 1], got {self.u}")
         _require(self.crossover > 0.0, f"crossover must be > 0 R_sun, got {self.crossover}")
-        _require(self.radial_power > 0.0, f"radial_power must be > 0, got {self.radial_power}")
         _require(self.step > 0.0, f"step must be > 0 R_sun, got {self.step}")
         _require(self.r_occult > 0.0, f"r_occult must be > 0 R_sun, got {self.r_occult}")
         _require(
@@ -647,8 +652,8 @@ class BrightnessConfig:
     def to_provenance(self) -> dict[str, object]:
         return {
             "frame": self.frame,
-            "treatment": self.treatment,
-            "radial_power": self.radial_power,
+            "vignette": self.vignette,
+            "mgn": self.mgn,
             "u": self.u,
             "crossover": self.crossover,
             "step": self.step,

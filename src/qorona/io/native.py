@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 from astropy import units as u
 from astropy.units import Quantity
+from scipy.interpolate import RegularGridInterpolator
 
 
 @dataclass
@@ -50,6 +51,60 @@ class Boundary:
     def n_faces(self) -> int:
         """Number of boundary faces."""
         return int(self.faces.shape[0])
+
+
+@dataclass
+class StructuredMesh:
+    """Structured spherical axes of a solution whose points form a regular (r, θ, φ) grid.
+
+    Carried by readers of structured models (e.g. MAS) alongside the generic point cloud, so
+    the resample stage can interpolate directly on the native axes instead of fitting the
+    scattered points.
+
+    Attributes
+    ----------
+    radii
+        ``(n_r,)`` node radii in R_sun, strictly increasing.
+    colatitudes
+        ``(n_theta,)`` node colatitudes in radians; may overhang ``[0, π]``.
+    azimuths
+        ``(n_phi,)`` node azimuths in radians, periodic over ``2π``.
+    """
+
+    radii: np.ndarray
+    colatitudes: np.ndarray
+    azimuths: np.ndarray
+
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        """Grid shape ``(n_r, n_theta, n_phi)``."""
+        return (len(self.radii), len(self.colatitudes), len(self.azimuths))
+
+    def interpolator(self, values: np.ndarray) -> RegularGridInterpolator:
+        """A linear interpolator over these axes for one ``(n_r, n_theta, n_phi)`` block.
+
+        The azimuth axis is padded with a wrapped column on each side that does not already
+        cover the periodic seam, so queries anywhere in ``[0, 2π)`` interpolate; r and θ
+        queries outside the axes extrapolate linearly (callers clamp where edge extension is
+        wanted).
+        """
+        azimuths = self.azimuths
+        padded = values
+        lead = self.azimuths[-1] - 2.0 * np.pi
+        if lead < azimuths[0]:
+            azimuths = np.concatenate(([lead], azimuths))
+            padded = np.concatenate((values[:, :, -1:], padded), axis=2)
+        trail = self.azimuths[0] + 2.0 * np.pi
+        if trail > azimuths[-1]:
+            azimuths = np.concatenate((azimuths, [trail]))
+            padded = np.concatenate((padded, values[:, :, :1]), axis=2)
+        return RegularGridInterpolator(
+            (self.radii, self.colatitudes, azimuths),
+            padded,
+            method="linear",
+            bounds_error=False,
+            fill_value=None,
+        )
 
 
 @dataclass
@@ -85,6 +140,9 @@ class NativeSolution:
         Tagged boundary surfaces, keyed by canonical role (typically ``"inner"``/``"outer"``).
     metadata
         Provenance and grid description.
+    structured
+        Native structured-spherical axes when the points form a regular grid (readers of
+        structured models set it); ``None`` for unstructured meshes.
     """
 
     nodes: Quantity
@@ -93,6 +151,7 @@ class NativeSolution:
     variables: dict[str, np.ndarray]
     boundaries: dict[str, Boundary]
     metadata: SolutionMetadata
+    structured: StructuredMesh | None = None
 
     @property
     def n_nodes(self) -> int:

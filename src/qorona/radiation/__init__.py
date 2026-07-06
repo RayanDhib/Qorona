@@ -7,14 +7,21 @@ Minnaert/Billings coefficients and the single-electron intensities in :mod:`.tho
 - :class:`ThomsonWeight`: the optional, off-by-default radiometric LOS weight for the Q⊥ render
   (``render(..., thomson=ThomsonWeight(density, mode))``), biasing it toward bright dense plasma.
 - :func:`render_brightness`: the standalone pB / total-brightness product.
-- :func:`newkirk_vignette` and :func:`mgn_enhance`: the two display treatments that finish the pB
-  image (radial vignetting and multi-scale fine-structure enhancement).
+- :func:`newkirk_vignette` and :func:`mgn_enhance`: the display stages that finish a brightness
+  frame (division by the Newkirk background corona's own brightness, and multi-scale
+  fine-structure enhancement).
 """
 
 from __future__ import annotations
 
 from qorona.radiation.brightness import BrightnessResult, render_brightness
-from qorona.radiation.display import mgn_enhance, newkirk_vignette, save_pb_png
+from qorona.radiation.display import (
+    adaptive_vignette,
+    mgn_enhance,
+    newkirk_profile,
+    newkirk_vignette,
+    save_pb_png,
+)
 from qorona.radiation.thomson import (
     RadialCoefficients,
     ThomsonWeight,
@@ -27,10 +34,12 @@ __all__ = [
     "BrightnessResult",
     "RadialCoefficients",
     "ThomsonWeight",
+    "adaptive_vignette",
     "build_coefficient_table",
     "intensity_coefficients",
     "mgn_enhance",
     "minnaert_coefficients",
+    "newkirk_profile",
     "newkirk_vignette",
     "render_brightness",
     "save_pb_png",

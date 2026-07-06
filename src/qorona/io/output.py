@@ -85,17 +85,18 @@ def write_brightness(
 ) -> list[Path]:
     """Write the white-light / pB render's PNG and stamp it, returning the path written.
 
-    Selects the requested frame (the polarized ``pB`` or the total white-light brightness) and the
-    display treatment applied to it: raw, the ``radial`` power-law filter, the Newkirk radial
-    vignette, or the MGN fine-structure enhancement. Writes a percentile-stretched 8-bit grayscale
-    PNG and applies the shared provenance stamp. MGN is calibrated for the pB frame; on the total
-    frame it still renders but is less physically meaningful, so a note is printed.
+    Selects the requested frame (the polarized ``pB`` or the total white-light brightness) and
+    finishes it through the display stages, in order: the vignette radial detrend (``newkirk`` /
+    ``adaptive``, skipped for ``none``) and the optional MGN local fine-structure enhancement.
+    Writes a percentile-stretched 8-bit grayscale PNG and applies the shared provenance stamp.
+    MGN is calibrated for the pB frame; on the total frame it still renders but is less
+    physically meaningful, so a note is printed.
 
     Raises
     ------
     ImportError
-        If the ``mgn`` treatment is requested without ``sunkit-image`` installed (the only treatment
-        that needs it); the message names the missing package and the alternatives.
+        If ``mgn`` is requested without ``sunkit-image`` installed (the only stage that needs it);
+        the message names the missing package and the alternatives.
 
     Returns
     -------
@@ -103,29 +104,44 @@ def write_brightness(
         The image file written.
     """
     from qorona.radiation.display import (
+        adaptive_vignette,
         mgn_enhance,
         newkirk_vignette,
-        radial_filter,
         save_pb_png,
     )
 
-    base = result.total if brightness_cfg.frame == "total" else result.polarized
-    treatment = brightness_cfg.treatment
-    if treatment == "radial":
-        frame = radial_filter(base, result.impact, power=brightness_cfg.radial_power)
-    elif treatment == "newkirk":
-        frame = newkirk_vignette(base, result.impact)
-    elif treatment == "mgn":
+    image = result.total if brightness_cfg.frame == "total" else result.polarized
+    if brightness_cfg.vignette == "newkirk":
+        image = newkirk_vignette(
+            image,
+            result.impact,
+            frame=cast(Any, brightness_cfg.frame),
+            r_inner=result.r_inner,
+            r_outer=result.r_outer,
+            reference_radius=brightness_cfg.r_occult,
+            u=brightness_cfg.u,
+            crossover=brightness_cfg.crossover,
+        )
+    elif brightness_cfg.vignette == "adaptive":
+        image = adaptive_vignette(
+            image,
+            result.impact,
+            frame=cast(Any, brightness_cfg.frame),
+            r_inner=result.r_inner,
+            r_outer=result.r_outer,
+            reference_radius=brightness_cfg.r_occult,
+            u=brightness_cfg.u,
+            crossover=brightness_cfg.crossover,
+        )
+    if brightness_cfg.mgn:
         if brightness_cfg.frame == "total":
             print_warning(
                 "MGN is calibrated for the polarized (pB) frame; on the total frame it still "
                 "renders but is less physically meaningful"
             )
-        frame = mgn_enhance(base)
-    else:
-        frame = base
+        image = mgn_enhance(image)
     save_pb_png(
-        frame,
+        image,
         output_cfg.path,
         scaling=cast(Any, brightness_cfg.scaling),
         percentiles=brightness_cfg.percentiles,
@@ -183,11 +199,11 @@ def export_brightness(
     """Write the requested raw data sidecars for a brightness render, returning the paths.
 
     The export carries the *raw, relative* frames (both the polarized ``pB`` and the total
-    white-light brightness) with the plane-of-sky coordinate axes (``x_rsun`` / ``y_rsun``) and the
-    impact-parameter grid, independent of the displayed frame/treatment, so a downstream tool (NRGF,
-    WOW, or a custom detrend) processes the unstyled data. Only the dependency-free ``.npz`` is
-    written for now (FITS+WCS is deferred to M6b); the run provenance travels as a JSON string in
-    ``meta``.
+    white-light brightness) with the plane-of-sky coordinate axes (``x_rsun`` / ``y_rsun``), the
+    impact-parameter grid, and the integrated radial shell, independent of the displayed
+    frame/stages, so a downstream tool (NRGF, WOW, or a custom detrend) processes the unstyled
+    data. Only the dependency-free ``.npz`` is written (FITS+WCS is a planned addition); the
+    run provenance travels as a JSON string in ``meta``.
 
     Returns
     -------
@@ -209,6 +225,7 @@ def export_brightness(
                 x_rsun=result.x_rsun.astype(np.float32),
                 y_rsun=result.y_rsun.astype(np.float32),
                 impact=result.impact.astype(np.float32),
+                shell=np.array([result.r_inner, result.r_outer], dtype=np.float32),
                 meta=np.array(json.dumps(provenance, default=str)),
             )
         written.append(path)

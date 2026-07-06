@@ -12,8 +12,9 @@ serialises traced field lines for external tools, and ``info`` inspects a soluti
 Every flag populates the typed :mod:`qorona.config` schema (the single source of truth for defaults
 and validation); a flag left unset defers to the dataclass, so the help text's stated defaults are
 documentation, not a second behavioural source (the documented exceptions: the single-axis
-image-dimension fallback, the volume-cache write options, and the ``--quality`` preset, a second
-layer of resolution defaults resolved before the schema). Help has two levels
+image-dimension fallback, the volume-cache write options, the ``--quality`` preset, a second
+layer of resolution defaults resolved before the schema, and the model-aware ``wl`` vignette
+default). Help has two levels
 (:mod:`qorona.cli.help`): ``--help`` lists a command's common options, ``--help-all`` every option
 grouped by pipeline stage. After any command that produces a result, a polished end-of-run summary
 prints the run's parameters and quantitative metrics, the printed counterpart of the on-image
@@ -25,6 +26,7 @@ from __future__ import annotations
 import os
 import time
 import warnings
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -38,7 +40,7 @@ from qorona.config import (
     BRIGHTNESS_FRAMES,
     BRIGHTNESS_OCCULT_MODES,
     BRIGHTNESS_SCALINGS,
-    BRIGHTNESS_TREATMENTS,
+    BRIGHTNESS_VIGNETTES,
     CLOSED_TREATMENTS,
     DEVICE_MODES,
     DISPLAY_MODES,
@@ -75,10 +77,19 @@ from qorona.io.output import (
     write_outputs,
     write_qmap,
 )
+from qorona.io.readers import resolve_model
 
 #: Default image dimension used only when exactly one of ``--width`` / ``--height`` is supplied; the
 #: full default ``pixels`` otherwise lives once on :class:`~qorona.config.CameraConfig`.
 _DEFAULT_DIMENSION = 1024
+
+#: Default image dimension of the white-light product: the brightness frames are smooth, so a
+#: compact image suffices; the camera flags override it.
+_WL_DEFAULT_DIMENSION = 512
+
+#: Default field of view (full width, R_sun) of the white-light product: brightness falls off
+#: steeply with height, so a low-corona frame out to ~3 R_sun reads best; ``--fov`` overrides it.
+_WL_DEFAULT_FOV = 6.0
 
 
 # --- Reusable option groups --------------------------------------------------------------------
@@ -206,7 +217,8 @@ _grid_options = _compose(
         default=None,
         section="Field grid",
         advanced=True,
-        help="Cell→grid resampler (default knn-mls).",
+        help="Cell→grid resampler (default auto: structured for structured-grid inputs, "
+        "knn-mls otherwise).",
     ),
     option(
         "--mls-k",
@@ -373,50 +385,58 @@ _cache_options = _compose(
         help="DEFLATE-compress the volume artifact (default on).",
     ),
 )
-_camera_options = _compose(
-    option(
-        "--longitude",
-        type=float,
-        default=None,
-        section="Camera",
-        help="Sub-observer heliographic longitude in degrees (default 0).",
-    ),
-    option(
-        "--latitude",
-        type=float,
-        default=None,
-        section="Camera",
-        help="Sub-observer heliographic latitude in degrees (default 0).",
-    ),
-    option(
-        "--roll",
-        type=float,
-        default=None,
-        section="Camera",
-        help="Camera roll about the line of sight in degrees (default 0).",
-    ),
-    option(
-        "--fov",
-        type=float,
-        default=None,
-        section="Camera",
-        help="Field of view (full width) in R_sun (default 25).",
-    ),
-    option(
-        "--width",
-        type=int,
-        default=None,
-        section="Camera",
-        help="Image width in pixels (default 1024).",
-    ),
-    option(
-        "--height",
-        type=int,
-        default=None,
-        section="Camera",
-        help="Image height in pixels (default 1024).",
-    ),
-)
+
+
+def _camera_options(
+    default_dimension: int = _DEFAULT_DIMENSION, default_fov: float = 25.0
+) -> Callable[[Callable], Callable]:
+    """The shared camera option group; the defaults state a command's image and FOV defaults."""
+    return _compose(
+        option(
+            "--longitude",
+            type=float,
+            default=None,
+            section="Camera",
+            help="Sub-observer heliographic longitude in degrees (default 0).",
+        ),
+        option(
+            "--latitude",
+            type=float,
+            default=None,
+            section="Camera",
+            help="Sub-observer heliographic latitude in degrees (default 0).",
+        ),
+        option(
+            "--roll",
+            type=float,
+            default=None,
+            section="Camera",
+            help="Camera roll about the line of sight in degrees (default 0).",
+        ),
+        option(
+            "--fov",
+            type=float,
+            default=None,
+            section="Camera",
+            help=f"Field of view (full width) in R_sun (default {default_fov:g}).",
+        ),
+        option(
+            "--width",
+            type=int,
+            default=None,
+            section="Camera",
+            help=f"Image width in pixels (default {default_dimension}).",
+        ),
+        option(
+            "--height",
+            type=int,
+            default=None,
+            section="Camera",
+            help=f"Image height in pixels (default {default_dimension}).",
+        ),
+    )
+
+
 _weighting_options = _compose(
     option(
         "--preset",
@@ -695,22 +715,23 @@ _brightness_options = _compose(
         help="Brightness frame: polarized (pB) or total (white-light) (default polarized).",
     ),
     option(
-        "--treatment",
-        type=click.Choice(BRIGHTNESS_TREATMENTS),
+        "--vignette",
+        type=click.Choice(BRIGHTNESS_VIGNETTES),
         default=None,
         section="Brightness",
-        help="Display treatment (applied to the selected --frame): raw / radial rho-power filter / "
-        "newkirk radial vignette / mgn fine-structure enhancement (default raw).",
+        help="Radial detrend of the selected --frame: newkirk divides by the brightness of the "
+        "smooth Newkirk background corona; adaptive self-calibrates the same curve family to "
+        "the image's own falloff and amplifies its structure; none keeps the raw falloff "
+        "(default newkirk, adaptive for COCONUT input).",
     ),
     option(
-        "--radial-power",
-        type=float,
-        default=None,
+        "--mgn",
+        is_flag=True,
+        default=False,
         section="Brightness",
         advanced=True,
-        help="Exponent for --treatment radial: brightness is scaled by rho**power (rho = "
-        "plane-of-sky radius in R_sun); below the radial-falloff power it lifts the outer corona "
-        "while staying bright near the limb (default 3.0).",
+        help="Multi-scale Gaussian normalization fine-structure enhancement, applied last "
+        "(needs sunkit-image).",
     ),
     option(
         "--export",
@@ -759,7 +780,8 @@ _brightness_options = _compose(
         default=None,
         section="Brightness",
         advanced=True,
-        help="Body/occulter radius in R_sun (default 1.0).",
+        help="Body/occulter radius in R_sun (default 1.02, just above the limb so the "
+        "overwhelming near-limb ring does not eat the display stretch).",
     ),
     option(
         "--occult-softness",
@@ -775,7 +797,8 @@ _brightness_options = _compose(
         default=None,
         section="Brightness",
         advanced=True,
-        help="Intensity stretch: log or linear (default log; linear for mgn).",
+        help="Intensity stretch: log or linear (default: linear with a vignette or --mgn, "
+        "log for the raw falloff).",
     ),
     option(
         "--percentiles",
@@ -784,7 +807,8 @@ _brightness_options = _compose(
         default=None,
         section="Brightness",
         advanced=True,
-        help="Per-image stretch percentiles 'LOW HIGH' (default 1.0 99.5).",
+        help="Per-image stretch percentiles 'LOW HIGH' (default 0 100, the full range; clip "
+        "for inputs with pathological bright spots).",
     ),
 )
 _workers_option = option(
@@ -886,13 +910,20 @@ def _volume_config(kw: dict[str, Any], workers: int | None) -> VolumeConfig:
     return VolumeConfig(**fields)
 
 
-def _camera_config(kw: dict[str, Any]) -> CameraConfig:
+def _camera_config(
+    kw: dict[str, Any],
+    *,
+    default_dimension: int = _DEFAULT_DIMENSION,
+    default_fov: float | None = None,
+) -> CameraConfig:
     fields = _present(kw, "longitude", "latitude", "roll", "fov")
+    if default_fov is not None and "fov" not in fields:
+        fields["fov"] = default_fov
     height, width = kw.get("height"), kw.get("width")
-    if height is not None or width is not None:
+    if height is not None or width is not None or default_dimension != _DEFAULT_DIMENSION:
         fields["pixels"] = (
-            height if height is not None else _DEFAULT_DIMENSION,
-            width if width is not None else _DEFAULT_DIMENSION,
+            height if height is not None else default_dimension,
+            width if width is not None else default_dimension,
         )
     return CameraConfig(**fields)
 
@@ -1000,8 +1031,7 @@ def _brightness_config(kw: dict[str, Any], workers: int | None) -> BrightnessCon
     fields = _present(
         kw,
         "frame",
-        "treatment",
-        "radial_power",
+        "vignette",
         "crossover",
         "step",
         "occult",
@@ -1009,6 +1039,8 @@ def _brightness_config(kw: dict[str, Any], workers: int | None) -> BrightnessCon
         "occult_softness",
         "scaling",
     )
+    if kw.get("mgn"):
+        fields["mgn"] = True
     if kw.get("limb_darkening") is not None:
         fields["u"] = kw["limb_darkening"]
     if kw.get("percentiles") is not None:
@@ -1045,7 +1077,7 @@ _BUILD_DEFAULTS = {
     "n_phi": 360,
     "inner_radius": 1.0,
     "spacing": "logarithmic",
-    "resampler": "knn-mls",
+    "resampler": "auto",
     "builder": "paint",
     "resolution_factor": 2,
     "supersample": 4,
@@ -1222,7 +1254,7 @@ def build(
     advanced=True,
     help="Override the volume's timestamp for the stamp (re-derives CR/JD).",
 )
-@_camera_options
+@_camera_options()
 @_weighting_options
 @_render_options
 @_output_options
@@ -1366,7 +1398,7 @@ def qmap(volume_path: Path, output_path: Path, quiet: bool, **kw: Any) -> None:
 @_grid_options
 @_volume_options
 @_cache_options
-@_camera_options
+@_camera_options()
 @_weighting_options
 @_render_options
 @_output_options
@@ -1503,7 +1535,7 @@ def info(input_path: Path, quiet: bool, **kw: Any) -> None:
 @_input_options
 @_grid_options
 @_fieldlines_options
-@_camera_options
+@_camera_options()
 @_annotate_options
 @_workers_option
 @_quiet_option
@@ -1537,7 +1569,7 @@ def fieldlines(
     render_time = time.perf_counter() - render_start
 
     provenance = pipeline.fieldlines_provenance(
-        input_cfg, grid_cfg, fieldlines_cfg, camera_cfg, output_cfg, result
+        input_cfg, grid_cfg, fieldlines_cfg, camera_cfg, output_cfg, result, field=field
     )
     written = write_fieldlines(result, output_cfg, provenance)
     print_success(f"Wrote [bold]{output_path}[/bold]")
@@ -1601,6 +1633,43 @@ def export_lines(
     )
 
 
+def _input_model(
+    from_volume: bool, input_path: Path, build_prov: dict[str, Any] | None, model_flag: str | None
+) -> str | None:
+    """Return the model identity of a ``wl`` input, or ``None`` when it cannot be resolved.
+
+    A volume artifact is judged by its recorded build provenance (the resolved model, or the
+    recorded solution path put back through the reader registry for artifacts that predate the
+    model record); a raw solution goes through the registry directly, an explicit ``--model``
+    short-circuiting it.
+    """
+    if from_volume:
+        recorded = (build_prov or {}).get("input", {})
+        model = recorded.get("model")
+        if model:
+            return str(model).lower()
+        path = recorded.get("path")
+        return resolve_model(str(path)) if path else None
+    return resolve_model(input_path, model=model_flag)
+
+
+#: Flags that configure the re-ingest of a raw solution; meaningless with a baked volume artifact,
+#: which carries its own field grid and metadata, so they are rejected there instead of ignored.
+_INGEST_ONLY_KEYS = (
+    "model",
+    "timestamp",
+    "variables",
+    "n_r",
+    "n_theta",
+    "n_phi",
+    "inner_radius",
+    "outer_radius",
+    "spacing",
+    "resampler",
+    "n_neighbors",
+)
+
+
 @main.command(hidden=True)
 @click.argument("input_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
@@ -1615,42 +1684,88 @@ def export_lines(
 @_input_options
 @_grid_options
 @_brightness_options
-@_camera_options
+@_camera_options(_WL_DEFAULT_DIMENSION, _WL_DEFAULT_FOV)
 @_annotate_options
 @_workers_option
 @_quiet_option
 def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **kw: Any) -> None:
     """Render the white-light / polarized-brightness corona of a solution from a viewpoint.
 
-    Reads and resamples the solution, then integrates the Thomson-scattering brightness over
-    the electron density along each line of sight: the polarized brightness pB by default, or the
-    total white-light brightness with ``--frame total``. Detrend the chosen frame with
-    ``--treatment radial`` (a rho-power filter, ``--radial-power``), ``--treatment newkirk`` (radial
-    vignette), or ``--treatment mgn`` (fine-structure enhancement). ``--export npz`` also writes the
-    raw frames (both pB and total) with their plane-of-sky coordinates. A self-contained command: it
-    needs only the density and neither builds nor uses a Q⊥ volume.
+    INPUT is either a raw solution (read and resampled, as ``build`` would) or a baked ``.qor``
+    volume artifact (whose stored electron density is reused, skipping the resample). The
+    Thomson-scattering brightness is integrated over the density along each line of sight: the
+    polarized brightness pB by default, or the total white-light brightness with ``--frame
+    total``. The frame is finished by two display stages: the ``--vignette`` radial detrend
+    (``newkirk`` by default, ``adaptive`` for COCONUT input, ``none`` for the raw falloff) and
+    optional ``--mgn`` fine-structure enhancement. ``--export npz`` also writes the raw frames
+    (both pB and total) with their plane-of-sky coordinates. Needs only the density; it neither
+    builds nor uses the Q⊥ payload.
     """
     kw["input_path"] = input_path
     show_progress = not quiet
-    input_cfg = _input_config(kw)
-    grid_cfg = _grid_config(kw)
-    brightness_cfg = _brightness_config(kw, workers)
-    camera_cfg = _camera_config(kw)
+    camera_cfg = _camera_config(
+        kw, default_dimension=_WL_DEFAULT_DIMENSION, default_fov=_WL_DEFAULT_FOV
+    )
     output_cfg = _output_config(kw, output_path)
 
     print_step(f"Rendering white-light corona from [bold]{input_path.name}[/bold]")
     start = time.perf_counter()
-    field = pipeline.build_field(input_cfg, grid_cfg, show_progress=show_progress)
+    from_volume = zipfile.is_zipfile(input_path)
+    build_prov: dict[str, Any] | None = None
+    if from_volume:
+        rejected = [key for key in _INGEST_ONLY_KEYS if kw.get(key) is not None]
+        if rejected:
+            flags = ", ".join("--" + key.replace("_", "-") for key in rejected)
+            raise click.ClickException(
+                f"{flags}: these flags apply only when INPUT is a raw solution; a volume "
+                "artifact carries its own field grid and metadata"
+            )
+        try:
+            _volume, density, build_prov = pipeline.load_volume(input_path)
+        except ValueError as error:
+            raise click.ClickException(str(error)) from error
+        if density is None:
+            raise click.ClickException(
+                "this volume artifact carries no electron density; rebuild it with "
+                "`qorona build` from a solution that provides density (e.g. COCONUT 'rho'), "
+                "or pass the solution itself"
+            )
+    else:
+        input_cfg = _input_config(kw)
+        grid_cfg = _grid_config(kw)
+        field = pipeline.build_field(input_cfg, grid_cfg, show_progress=show_progress)
+        density = field.density
+        if density is None:
+            raise click.ClickException(
+                "the white-light / pB product needs an electron density, but this solution "
+                "carries none; read a solution that provides density (e.g. COCONUT 'rho')"
+            )
     field_time = time.perf_counter() - start
+
+    if (
+        kw.get("vignette") is None
+        and _input_model(from_volume, input_path, build_prov, kw.get("model")) == "coconut"
+    ):
+        # Model-aware default: the self-calibrating adaptive channel for COCONUT input; the
+        # schema's newkirk default stands for every other input.
+        kw["vignette"] = "adaptive"
+    brightness_cfg = _brightness_config(kw, workers)
+
     render_start = time.perf_counter()
     result = pipeline.render_brightness(
-        field, brightness_cfg, camera_cfg, show_progress=show_progress
+        density, brightness_cfg, camera_cfg, show_progress=show_progress
     )
     render_time = time.perf_counter() - render_start
 
-    provenance = pipeline.brightness_provenance(
-        input_cfg, grid_cfg, brightness_cfg, camera_cfg, output_cfg, result
-    )
+    if from_volume:
+        assert build_prov is not None  # set with the volume load above
+        provenance = pipeline.volume_brightness_provenance(
+            build_prov, brightness_cfg, camera_cfg, output_cfg, result
+        )
+    else:
+        provenance = pipeline.brightness_provenance(
+            input_cfg, grid_cfg, brightness_cfg, camera_cfg, output_cfg, result, field=field
+        )
     try:
         written = write_brightness(result, brightness_cfg, output_cfg, provenance)
     except ImportError as error:
@@ -1783,13 +1898,12 @@ def _export_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
 def _brightness_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
     bri = prov["brightness"]
     frame = "pB" if bri["frame"] == "polarized" else "white-light"
-    treatment = (
-        f"radial r^{float(bri['radial_power']):g}"
-        if bri["treatment"] == "radial"
-        else str(bri["treatment"])
-    )
+    vignette = bri.get("vignette", "none")
+    finish = ["raw" if vignette == "none" else str(vignette)]
+    if bri.get("mgn"):
+        finish.append("mgn")
     parts = [
-        f"{frame} · {treatment}",
+        f"{frame} · {'+'.join(finish)}",
         str(bri["occult"]),
         f"median polarization {float(bri['median_polarization']):.2f}",
         f"pB spans {float(bri['pb_decades']):.1f} decades",

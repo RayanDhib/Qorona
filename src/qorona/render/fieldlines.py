@@ -99,9 +99,9 @@ class FieldLineImage:
     def save_png(self, path: str | Path) -> None:
         """Write the image to ``path`` as an 8-bit PNG (the dependency-free writer shared with the
         Q⊥ render)."""
-        from qorona.render.los import _write_png
+        from qorona.render.image import write_png
 
-        _write_png(Path(path), np.ascontiguousarray(self.image))
+        write_png(Path(path), np.ascontiguousarray(self.image))
 
 
 def render_field_lines(

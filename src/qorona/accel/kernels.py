@@ -1243,22 +1243,24 @@ def render_batch_jit(
             valid_weight += wbar
             # Net polarity: read the per-voxel footpoint sign NEAREST-CELL (a sign is never
             # interpolated) at this same sample and weight it by w̄, the coverage weight budget.
+            # np.int64 rather than int(): numba 0.66 cannot lower the int() intrinsic inside a
+            # parfor body once an earlier kernel compile has typed the same signature.
             if use_polarity:
-                pic0 = int(c0 + 0.5)
-                pic1 = int(c1 + 0.5)
-                pic2 = int(c2 + 0.5)
+                pic0 = np.int64(c0 + 0.5)
+                pic1 = np.int64(c1 + 0.5)
+                pic2 = np.int64(c2 + 0.5)
                 if pic0 < 0:
-                    pic0 = 0
+                    pic0 = np.int64(0)
                 elif pic0 >= polarity_vol.shape[0]:
-                    pic0 = polarity_vol.shape[0] - 1
+                    pic0 = np.int64(polarity_vol.shape[0] - 1)
                 if pic1 < 0:
-                    pic1 = 0
+                    pic1 = np.int64(0)
                 elif pic1 >= polarity_vol.shape[1]:
-                    pic1 = polarity_vol.shape[1] - 1
+                    pic1 = np.int64(polarity_vol.shape[1] - 1)
                 if pic2 < 0:
-                    pic2 = 0
+                    pic2 = np.int64(0)
                 elif pic2 >= polarity_vol.shape[2]:
-                    pic2 = polarity_vol.shape[2] - 1
+                    pic2 = np.int64(polarity_vol.shape[2] - 1)
                 pol_num += wbar * polarity_vol[pic0, pic1, pic2, 0]
 
         if den0 > 0.0:

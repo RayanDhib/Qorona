@@ -6,13 +6,13 @@ defined everywhere the solution is, so unlike the Q⊥ volume it carries no cove
 no NaN-tolerant interpolation: a plain tricubic on a ghost-padded payload, the same
 :class:`~qorona.resample.grid.SphericalGrid` machinery the field and Q⊥ volume use.
 
-It is built from the resampler's density output (the COCONUT ``rho`` column), so it rides
-the resample the field already runs (one k-d tree, B and density fit together). The COCONUT
-corona-normalised mass density is converted toward physical electron number density by the mean
-molecular weight ``μ`` (10 % helium ⇒ ``μ = 1.27``); the *absolute* normalisation constant is
-dropped: the Q⊥ weighting and relative pB are scale-free (a constant prefactor cancels in the
-weight-normalised average and in the polarization ratio), so this volume carries the relative shape
-and an absolute factor is folded in only when a calibrated brightness is wanted.
+It is built from the resampler's density output (the canonical ``rho`` variable), so it rides
+the resample the field already runs (B and density fit together). The native model-normalised
+mass density is converted toward physical electron number density by the mean molecular weight
+``μ`` (10 % helium ⇒ ``μ = 1.27``); the *absolute* normalisation constant is dropped: the Q⊥
+weighting and relative pB are scale-free (a constant prefactor cancels in the weight-normalised
+average and in the polarization ratio), so this volume carries the relative shape and an
+absolute factor is folded in only when a calibrated brightness is wanted.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import numpy as np
 from qorona.field.interpolation import tricubic
 from qorona.resample.grid import GHOST, SphericalGrid, pad_field
 
-#: Mean molecular weight per electron for a 10 % helium corona; the COCONUT corona-normalised mass
+#: Mean molecular weight per electron for a 10 % helium corona; the native model-normalised mass
 #: density is divided by this toward electron number density. Overridable per call via
 #: :meth:`DensityVolume.from_grid_values`.
 MEAN_MOLECULAR_WEIGHT = 1.27
@@ -57,7 +57,7 @@ class DensityVolume:
     ) -> DensityVolume:
         """Build a :class:`DensityVolume` from resampled ``(n_r, n_theta, n_phi)`` mass density.
 
-        Converts the corona-normalised mass density toward electron number density by dividing by
+        Converts the model-normalised mass density toward electron number density by dividing by
         the mean molecular weight ``mu`` (relative shape only; see the module header) and
         ghost-pads the result.
 
@@ -66,7 +66,7 @@ class DensityVolume:
         grid
             The spherical grid the density was resampled onto.
         mass_density
-            ``(n_r, n_theta, n_phi)`` resampled corona-normalised mass density on the grid nodes.
+            ``(n_r, n_theta, n_phi)`` resampled model-normalised mass density on the grid nodes.
         mu
             Mean molecular weight per electron (default :data:`MEAN_MOLECULAR_WEIGHT`).
         """

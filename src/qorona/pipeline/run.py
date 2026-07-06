@@ -47,7 +47,8 @@ from qorona.field.base import Field
 from qorona.field.density import DensityVolume
 from qorona.field.sampled import SampledField
 from qorona.geometry.camera import OrthographicCamera
-from qorona.io import read_solution
+from qorona.io import NativeSolution, read_solution
+from qorona.io.readers import resolve_model
 from qorona.radiation.brightness import BrightnessResult
 from qorona.radiation.brightness import render_brightness as _brightness_los
 from qorona.render.fieldlines import FieldLineImage, render_field_lines
@@ -62,7 +63,12 @@ from qorona.resample.grid import (
     UniformSpacing,
     pad_field,
 )
-from qorona.resample.resampler import KnnMlsResampler, NearestCellResampler, Resampler
+from qorona.resample.resampler import (
+    KnnMlsResampler,
+    NearestCellResampler,
+    Resampler,
+    StructuredGridResampler,
+)
 from qorona.squashing.volume import (
     QPerpVolume,
     build_volume_paint,
@@ -84,6 +90,7 @@ _SPACING_NAMES: dict[type, str] = {cls: name for name, cls in _SPACING_CLASSES.i
 _RESAMPLERS: dict[str, type[Resampler]] = {
     "knn-mls": KnnMlsResampler,
     "nearest-cell": NearestCellResampler,
+    "structured": StructuredGridResampler,
 }
 _PRESETS: dict[str, WeightingPreset] = {"large-fov": LARGE_FOV, "small-fov": SMALL_FOV}
 
@@ -149,6 +156,14 @@ def _volume_grid(grid_cfg: GridConfig, resolution_factor: int) -> SphericalGrid:
 # --- Stage functions ---------------------------------------------------------------------------
 
 
+def _resolve_resampler(name: str, solution: NativeSolution) -> str:
+    """Resolve the ``auto`` resampler to the solution's natural one: ``structured`` when the
+    solution carries structured axes, else the ``knn-mls`` default."""
+    if name != "auto":
+        return name
+    return "structured" if solution.structured is not None else "knn-mls"
+
+
 def build_field(
     input_cfg: InputConfig,
     grid_cfg: GridConfig,
@@ -178,15 +193,17 @@ def build_field(
     if timings is not None:
         timings["read"] = time.perf_counter() - start
     grid = _field_grid(grid_cfg)
+    resampler_name = _resolve_resampler(grid_cfg.resampler, solution)
     resampler: Resampler
-    if grid_cfg.resampler == "knn-mls":
+    if resampler_name == "knn-mls":
         resampler = KnnMlsResampler(n_neighbors=grid_cfg.n_neighbors)
     else:
-        resampler = _RESAMPLERS[grid_cfg.resampler]()
+        resampler = _RESAMPLERS[resampler_name]()
     start = time.perf_counter()
     field = SampledField.from_solution(
         solution, grid, resampler=resampler, show_progress=show_progress
     )
+    field.resampler_name = resampler_name
     if timings is not None:
         timings["resample"] = time.perf_counter() - start
     return field
@@ -439,35 +456,26 @@ def export_lines(
 
 
 def render_brightness(
-    field: SampledField,
+    density: DensityVolume,
     brightness_cfg: BrightnessConfig,
     camera_cfg: CameraConfig,
     *,
     show_progress: bool = True,
 ) -> BrightnessResult:
-    """Render the white-light / polarized-brightness corona of a field from one viewpoint.
+    """Render the white-light / polarized-brightness corona of a density from one viewpoint.
 
     Builds the orthographic camera from the sub-observer angles (the same degrees-and-solar-radii to
     radians conversion as :func:`render_volume`), then integrates the Thomson-scattering brightness
-    over the field's electron density along each line of sight. Independent of the Q⊥ volume (the
-    density is the only field input), so this runs straight off a read-in solution.
+    over the electron density along each line of sight. Independent of the Q⊥ volume (the density
+    is the only field input), so the caller resolves the density from either a read-in solution
+    (``field.density``) or a baked volume artifact (:func:`load_volume`).
 
     Returns
     -------
     BrightnessResult
-        The polarized (``pB``) and total brightness frames and the geometry the display treatments
+        The polarized (``pB``) and total brightness frames and the geometry the display stages
         consume.
-
-    Raises
-    ------
-    ValueError
-        If the field carries no electron density (the solution did not provide it).
     """
-    if field.density is None:
-        raise ValueError(
-            "the white-light / pB product needs an electron density, but this solution carries "
-            "none; read a solution that provides density (e.g. COCONUT 'rho')"
-        )
     camera = OrthographicCamera.from_sub_observer(
         longitude=camera_cfg.longitude,
         latitude=camera_cfg.latitude,
@@ -476,7 +484,7 @@ def render_brightness(
         pixels=camera_cfg.pixels,
     )
     return _brightness_los(
-        field.density,
+        density,
         camera,
         u=brightness_cfg.u,
         crossover=brightness_cfg.crossover,
@@ -588,6 +596,27 @@ def sub_floor_voxels(volume: QPerpVolume) -> int:
     return int(np.count_nonzero(np.isfinite(interior) & (interior < LOG_FLOOR)))
 
 
+def _input_provenance(input_cfg: InputConfig) -> dict[str, Any]:
+    """The input block every provenance record carries: the config's fields with the model
+    resolved through the reader registry, the content hash, and the derived CR/JD."""
+    return {
+        **input_cfg.to_provenance(),
+        "model": resolve_model(input_cfg.path, model=input_cfg.model),
+        "content_hash": content_hash(input_cfg.path),
+        **_ephemeris(input_cfg.timestamp),
+    }
+
+
+def _field_provenance(grid_cfg: GridConfig, field: Field | None = None) -> dict[str, Any]:
+    """The field-grid block of a provenance record, with the resampler recorded *resolved*
+    (never ``auto``) when the built field carries the name."""
+    block = grid_cfg.to_provenance()
+    resolved = getattr(field, "resampler_name", None)
+    if resolved is not None:
+        block["resampler"] = resolved
+    return block
+
+
 def build_provenance(
     input_cfg: InputConfig,
     grid_cfg: GridConfig,
@@ -606,12 +635,8 @@ def build_provenance(
     return {
         "format": _ARTIFACT_FORMAT,
         "version": __version__,
-        "input": {
-            **input_cfg.to_provenance(),
-            "content_hash": content_hash(input_cfg.path),
-            **_ephemeris(input_cfg.timestamp),
-        },
-        "field": {**grid_cfg.to_provenance(), "normalization": field.normalization},
+        "input": _input_provenance(input_cfg),
+        "field": {**_field_provenance(grid_cfg, field), "normalization": field.normalization},
         "volume": {
             **volume_cfg.to_provenance(),
             "backend": _resolved_backend(volume_cfg.device),
@@ -692,6 +717,8 @@ def fieldlines_provenance(
     camera_cfg: CameraConfig,
     output_cfg: OutputConfig,
     result: FieldLineImage,
+    *,
+    field: Field | None = None,
 ) -> dict[str, Any]:
     """Assemble the field-line render's provenance: the mapping the stamp and summary read.
 
@@ -703,12 +730,8 @@ def fieldlines_provenance(
     return {
         "format": "qorona-fieldlines-v1",
         "version": __version__,
-        "input": {
-            **input_cfg.to_provenance(),
-            "content_hash": content_hash(input_cfg.path),
-            **_ephemeris(input_cfg.timestamp),
-        },
-        "field": grid_cfg.to_provenance(),
+        "input": _input_provenance(input_cfg),
+        "field": _field_provenance(grid_cfg, field),
         "fieldlines": {
             **fieldlines_cfg.to_provenance(),
             "n_open": result.n_open,
@@ -739,12 +762,8 @@ def export_provenance(
     )
     return {
         "version": __version__,
-        "input": {
-            **input_cfg.to_provenance(),
-            "content_hash": content_hash(input_cfg.path),
-            **_ephemeris(input_cfg.timestamp),
-        },
-        "field": grid_cfg.to_provenance(),
+        "input": _input_provenance(input_cfg),
+        "field": _field_provenance(grid_cfg, field),
         "export": {
             **export_cfg.to_provenance(),
             "seed_radius": seed_radius,
@@ -755,21 +774,8 @@ def export_provenance(
     }
 
 
-def brightness_provenance(
-    input_cfg: InputConfig,
-    grid_cfg: GridConfig,
-    brightness_cfg: BrightnessConfig,
-    camera_cfg: CameraConfig,
-    output_cfg: OutputConfig,
-    result: BrightnessResult,
-) -> dict[str, Any]:
-    """Assemble the white-light render's provenance: the mapping the stamp and summary read.
-
-    Mirrors :func:`fieldlines_provenance`: the input (path + content hash + derived CR/JD), the
-    field grid, the brightness parameters with the image's polarization and dynamic-range metrics,
-    the camera, and the output. JSON-safe by construction (no volume artifact, so its own format tag
-    distinguishes it).
-    """
+def _brightness_metrics(result: BrightnessResult) -> dict[str, Any]:
+    """Return the image metrics the brightness provenance and summary carry."""
     positive_pb = result.polarized[result.polarized > 0.0]
     decades = float(np.log10(positive_pb.max() / positive_pb.min())) if positive_pb.size else 0.0
     positive_total = result.total > 0.0
@@ -778,23 +784,55 @@ def brightness_provenance(
         if bool(np.any(positive_total))
         else 0.0
     )
+    return {"median_polarization": median_polarization, "pb_decades": decades}
+
+
+def brightness_provenance(
+    input_cfg: InputConfig,
+    grid_cfg: GridConfig,
+    brightness_cfg: BrightnessConfig,
+    camera_cfg: CameraConfig,
+    output_cfg: OutputConfig,
+    result: BrightnessResult,
+    *,
+    field: Field | None = None,
+) -> dict[str, Any]:
+    """Assemble the white-light render's provenance for a render straight off a solution.
+
+    Mirrors :func:`fieldlines_provenance`: the input (path + content hash + derived CR/JD), the
+    field grid, the brightness parameters with the image's polarization and dynamic-range metrics,
+    the camera, and the output. JSON-safe by construction (no volume artifact, so its own format tag
+    distinguishes it).
+    """
     return {
         "format": "qorona-brightness-v1",
         "version": __version__,
-        "input": {
-            **input_cfg.to_provenance(),
-            "content_hash": content_hash(input_cfg.path),
-            **_ephemeris(input_cfg.timestamp),
-        },
-        "field": grid_cfg.to_provenance(),
-        "brightness": {
-            **brightness_cfg.to_provenance(),
-            "median_polarization": median_polarization,
-            "pb_decades": decades,
-        },
+        "input": _input_provenance(input_cfg),
+        "field": _field_provenance(grid_cfg, field),
+        "brightness": {**brightness_cfg.to_provenance(), **_brightness_metrics(result)},
         "camera": camera_cfg.to_provenance(),
         "output": output_cfg.to_provenance(),
     }
+
+
+def volume_brightness_provenance(
+    build_prov: dict[str, Any],
+    brightness_cfg: BrightnessConfig,
+    camera_cfg: CameraConfig,
+    output_cfg: OutputConfig,
+    result: BrightnessResult,
+) -> dict[str, Any]:
+    """Assemble the white-light render's provenance for a render off a baked volume artifact.
+
+    Mirrors :func:`render_provenance`: the volume's build provenance rides whole (so the stamp and
+    summary read the original input and field blocks without re-supplying them), extended with the
+    brightness parameters and image metrics, the camera, and the output.
+    """
+    prov = json.loads(json.dumps(build_prov))  # deep copy
+    prov["brightness"] = {**brightness_cfg.to_provenance(), **_brightness_metrics(result)}
+    prov["camera"] = camera_cfg.to_provenance()
+    prov["output"] = output_cfg.to_provenance()
+    return prov
 
 
 # --- Volume disk artifact -----------------------------------------------------------------

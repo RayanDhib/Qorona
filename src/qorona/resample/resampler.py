@@ -91,6 +91,50 @@ class NearestCellResampler(Resampler):
         return resampled
 
 
+class StructuredGridResampler(Resampler):
+    """Interpolate a structured-native solution directly onto the internal grid.
+
+    Consumes the solution's :class:`~qorona.io.native.StructuredMesh`: each variable is
+    reshaped to its native ``(n_r, n_theta, n_phi)`` block and evaluated at the internal grid
+    nodes by linear interpolation on the native axes (azimuth periodic; r and θ clamped to the
+    native range, so nodes outside it read the edge value). Exact on the native sample points
+    and far cheaper than the k-NN fit on large regular meshes; downstream smoothness comes from
+    the internal tricubic interpolant, as for every resampler.
+    """
+
+    def resample(
+        self,
+        solution: NativeSolution,
+        grid: SphericalGrid,
+        variables: tuple[str, ...],
+        *,
+        show_progress: bool = True,
+    ) -> dict[str, np.ndarray]:
+        mesh = solution.structured
+        if mesh is None:
+            raise ValueError(
+                "the structured resampler needs a solution carrying structured axes "
+                "(e.g. MAS); use `knn-mls` for unstructured solutions"
+            )
+        r, theta, phi = np.meshgrid(grid.radii, grid.colatitudes, grid.azimuths, indexing="ij")
+        points = np.column_stack(
+            [
+                np.clip(r.ravel(), mesh.radii[0], mesh.radii[-1]),
+                np.clip(theta.ravel(), mesh.colatitudes[0], mesh.colatitudes[-1]),
+                phi.ravel(),
+            ]
+        )
+        shape = (grid.n_r, grid.n_theta, grid.n_phi)
+        label = f"Resampling {len(variables)} variables (structured)"
+        resampled: dict[str, np.ndarray] = {}
+        with progress_bar(label, len(variables), enabled=show_progress) as progress:
+            for done, name in enumerate(variables, start=1):
+                block = solution.variables[name].reshape(mesh.shape)
+                resampled[name] = mesh.interpolator(block)(points).reshape(shape)
+                progress(done)
+        return resampled
+
+
 class KnnMlsResampler(Resampler):
     """Resample by a local moving-least-squares (degree-1) fit at each grid node.
 

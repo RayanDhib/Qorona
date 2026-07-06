@@ -24,7 +24,8 @@ from pathlib import Path
 
 import numpy as np
 
-from qorona.render.los import LOG_FLOOR, _write_png
+from qorona.render.image import write_png
+from qorona.render.los import LOG_FLOOR
 
 __all__ = ["DEFAULT_SLOG_MAX", "QMap"]
 
@@ -152,7 +153,7 @@ class QMap:
         signed = np.clip(self.slog_q() / ceiling, -1.0, 1.0)
         rgb = _slog_colour(np.nan_to_num(signed).ravel()).reshape(*signed.shape, 3)
         rgb = (np.clip(rgb, 0.0, 1.0) * 255.0).round().astype(np.uint8)
-        _write_png(Path(path), np.ascontiguousarray(rgb))
+        write_png(Path(path), np.ascontiguousarray(rgb))
 
     def save_npz(self, path: str | Path, *, meta: str | None = None) -> None:
         """Write the raw shell arrays as a dependency-free ``.npz`` for external plotting.

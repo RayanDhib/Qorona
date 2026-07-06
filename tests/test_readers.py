@@ -1,14 +1,17 @@
-"""Parser correctness for the solution readers (CFmesh and Tecplot).
+"""Parser correctness for the solution readers (CFmesh, Tecplot, and the MAS HDF4 quartet).
 
 Both COCONUT formats are checked on the same hand-written minimal mesh (one triangle extruded
 into two stacked prisms, shells at r = 1, 2, 3) so the shared contract (state-to-cell mapping,
 prism-centre averaging, the canonical variable layout, and inner/outer boundary tagging) is
-verified without large data files, alongside each format's own provenance.
+verified without large data files, alongside each format's own provenance. The MAS reader is
+checked on a synthetic staggered file set carrying an analytic dipole, covering sibling
+discovery, mesh alignment, the spherical-to-Cartesian conversion, and the structured resample.
 """
 
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from astropy import units as u
 
 from qorona import read_solution
@@ -117,3 +120,78 @@ def test_readers_parse_minimal_mesh(tmp_path):
     # Tecplot has no tagged surfaces; inner/outer are synthesised from the node radial extremes.
     assert tecplot.metadata.file_format == "tecplot"
     assert "synthesized" in tecplot.boundaries["inner"].source_name
+
+
+def test_mas_reader_and_structured_resample(tmp_path):
+    sd = pytest.importorskip("pyhdf.SD")
+
+    # A dipole in spherical components on staggered per-variable axes (file order phi, theta, r),
+    # with the real files' pole overhang; rho = r^-2. The radial axis is the finest: the
+    # staggered alignment extrapolates half a cell at the shell edges, where 1/r^3 curves most.
+    r_main = np.linspace(1.0, 2.0, 41)
+    t_main = np.linspace(-0.05, np.pi + 0.05, 25)
+    p_main = np.linspace(0.0, 2.0 * np.pi, 36, endpoint=False)
+    stagger = {
+        "rho": (0.0, 0.0, 0.0),
+        "br": (0.5, 0.0, 0.0),
+        "bt": (0.0, 0.5, 0.0),
+        "bp": (0.0, 0.0, 0.5),
+    }
+
+    def component(name, rr, tt):
+        if name == "br":
+            return 2.0 * np.cos(tt) / rr**3
+        if name == "bt":
+            return np.sin(tt) / rr**3
+        if name == "bp":
+            return np.zeros_like(rr)
+        return 1.0 / rr**2
+
+    for name, (dr, dt, dp) in stagger.items():
+        r = r_main + dr * (r_main[1] - r_main[0])
+        t = t_main + dt * (t_main[1] - t_main[0])
+        p = p_main + dp * (p_main[1] - p_main[0])
+        rr, tt, _ = np.meshgrid(r, t, p, indexing="ij")
+        values = component(name, rr, tt).transpose(2, 1, 0)
+        store = sd.SD(str(tmp_path / f"{name}002.hdf"), sd.SDC.WRITE | sd.SDC.CREATE)
+        dataset = store.create("Data-Set-2", sd.SDC.FLOAT64, values.shape)
+        for i, axis in enumerate((p, t, r)):
+            dataset.dim(i).setscale(sd.SDC.FLOAT64, axis.tolist())
+        dataset[:] = values
+        store.end()
+
+    solution = read_solution(tmp_path / "br002.hdf", show_progress=False)
+
+    # Identity, sibling discovery from a B anchor, canonical variables, structured axes.
+    assert solution.metadata.model == "mas"
+    assert solution.variable_names == ["rho", "Bx", "By", "Bz"]
+    assert solution.structured is not None
+    assert solution.n_cells == 41 * 25 * 36
+
+    # Spherical-to-Cartesian against the closed-form dipole B = (3 (z_hat . r_hat) r_hat - z_hat)
+    # / r^3 (staggering alignment is linear, hence the loose tolerance).
+    points = solution.cell_centers.to_value(u.R_sun)
+    radius = np.linalg.norm(points, axis=1, keepdims=True)
+    unit = points / radius
+    expected = (3.0 * unit[:, 2:3] * unit - np.array([0.0, 0.0, 1.0])) / radius**3
+    np.testing.assert_allclose(solution.magnetic_field, expected, atol=1.0e-2)
+    np.testing.assert_allclose(solution.variables["rho"], 1.0 / radius[:, 0] ** 2, rtol=5.0e-3)
+
+    # Boundaries synthesized from the radial extremes (Tecplot precedent).
+    assert "synthesized" in solution.boundaries["inner"].source_name
+    np.testing.assert_allclose(solution.boundaries["inner"].mean_radius.to_value(u.R_sun), 1.0)
+    np.testing.assert_allclose(solution.boundaries["outer"].mean_radius.to_value(u.R_sun), 2.0)
+
+    # The structured resampler reproduces the analytic field on the internal grid.
+    from qorona.resample import LogarithmicSpacing, SphericalGrid, StructuredGridResampler
+
+    grid = SphericalGrid(LogarithmicSpacing(1.05, 1.9), n_r=12, n_theta=18, n_phi=24)
+    resampled = StructuredGridResampler().resample(
+        solution, grid, ("Bx", "By", "Bz"), show_progress=False
+    )
+    nodes = grid.node_points().reshape(-1, 3)
+    radius = np.linalg.norm(nodes, axis=1, keepdims=True)
+    unit = nodes / radius
+    expected = (3.0 * unit[:, 2:3] * unit - np.array([0.0, 0.0, 1.0])) / radius**3
+    sampled = np.stack([resampled[name].ravel() for name in ("Bx", "By", "Bz")], axis=-1)
+    np.testing.assert_allclose(sampled, expected, atol=2.0e-2)

@@ -1,5 +1,5 @@
-"""CLI smoke test: the build -> .qor -> render spine runs end to end, the two-level help wiring
-holds, and a non-artifact is rejected with a clean error instead of a traceback.
+"""CLI smoke test: the build -> .qor -> render / wl spine runs end to end, the two-level help
+wiring holds, and a non-artifact is rejected with a clean error instead of a traceback.
 
 The numerical kernels have their own analytic tests; this guards the command wiring (argument
 parsing, help levels, config assembly, volume save/load, PNG output) they never touch. It runs on
@@ -112,6 +112,28 @@ def test_cli_build_render_roundtrip(tmp_path: Path) -> None:
     )
     assert composite.exit_code == 0, composite.output
     assert composite_image.exists()
+
+    # The white-light product off the same baked artifact: exercises the input auto-detect, the
+    # stored density, and the default Newkirk vignette.
+    wl_image = tmp_path / "mini_wl.png"
+    wl = runner.invoke(
+        main,
+        [
+            "wl",
+            str(volume),
+            "-o",
+            str(wl_image),
+            "--fov",
+            "2.5",
+            "--width",
+            "48",
+            "--height",
+            "48",
+            "--quiet",
+        ],
+    )
+    assert wl.exit_code == 0, wl.output
+    assert wl_image.exists()
 
     # A non-artifact (the mesh fed where a .qor is expected) is rejected as a clean ClickException,
     # not a traceback: SystemExit from click, with the loader's message reaching the user.

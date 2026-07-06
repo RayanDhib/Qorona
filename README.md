@@ -97,6 +97,18 @@ For a field-line view:
 qorona fieldlines data/hmi_lmax50.CFmesh.xz -o data/fieldlines.png --fov 8 --longitude 317
 ```
 
+For a white-light / polarized-brightness view, rendered from the solution's electron density
+(no Q⊥ volume involved; a baked `.qor` also works as input, reusing its stored density):
+
+```bash
+qorona wl data/hmi_lmax50.CFmesh.xz -o data/wl.png \
+    --timestamp 2025-10-09T18:19:52 --longitude 317 --latitude 6.2 [--fov 6]
+qorona wl data/hmi_lmax50.qor -o data/wl.png --longitude 317 --latitude 6.2 [--fov 6]
+```
+
+`--frame polarized|total` picks the brightness frame, `--vignette` the radial detrend,
+`--percentiles LOW HIGH` the display stretch; the camera flags are the same as `render`.
+
 For a Q-map (a longitude/latitude shell of signed-log Q⊥ at a fixed radius, the
 viewpoint-independent sibling of `render`), bake with the outer radius at the map radius:
 
@@ -161,7 +173,8 @@ The reference output is the line-of-sight squashing-factor render of the corona'
 Qorona is model-agnostic: each coronal model and file format sits behind a common reader interface,
 so the whole pipeline runs on any solution once a reader exists.
 
-**Currently supported:** COCONUT (COOLFluiD `.CFmesh`).
+**Currently supported:** COCONUT (COOLFluiD `.CFmesh`, Tecplot `.plt`) and MAS (one HDF4 file
+per variable; point the CLI at any file of the set).
 
 Support for other coronal MHD models can be added by writing a single reader against that interface.
 A contributor guide is planned.

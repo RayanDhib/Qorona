@@ -48,6 +48,9 @@ class SampledField(Field):
         The internal spherical grid the field is sampled on.
     normalization
         The native field normalization recorded from the source solution (e.g. ``"corona"``).
+    resampler_name
+        Config-vocabulary name of the resampler that built this field, recorded by the
+        pipeline for provenance (``None`` when constructed directly).
     """
 
     def __init__(
@@ -60,6 +63,7 @@ class SampledField(Field):
     ) -> None:
         self.grid = grid
         self.normalization = normalization
+        self.resampler_name: str | None = None
         self._b_padded = b_padded
         self._density = density
         self._reference_strength: float | None = None

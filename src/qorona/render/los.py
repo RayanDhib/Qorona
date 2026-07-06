@@ -54,8 +54,6 @@ kernel's reference, and the two agree to floating-point noise.
 
 from __future__ import annotations
 
-import struct
-import zlib
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -66,6 +64,7 @@ from astropy import units as u
 from qorona.accel import HAVE_NUMBA, apply_workers
 from qorona.console import print_success, progress_bar
 from qorona.geometry.camera import OrthographicCamera
+from qorona.render.image import eclipse_alpha, occultation_mask, scale_intensity, write_png
 from qorona.squashing.volume import QPerpVolume
 
 if TYPE_CHECKING:
@@ -261,32 +260,12 @@ class RenderResult:
         rgb = np.ascontiguousarray(
             (np.clip(np.nan_to_num(self.image), 0.0, 1.0) * 255.0).round().astype(np.uint8)
         )
-        _write_png(Path(path), rgb)
+        write_png(Path(path), rgb)
 
     def save_grayscale_png(self, path: str | Path) -> None:
         """Write the grayscale measurement image to ``path`` as an 8-bit PNG."""
         gray = (np.clip(np.nan_to_num(self.grayscale), 0.0, 1.0) * 255.0).round().astype(np.uint8)
-        _write_png(Path(path), np.ascontiguousarray(np.repeat(gray[:, :, None], 3, axis=2)))
-
-
-def _write_png(path: Path, rgb: np.ndarray) -> None:
-    """Write a ``(H, W, 3)`` ``uint8`` array to a truecolour 8-bit PNG (no external dependency)."""
-    height, width = rgb.shape[:2]
-
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        body = tag + data
-        crc = struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
-        return struct.pack(">I", len(data)) + body + crc
-
-    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # 8-bit, truecolour RGB
-    raw = b"".join(b"\x00" + rgb[row].tobytes() for row in range(height))  # filter byte 0 per row
-    payload = (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", header)
-        + chunk(b"IDAT", zlib.compress(raw, 9))
-        + chunk(b"IEND", b"")
-    )
-    path.write_bytes(payload)
+        write_png(Path(path), np.ascontiguousarray(np.repeat(gray[:, :, None], 3, axis=2)))
 
 
 def _weighted_average(
@@ -304,72 +283,6 @@ def _weighted_average(
     weighted = np.sum(safe_weight * np.where(valid, values, 0.0), axis=-1)
     with np.errstate(invalid="ignore", divide="ignore"):
         return np.where(total > 0.0, weighted / total, np.nan), total
-
-
-def _occultation_mask(impact: np.ndarray, s: np.ndarray, r_occult: float) -> np.ndarray:
-    """Return ``True`` where a sample is hidden behind the opaque body ``r < r_occult``.
-
-    A sample's scattered light reaches the observer (toward ``+s``) only if its onward path clears
-    the body. For a ray that pierces the body (``rho < r_occult``) the body spans
-    ``s ∈ [-s_body, +s_body]`` with ``s_body = sqrt(r_occult² - rho²)``, so a sample behind it
-    (``s < -s_body``) is occulted; rays that miss the body occult nothing.
-    """
-    s_body = np.sqrt(np.clip(r_occult**2 - impact[:, None] ** 2, 0.0, None))
-    return (impact[:, None] < r_occult) & (s[None, :] < -s_body)
-
-
-def _eclipse_alpha(impact: np.ndarray, r_occult: float, softness: float) -> np.ndarray:
-    """Return the eclipse occulter's per-ray opacity ``alpha`` in ``[0, 1]``.
-
-    The image-level dark disk, the orthogonal companion to :func:`_occultation_mask`, which masks
-    individual line-of-sight samples *inside* the integral (the opaque body). This is a
-    post-stretch radial vignette on the *finished* image (in :func:`_finalize`), so it never touches
-    the hot loop and is identical across the kernel and NumPy paths. ``alpha = 0`` over the opaque
-    disk core (so it reads dark), ramping to ``1`` at the limb, leaving off-limb corona untouched.
-
-    With ``softness <= 0`` the edge is a hard black circle (``alpha = 1`` only where the impact
-    parameter is ``>= r_occult``); with ``softness > 0`` ``alpha`` follows a smoothstep across
-    ``[r_occult - softness, r_occult]`` for a feathered, slightly-transparent limb. ``impact`` is
-    the per-ray impact parameter (``rays.impact``).
-    """
-    if softness <= 0.0:
-        return (impact >= r_occult).astype(np.float64)
-    t = np.clip((impact - (r_occult - softness)) / softness, 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
-
-
-def _scale_intensity(
-    values: np.ndarray,
-    scaling: Literal["linear", "log"],
-    percentiles: tuple[float, float],
-    anchor: np.ndarray | None = None,
-) -> np.ndarray:
-    """Map each channel of a ``(n, C)`` per-pixel array to display intensity in ``[0, 1]``.
-
-    Each channel is stretched between its **own** low/high percentiles. A pooled stretch is
-    dominated by the shallow channels and crushes the steep ``r^(-n)`` channel to ≈0 (all-blue);
-    per-channel balancing lets every channel use the full range, which is what turns the
-    cross-channel magnitude gradient into the blue→white→red depth hue. ``NaN`` pixels map to 0.
-
-    ``anchor`` (a boolean mask over the ``n`` pixels) restricts which pixels set the percentiles,
-    used to anchor a low-corona preset's stretch on the disk so the faint off-limb periphery cannot
-    drag it. The resulting stretch is still applied to every pixel; the mask falls back to all
-    finite pixels where it selects none.
-    """
-    scaled = np.log10(np.clip(values, 1e-300, None)) if scaling == "log" else values
-    out = np.zeros_like(scaled, dtype=np.float64)
-    for channel in range(scaled.shape[-1]):
-        column = scaled[..., channel]
-        finite = np.isfinite(column)
-        if not finite.any():
-            continue
-        sample = finite if anchor is None else finite & anchor
-        if not sample.any():
-            sample = finite
-        low, high = np.percentile(column[sample], percentiles)
-        span = high - low if high > low else 1.0
-        out[..., channel] = np.nan_to_num(np.clip((column - low) / span, 0.0, 1.0))
-    return out
 
 
 def _polarity_colour(polarity: np.ndarray) -> np.ndarray:
@@ -469,11 +382,13 @@ def _thomson_average_weight(
     density = thomson.density.sample(points.reshape(-1, 3)).reshape(radius.shape)
     with np.errstate(invalid="ignore", divide="ignore"):
         c_tan, c_pol = table.evaluate(radius)
-        sin_sq_chi = (impact[:, None] ** 2) / radius**2
-        if thomson.mode == "pB":
-            intensity = c_pol * sin_sq_chi
-        else:
-            intensity = 2.0 * c_tan - c_pol * sin_sq_chi
+    sin_sq_chi = np.divide(
+        impact[:, None] ** 2, radius**2, out=np.zeros_like(radius), where=radius > 0.0
+    )
+    if thomson.mode == "pB":
+        intensity = c_pol * sin_sq_chi
+    else:
+        intensity = 2.0 * c_tan - c_pol * sin_sq_chi
     return density * intensity
 
 
@@ -591,24 +506,25 @@ def _finalize(
     reconstruction is skipped, so polarity owns the colour axis while structure owns the luminance.
 
     In ``"eclipse"`` mode the disk is darkened image-side (the orthogonal companion to the
-    in-integral body mask, :func:`_occultation_mask`): the opaque core is ``NaN``-ed in ``signal``
-    and zeroed in ``coverage`` *before* the stretch (so its hidden through-disk column neither
-    shows nor biases the off-limb contrast, and the metrics match the black image) while the
-    partially-visible feather annulus stays as computed and both images are faded at the limb by the
-    :func:`_eclipse_alpha` vignette. The scalar clamp fractions are left full-column: a volume
+    in-integral body mask, :func:`~qorona.render.image.occultation_mask`): the opaque core is
+    ``NaN``-ed in ``signal`` and zeroed in ``coverage`` *before* the stretch (so its hidden
+    through-disk column neither shows nor biases the off-limb contrast, and the metrics match the
+    black image) while the partially-visible feather annulus stays as computed and both images are
+    faded at the limb by the :func:`~qorona.render.image.eclipse_alpha` darkening. The scalar clamp
+    fractions are left full-column: a volume
     dynamic-range diagnostic, not a per-pixel visible metric. ``"opaque"`` and ``"none"`` leave the
     images untouched here. The ``"composite"`` mode never reaches here: :func:`render` assembles it
     from an eclipse pass and a small-fov opaque pass (:func:`_composite_image`).
     """
     if occult == "eclipse":
-        alpha = _eclipse_alpha(impact, r_occult, occult_softness)
+        alpha = eclipse_alpha(impact, r_occult, occult_softness)
         core = alpha <= 0.0
         signal = np.where(core[:, None], np.nan, signal)
         coverage = np.where(core, 0.0, coverage)
     else:
         alpha = None
 
-    grayscale = _scale_intensity(signal.mean(axis=1)[:, None], "linear", percentiles)[:, 0]
+    grayscale = scale_intensity(signal.mean(axis=1)[:, None], "linear", percentiles)[:, 0]
     if alpha is not None:
         grayscale = grayscale * alpha
 
@@ -620,7 +536,7 @@ def _finalize(
     else:
         magnitude = _display_magnitude(signal, den, onpath, coverage, display)
         anchor = None if preset.stretch_radius is None else impact < preset.stretch_radius
-        image = _scale_intensity(magnitude, preset.scaling, percentiles, anchor=anchor)
+        image = scale_intensity(magnitude, preset.scaling, percentiles, anchor=anchor)
         if alpha is not None:
             image = image * alpha[:, None]
         polarity_image = None
@@ -709,7 +625,7 @@ def _render_numpy(
             in_shell = (radius >= inner_radius) & (radius <= outer_radius)
             on_path = in_shell
             if occult_body:
-                on_path = on_path & ~_occultation_mask(batch_impact, s, r_occult)
+                on_path = on_path & ~occultation_mask(batch_impact, s, r_occult)
             valid = on_path & np.isfinite(log_q)
 
             lower_clamped += int(np.count_nonzero(valid & (log_q < log_floor)))

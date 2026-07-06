@@ -13,8 +13,9 @@ from pathlib import Path
 from qorona.io.native import NativeSolution
 from qorona.io.readers.base import SolutionReader
 from qorona.io.readers.coconut import CFmeshReader, CoconutTecplotReader
+from qorona.io.readers.mas import MasHdfReader
 
-_READERS: list[type[SolutionReader]] = [CFmeshReader, CoconutTecplotReader]
+_READERS: list[type[SolutionReader]] = [CFmeshReader, CoconutTecplotReader, MasHdfReader]
 
 
 def register_reader(reader: type[SolutionReader]) -> type[SolutionReader]:
@@ -76,6 +77,21 @@ def _select_reader(path: Path, model: str | None) -> type[SolutionReader]:
     )
 
 
+def resolve_model(path: str | Path, *, model: str | None = None) -> str | None:
+    """Return the model that reads ``path``, or ``None`` when no registered reader recognises it.
+
+    The registry-level identity used where only the model name is needed (provenance records,
+    model-aware defaults) without reading the file; an explicit ``model`` short-circuits the
+    lookup.
+    """
+    if model is not None:
+        return model.lower()
+    try:
+        return _select_reader(Path(path), None).model
+    except (ValueError, OSError):
+        return None
+
+
 def read_solution(
     path: str | Path,
     *,
@@ -113,4 +129,5 @@ __all__ = [
     "available_models",
     "read_solution",
     "register_reader",
+    "resolve_model",
 ]

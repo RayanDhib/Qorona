@@ -10,9 +10,10 @@ and total single-electron intensities: the only radiometric physics behind both 
 Two numerical details are load-bearing:
 
 - **Closed form near the Sun, asymptotic series far out.** The exact coefficients are evaluated in
-  closed form, but the combinations ``C - A`` and ``D - B`` scale as ``θ_max⁴`` and lose precision
-  to cancellation past a few solar radii, so beyond a crossover radius (default ``10 R☉``) the
-  coefficients switch to their small-``θ_max`` asymptotic expansion. Double precision throughout.
+  closed form, but at large ``r`` the closed forms cancel toward their small ``O(θ_max²)`` values
+  (``B``, ``C``, ``D`` individually, and the combinations ``C - A`` / ``D - B`` most severely), so
+  beyond a crossover radius (default ``10 R☉``) all four switch to their small-``θ_max`` asymptotic
+  expansion. Double precision throughout.
 - **The weighting is a relative shape.** Because the render forms a weight-*normalised* average, any
   constant prefactor on the weight cancels, so the single-electron prefactor (and any absolute
   electron-density calibration) is dropped; only the ``r``- and ``χ̄``-dependent shape is kept.
@@ -245,30 +246,3 @@ class ThomsonWeight:
         return build_coefficient_table(
             float(radii[0]), float(radii[-1]), u=self.u, crossover=self.crossover
         )
-
-    def weight(self, points: np.ndarray, s: np.ndarray, radius: np.ndarray) -> np.ndarray:
-        """Return the per-sample scalar weight ``Nₑ(point) · I(r, χ̄)`` at line-of-sight samples.
-
-        Parameters
-        ----------
-        points
-            ``(n, 3)`` Cartesian sample coordinates in R☉ (where ``Nₑ`` is read).
-        s
-            ``(n,)`` signed line-of-sight distance from the plane of sky.
-        radius
-            ``(n,)`` heliocentric radius ``r = √(rho² + s²)`` of each sample.
-
-        Returns
-        -------
-        numpy.ndarray
-            ``(n,)`` scalar radiometric weight (the prefactor dropped; relative shape only).
-        """
-        density = self.density.sample(points)
-        c_tan, c_pol = intensity_coefficients(radius, u=self.u, crossover=self.crossover)
-        # sin²χ̄ = rho²/r² = 1 - (s/r)² (the ray's impact parameter rho over the sample radius).
-        sin_sq_chi = np.clip(1.0 - (s / radius) ** 2, 0.0, 1.0)
-        if self.mode == "K":
-            intensity = 2.0 * c_tan - c_pol * sin_sq_chi
-        else:
-            intensity = c_pol * sin_sq_chi
-        return density * intensity
