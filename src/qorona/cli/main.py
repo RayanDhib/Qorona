@@ -363,7 +363,8 @@ _volume_options = _compose(
         section="Volume",
         advanced=True,
         help="CUDA kernel precision: mixed (f32 field interpolation, f64 elsewhere; default), "
-        "float64 (all-double reference), float32 (experimental fully-float32 painter). GPU only.",
+        "float64 (all-double reference), float32 (experimental fully-float32 painter). GPU only; "
+        "on `run` it applies to both the build and the render.",
     ),
     *_turn_guard_options("Volume"),
 )
@@ -823,8 +824,17 @@ _device_option = option(
     type=click.Choice(DEVICE_MODES),
     default=None,
     section="Execution",
-    help="Compute backend for the volume build: auto (GPU when present, else CPU), gpu (force; "
-    "errors if absent), cpu. Renders always run on the CPU. Default auto.",
+    help="Compute backend: auto (GPU when present, else CPU), gpu (force; errors if absent), "
+    "cpu. Default auto.",
+)
+_render_precision_option = option(
+    "--precision",
+    type=click.Choice(PRECISION_MODES),
+    default=None,
+    section="Render",
+    advanced=True,
+    help="CUDA render kernel precision: mixed (f32 sampling, f64 accumulation; default), "
+    "float64 (all-double reference); float32 is accepted as mixed. GPU only.",
 )
 _quiet_option = option(
     "--quiet",
@@ -944,6 +954,7 @@ def _render_config(kw: dict[str, Any], workers: int | None) -> RenderConfig:
         "step",
         "polarity_mode",
         "device",
+        "precision",
     )
     if kw.get("clamp") is not None:
         fields["clamp"] = tuple(kw["clamp"])
@@ -1257,14 +1268,17 @@ def build(
 @_camera_options()
 @_weighting_options
 @_render_options
+@_render_precision_option
 @_output_options
 @_workers_option
+@_device_option
 @_quiet_option
 def render(
     volume_path: Path,
     output_path: Path,
     timestamp: str | None,
     workers: int | None,
+    device: str | None,
     quiet: bool,
     **kw: Any,
 ) -> None:
@@ -1272,8 +1286,10 @@ def render(
 
     The seconds-scale stage: load the volume, integrate it for one camera / preset / display, write
     the PNG(s) with the on-image stamp, and print the metrics. Repeat for new viewpoints off the
-    same volume. Renders always run on the CPU, so there is no `--device` here.
+    same volume. Runs on the GPU when one is present (`--device` selects; `--device cpu` forces
+    the reference CPU path).
     """
+    kw["device"] = device
     show_progress = not quiet
     camera_cfg = _camera_config(kw)
     weighting_cfg = _weighting_config(kw)
@@ -1863,7 +1879,10 @@ def _render_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
         f"{float(ren['upper_clamped_fraction']):.1%} at log_max",
     ]
     if ren.get("backend"):
-        parts.append(str(ren["backend"]))
+        backend = str(ren["backend"])
+        if backend.startswith("gpu") and ren.get("precision"):
+            backend += f" · {ren['precision']}"
+        parts.append(backend)
     if "render" in timings:
         parts.append(f"render {timings['render']:.1f} s")
     return " · ".join(parts)

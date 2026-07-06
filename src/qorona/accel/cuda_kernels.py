@@ -5,7 +5,9 @@ tricubic, spherical index map, coordinate Jacobian, field evaluation, and deviat
 ported to ``@cuda.jit`` device functions inlined into a per-thread loop. The port reproduces the
 *algorithm*, not the bit pattern. The clean layered implementations are the source of truth; this
 runs only when a CUDA GPU is present, with the numba-CPU kernel and the NumPy integrator as
-fallbacks and as the references it is validated against.
+fallbacks and as the references it is validated against. The module also hosts the **line-of-sight
+render kernel** (:func:`render_batch_cuda`, one ray per thread), the CUDA twin of
+:func:`qorona.accel.kernels.render_batch_jit`, under the same tiering and validation contract.
 
 Three mechanical differences from the ``@njit`` twin, required by the device memory model:
 ``sd`` (state dim, 3 or 9) is a compile-time literal (``cuda.local.array`` needs a constant shape),
@@ -43,6 +45,7 @@ import numpy as np
 from numba import cuda, float32, float64
 
 from qorona.accel import JitField, JitGrid
+from qorona.field.interpolation import _MIN_KEPT_WEIGHT
 from qorona.resample.grid import GHOST
 from qorona.trace.fieldline import Endpoint
 from qorona.trace.integrator import (
@@ -69,6 +72,7 @@ _DEFLECTED = int(Endpoint.DEFLECTED)
 
 _TWO_PI = 2.0 * math.pi
 _TWO_PI_F32 = np.float32(2.0 * math.pi)
+_MIN_KEPT_WEIGHT_F32 = np.float32(_MIN_KEPT_WEIGHT)
 
 # Tableau / PI / floor constants baked as device globals (read-only from device code, frozen at
 # first compile). float64-contiguous copies so the device reads them without a host round-trip.
@@ -838,6 +842,65 @@ def _localize_foot(state: np.ndarray, coeff: np.ndarray, step: float, r_target: 
         if high - low < 1e-14:
             break
     return 0.5 * (low + high)
+
+
+@cuda.jit(device=True, inline=True, fastmath=_FASTMATH)
+def _tricubic_scalar(vol: np.ndarray, c0: float, c1: float, c2: float) -> float:
+    """NaN-tolerant scalar Keys tricubic of a padded volume at one point; returns the value.
+
+    The device twin of :func:`qorona.accel.kernels._tricubic_point_scalar`: gather the 4x4x4
+    stencil, skip non-finite taps from both the weighted sum and the kept weight, and return the
+    renormalized average; NaN where every tap is non-finite or the kept weight cancels.
+    """
+    base0 = int(math.floor(c0))  # noqa: RUF046
+    base1 = int(math.floor(c1))  # noqa: RUF046
+    base2 = int(math.floor(c2))  # noqa: RUF046
+    wx = _keys_weights(c0 - base0)
+    wy = _keys_weights(c1 - base1)
+    wz = _keys_weights(c2 - base2)
+    numerator = 0.0
+    weight = 0.0
+    for a in range(4):
+        ia = base0 + a - 1
+        for b in range(4):
+            ib = base1 + b - 1
+            for c in range(4):
+                ic = base2 + c - 1
+                tap = vol[ia, ib, ic, 0]
+                if math.isfinite(tap):
+                    w = wx[a] * wy[b] * wz[c]
+                    numerator += w * tap
+                    weight += w
+    if abs(weight) > _MIN_KEPT_WEIGHT:
+        return numerator / weight
+    return math.nan
+
+
+@cuda.jit(device=True, inline=True, fastmath=_FASTMATH)
+def _tricubic_scalar_f32(vol: np.ndarray, c0: float, c1: float, c2: float) -> float:
+    """float32 :func:`_tricubic_scalar`: f32 weights, gather, and accumulation."""
+    base0 = int(math.floor(c0))  # noqa: RUF046
+    base1 = int(math.floor(c1))  # noqa: RUF046
+    base2 = int(math.floor(c2))  # noqa: RUF046
+    wx = _keys_weights_f32(float32(c0 - base0))
+    wy = _keys_weights_f32(float32(c1 - base1))
+    wz = _keys_weights_f32(float32(c2 - base2))
+    numerator = float32(0.0)
+    weight = float32(0.0)
+    for a in range(4):
+        ia = base0 + a - 1
+        for b in range(4):
+            ib = base1 + b - 1
+            for c in range(4):
+                ic = base2 + c - 1
+                tap = vol[ia, ib, ic, 0]
+                if math.isfinite(tap):
+                    w = wx[a] * wy[b] * wz[c]
+                    numerator += w * tap
+                    weight += w
+    if abs(weight) > _MIN_KEPT_WEIGHT_F32:
+        return numerator / weight
+    return math.nan
 
 
 def _make_integrate_line(sd: int, mixed: bool = False) -> tuple[Any, Any, Any]:
@@ -2486,4 +2549,441 @@ def scatter_runs_cuda(
         d_sum_pol,
         np.int64(tile_lo),
         np.int64(tile_hi),
+    )
+
+
+# --- Render kernel -------------------------------------------------------------------------------
+# The CUDA twin of qorona.accel.kernels.render_batch_jit: one ray per GPU thread marching the
+# shared s-grid through the padded log10 Q_perp volume. Two precision tiers from one factory:
+# float64 is the all-double reference; mixed (the default, "float32" aliases it) runs every
+# per-sample quantity (spherical map, radial index map, tricubic gather, channel weights) in
+# float32 through the SFU intrinsics and keeps the per-ray accumulators and reductions float64.
+# Each thread writes only its own output rows (no atomics); the host reduces the per-ray clamp
+# counts, exactly as the CPU kernel's caller does.
+
+
+@cuda.jit(device=True, inline=True, fastmath=_FASTMATH)
+def _render_coeff_lookup(
+    r: float,
+    coeff_log_inner: float,
+    coeff_inv_dlog: float,
+    c_tan_table: np.ndarray,
+    c_pol_table: np.ndarray,
+) -> tuple[float, float]:
+    """Return ``(c_tan, c_pol)`` at radius ``r``: the device twin of the CPU ``_coeff_lookup``."""
+    size_minus_1 = c_tan_table.shape[0] - 1
+    position = (math.log(r) - coeff_log_inner) * coeff_inv_dlog
+    if position < 0.0:
+        position = 0.0
+    elif position > size_minus_1:
+        position = size_minus_1
+    lower = int(position)
+    upper = lower + 1 if lower < size_minus_1 else lower
+    frac = position - lower
+    c_tan = c_tan_table[lower] * (1.0 - frac) + c_tan_table[upper] * frac
+    c_pol = c_pol_table[lower] * (1.0 - frac) + c_pol_table[upper] * frac
+    return c_tan, c_pol
+
+
+def _make_render_kernel(mixed: bool) -> Any:
+    """Build one precision tier's render entry kernel (``mixed``: f32 sampling, f64 accumulation).
+
+    The body is a line-for-line port of :func:`qorona.accel.kernels.render_batch_jit`'s per-ray
+    loop. ``mixed`` swaps in the f32 spherical / index-map / tricubic leaf ops and evaluates the
+    channel weights in f32 (every scalar and literal the f32 expressions touch is ``to_real``-cast,
+    else numba's promotion rules would silently lift them back to f64); the accumulators, the
+    weighted averages, and the Thomson coefficient lookup stay float64 in both tiers, so the two
+    kernels differ only in per-sample rounding.
+    """
+    if mixed:
+        spherical = _spherical_f32
+        radial_map = _radial_parameter_and_derivative_f32
+        tricubic_scalar = _tricubic_scalar_f32
+        to_real = float32
+    else:
+        spherical = _spherical
+        radial_map = _radial_parameter_and_derivative
+        tricubic_scalar = _tricubic_scalar
+        to_real = float64
+
+    @cuda.jit(fastmath=_FASTMATH)
+    def kernel(
+        origins: np.ndarray,
+        look: np.ndarray,
+        impact: np.ndarray,
+        s_grid: np.ndarray,
+        vol: np.ndarray,
+        vn_r: int,
+        vn_theta: int,
+        vn_phi: int,
+        vspacing_code: int,
+        vr_inner: float,
+        vr_outer: float,
+        vexponent: float,
+        sigma: float,
+        use_sigma: bool,
+        powers: np.ndarray,
+        use_powers: bool,
+        scales: np.ndarray,
+        use_scales: bool,
+        floor: float,
+        log_max: float,
+        clamp_lower: bool,
+        r_occult: float,
+        occult_body: bool,
+        use_thomson: bool,
+        density_vol: np.ndarray,
+        dn_r: int,
+        dn_theta: int,
+        dn_phi: int,
+        dspacing_code: int,
+        dr_inner: float,
+        dr_outer: float,
+        dexponent: float,
+        thomson_pb: bool,
+        coeff_log_inner: float,
+        coeff_inv_dlog: float,
+        c_tan_table: np.ndarray,
+        c_pol_table: np.ndarray,
+        use_polarity: bool,
+        polarity_vol: np.ndarray,
+        ray_start: int,
+        ray_stop: int,
+        signal: np.ndarray,
+        coverage: np.ndarray,
+        counts: np.ndarray,
+        den: np.ndarray,
+        onpath: np.ndarray,
+        polarity: np.ndarray,
+    ) -> None:
+        """One ray per thread over ``[ray_start, ray_stop)``; writes the six output rows."""
+        i = ray_start + cuda.grid(1)
+        if i >= ray_stop:
+            return
+
+        # Per-ray scalars in the tier's working precision; the identity cast in the f64 tier.
+        ox = to_real(origins[i, 0])
+        oy = to_real(origins[i, 1])
+        oz = to_real(origins[i, 2])
+        lx = to_real(look[0])
+        ly = to_real(look[1])
+        lz = to_real(look[2])
+        rho = to_real(impact[i])
+        r_in = to_real(vr_inner)
+        r_out = to_real(vr_outer)
+        vexp = to_real(vexponent)
+        occ_r = to_real(r_occult)
+        occulting = occult_body and rho < occ_r
+        s_body = math.sqrt(occ_r * occ_r - rho * rho) if occulting else to_real(0.0)
+
+        sig = to_real(sigma)
+        p0 = to_real(powers[0])
+        p1 = to_real(powers[1])
+        p2 = to_real(powers[2])
+        sc0 = to_real(scales[0])
+        sc1 = to_real(scales[1])
+        sc2 = to_real(scales[2])
+        one = to_real(1.0)
+        half = to_real(0.5)
+        neg_half = to_real(-0.5)
+        ghost = to_real(GHOST)
+        vnr1 = to_real(vn_r - 1)
+        theta_step = to_real(math.pi / vn_theta)
+        phi_step = to_real(_TWO_PI / vn_phi)
+        d_in = to_real(dr_inner)
+        d_out = to_real(dr_outer)
+        dexp = to_real(dexponent)
+        dnr1 = to_real(dn_r - 1)
+        density_theta_step = to_real(math.pi / dn_theta)
+        density_phi_step = to_real(_TWO_PI / dn_phi)
+
+        num0 = 0.0
+        num1 = 0.0
+        num2 = 0.0
+        den0 = 0.0
+        den1 = 0.0
+        den2 = 0.0
+        pden0 = 0.0
+        pden1 = 0.0
+        pden2 = 0.0
+        valid_weight = 0.0
+        path_weight = 0.0
+        pol_num = 0.0
+        n_lower = 0
+        n_upper = 0
+        n_valid = 0
+        n_steps = s_grid.shape[0]
+        for k in range(n_steps):
+            s = to_real(s_grid[k])
+            r = math.sqrt(rho * rho + s * s)
+            if r < r_in or r > r_out:
+                continue
+            if occulting and s < -s_body:
+                continue
+
+            w0 = one
+            w1 = one
+            w2 = one
+            if use_sigma:
+                gaussian = math.exp(neg_half * (s / (r * sig)) ** 2)
+                w0 *= gaussian
+                w1 *= gaussian
+                w2 *= gaussian
+            if use_powers:
+                w0 *= r ** (-p0)
+                w1 *= r ** (-p1)
+                w2 *= r ** (-p2)
+            if use_scales:
+                w0 *= math.exp(-r / sc0)
+                w1 *= math.exp(-r / sc1)
+                w2 *= math.exp(-r / sc2)
+            fw0 = float64(w0)
+            fw1 = float64(w1)
+            fw2 = float64(w2)
+            path_weight += (fw0 + fw1 + fw2) / 3.0
+            pden0 += fw0
+            pden1 += fw1
+            pden2 += fw2
+
+            px = ox + s * lx
+            py = oy + s * ly
+            pz = oz + s * lz
+            r_point, theta, phi = spherical(px, py, pz)
+            # Mirror QPerpVolume.sample: the point-radius shell mask (NaN outside) and the same
+            # index map.
+            if r_point < r_in or r_point > r_out:
+                continue
+            parameter, _ = radial_map(r_point, vspacing_code, r_in, r_out, vexp)
+            c0 = parameter * vnr1 + ghost
+            c1 = theta / theta_step - half + ghost
+            c2 = phi / phi_step + ghost
+            value = float64(tricubic_scalar(vol, c0, c1, c2))
+            if not math.isfinite(value):
+                continue
+
+            n_valid += 1
+            if value < floor:
+                n_lower += 1
+                if clamp_lower:
+                    value = floor
+            elif value > log_max:
+                n_upper += 1
+                value = log_max
+
+            # The optional Thomson scalar Ne * I(r, chi): folded into the average only (num/den),
+            # the geometric path/onpath/valid budgets above stay scalar-free. Off => an exact 1.0
+            # no-op. The coefficient lookup and intensity combination stay float64 in both tiers.
+            thomson = 1.0
+            if use_thomson:
+                d_parameter, _ = radial_map(r_point, dspacing_code, d_in, d_out, dexp)
+                d0 = d_parameter * dnr1 + ghost
+                d1 = theta / density_theta_step - half + ghost
+                d2 = phi / density_phi_step + ghost
+                density = float64(tricubic_scalar(density_vol, d0, d1, d2))
+                c_tan, c_pol = _render_coeff_lookup(
+                    float64(r), coeff_log_inner, coeff_inv_dlog, c_tan_table, c_pol_table
+                )
+                sin_sq_chi = float64(rho) * float64(rho) / (float64(r) * float64(r))
+                if thomson_pb:
+                    intensity = c_pol * sin_sq_chi
+                else:
+                    intensity = 2.0 * c_tan - c_pol * sin_sq_chi
+                thomson = density * intensity
+
+            num0 += fw0 * thomson * value
+            num1 += fw1 * thomson * value
+            num2 += fw2 * thomson * value
+            den0 += fw0 * thomson
+            den1 += fw1 * thomson
+            den2 += fw2 * thomson
+            wbar = (fw0 + fw1 + fw2) / 3.0
+            valid_weight += wbar
+            # Net polarity: the per-voxel footpoint sign read nearest-cell at this same sample,
+            # weighted by wbar, the coverage weight budget.
+            if use_polarity:
+                pic0 = int(c0 + half)
+                pic1 = int(c1 + half)
+                pic2 = int(c2 + half)
+                if pic0 < 0:
+                    pic0 = 0
+                elif pic0 >= polarity_vol.shape[0]:
+                    pic0 = polarity_vol.shape[0] - 1
+                if pic1 < 0:
+                    pic1 = 0
+                elif pic1 >= polarity_vol.shape[1]:
+                    pic1 = polarity_vol.shape[1] - 1
+                if pic2 < 0:
+                    pic2 = 0
+                elif pic2 >= polarity_vol.shape[2]:
+                    pic2 = polarity_vol.shape[2] - 1
+                pol_num += wbar * float64(polarity_vol[pic0, pic1, pic2, 0])
+
+        if den0 > 0.0:
+            signal[i, 0] = num0 / den0
+        if den1 > 0.0:
+            signal[i, 1] = num1 / den1
+        if den2 > 0.0:
+            signal[i, 2] = num2 / den2
+        if path_weight > 0.0:
+            coverage[i] = valid_weight / path_weight
+        if use_polarity and valid_weight > 0.0:
+            polarity[i] = pol_num / valid_weight
+        counts[i, 0] = n_lower
+        counts[i, 1] = n_upper
+        counts[i, 2] = n_valid
+        den[i, 0] = den0
+        den[i, 1] = den1
+        den[i, 2] = den2
+        onpath[i, 0] = pden0
+        onpath[i, 1] = pden1
+        onpath[i, 2] = pden2
+
+    return kernel
+
+
+_render_kernel_f64 = _make_render_kernel(mixed=False)
+_render_kernel_mixed = _make_render_kernel(mixed=True)
+
+
+def render_batch_cuda(
+    origins: np.ndarray,
+    look: np.ndarray,
+    impact: np.ndarray,
+    s_grid: np.ndarray,
+    vol: np.ndarray,
+    vg: JitGrid,
+    sigma: float,
+    powers: np.ndarray,
+    use_powers: bool,
+    scales: np.ndarray,
+    use_scales: bool,
+    floor: float,
+    log_max: float,
+    clamp_lower: bool,
+    r_occult: float,
+    occult_body: bool,
+    use_thomson: bool,
+    density_vol: np.ndarray,
+    dg: JitGrid,
+    thomson_pb: bool,
+    coeff_log_inner: float,
+    coeff_inv_dlog: float,
+    c_tan_table: np.ndarray,
+    c_pol_table: np.ndarray,
+    use_polarity: bool,
+    polarity_vol: np.ndarray,
+    precision: str = "mixed",
+    chunks: int = 1,
+    progress: Any = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Render a batch of rays on the GPU: the CUDA twin of
+    :func:`qorona.accel.kernels.render_batch_jit`.
+
+    Uploads the read-only arrays once (the volume in the precision tier's dtype: float32 for
+    ``mixed``/``"float32"``, float64 for the reference), then launches the kernel over ``chunks``
+    consecutive ray ranges, synchronizing after each and calling ``progress(rays_done)`` so the
+    caller's progress bar stays live; the outputs are copied back once at the end. With
+    ``use_thomson`` off, ``density_vol`` is the caller's placeholder (the volume itself) and is
+    aliased to the already-uploaded volume rather than uploaded twice. No tiling: the volume must
+    fit free VRAM in one piece (a 336M-voxel float32 volume is ~1.4 GB).
+
+    Same argument set and return tuple as the CPU kernel (``signal (n, 3)``, ``coverage (n,)``,
+    ``counts (n, 3)``, ``den (n, 3)``, ``onpath (n, 3)``, ``polarity (n,)``), plus
+    ``precision``/``chunks``/``progress``.
+    """
+    _check_precision(precision)
+    mixed = precision != "float64"
+    vol_dtype = np.float32 if mixed else np.float64
+    n = origins.shape[0]
+
+    d_origins = cuda.to_device(np.ascontiguousarray(origins, dtype=np.float64))
+    d_look = cuda.to_device(np.ascontiguousarray(look, dtype=np.float64))
+    d_impact = cuda.to_device(np.ascontiguousarray(impact, dtype=np.float64))
+    d_s = cuda.to_device(np.ascontiguousarray(s_grid, dtype=np.float64))
+    d_vol = cuda.to_device(np.ascontiguousarray(vol, dtype=vol_dtype))
+    d_density = (
+        cuda.to_device(np.ascontiguousarray(density_vol, dtype=vol_dtype)) if use_thomson else d_vol
+    )
+    d_powers = cuda.to_device(np.ascontiguousarray(powers, dtype=np.float64))
+    d_scales = cuda.to_device(np.ascontiguousarray(scales, dtype=np.float64))
+    d_c_tan = cuda.to_device(np.ascontiguousarray(c_tan_table, dtype=np.float64))
+    d_c_pol = cuda.to_device(np.ascontiguousarray(c_pol_table, dtype=np.float64))
+    d_polarity_vol = cuda.to_device(np.ascontiguousarray(polarity_vol, dtype=np.float32))
+
+    d_signal = cuda.to_device(np.full((n, 3), np.nan))
+    d_coverage = cuda.to_device(np.zeros(n))
+    d_counts = cuda.to_device(np.zeros((n, 3), dtype=np.int64))
+    d_den = cuda.to_device(np.zeros((n, 3)))
+    d_onpath = cuda.to_device(np.zeros((n, 3)))
+    d_pol = cuda.to_device(np.full(n, np.nan))
+
+    kernel = _render_kernel_mixed if mixed else _render_kernel_f64
+    use_sigma = not math.isnan(sigma)
+    # Floor the per-launch ray count at ~64K so a small image is not split into starved launches
+    # (the chunking exists for the progress bar, not the hardware; 64K rays keep the GPU occupied).
+    chunks = max(1, min(chunks, n // 65_536)) if n >= 65_536 else 1
+    rays_per_chunk = max(1, -(-n // chunks))
+    for start in range(0, n, rays_per_chunk):
+        stop = min(start + rays_per_chunk, n)
+        blocks = (stop - start + _THREADS_PER_BLOCK - 1) // _THREADS_PER_BLOCK
+        kernel[blocks, _THREADS_PER_BLOCK](
+            d_origins,
+            d_look,
+            d_impact,
+            d_s,
+            d_vol,
+            vg.n_r,
+            vg.n_theta,
+            vg.n_phi,
+            vg.spacing_code,
+            vg.r_inner,
+            vg.r_outer,
+            vg.exponent,
+            float(sigma),
+            use_sigma,
+            d_powers,
+            use_powers,
+            d_scales,
+            use_scales,
+            float(floor),
+            float(log_max),
+            clamp_lower,
+            float(r_occult),
+            occult_body,
+            use_thomson,
+            d_density,
+            dg.n_r,
+            dg.n_theta,
+            dg.n_phi,
+            dg.spacing_code,
+            dg.r_inner,
+            dg.r_outer,
+            dg.exponent,
+            thomson_pb,
+            float(coeff_log_inner),
+            float(coeff_inv_dlog),
+            d_c_tan,
+            d_c_pol,
+            use_polarity,
+            d_polarity_vol,
+            start,
+            stop,
+            d_signal,
+            d_coverage,
+            d_counts,
+            d_den,
+            d_onpath,
+            d_pol,
+        )
+        cuda.synchronize()
+        if progress is not None:
+            progress(stop)
+
+    return (
+        d_signal.copy_to_host(),
+        d_coverage.copy_to_host(),
+        d_counts.copy_to_host(),
+        d_den.copy_to_host(),
+        d_onpath.copy_to_host(),
+        d_pol.copy_to_host(),
     )

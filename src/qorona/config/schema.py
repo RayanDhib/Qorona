@@ -343,8 +343,11 @@ class RenderConfig:
     Defaults mirror :func:`qorona.render.los.render` exactly. ``disk_tone`` and ``disk_desat``
     shape the ``composite`` occultation mode's disk layer (its brightness relative to the inner
     corona and its desaturation) and are ignored by the other modes. ``workers`` maps to the
-    render's numba thread count (``None`` = all cores). ``device`` is accepted for a uniform
-    surface; the render runs on the CPU regardless (it has no GPU backend).
+    render's numba thread count (``None`` = all cores). ``device`` selects the compute backend
+    (``auto`` prefers the GPU when present; ``gpu`` demands one and errors if absent; ``cpu``
+    forces the CPU) and ``precision`` the CUDA kernel tier (``mixed`` samples in float32 and
+    accumulates in float64; ``float64`` is the all-double reference; ``float32`` is accepted as
+    an alias of ``mixed``).
     """
 
     display: str = "balanced"
@@ -360,6 +363,7 @@ class RenderConfig:
     polarity_mode: str = "none"
     workers: int | None = None
     device: str = "auto"
+    precision: str = "mixed"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "clamp", (float(self.clamp[0]), float(self.clamp[1])))
@@ -392,6 +396,7 @@ class RenderConfig:
             f"workers must be None or >= 1, got {self.workers}",
         )
         _one_of(self.device, DEVICE_MODES, "device")
+        _one_of(self.precision, PRECISION_MODES, "precision")
 
     def to_provenance(self) -> dict[str, object]:
         return {
@@ -408,6 +413,7 @@ class RenderConfig:
             "polarity_mode": self.polarity_mode,
             "workers": self.workers,
             "device": self.device,
+            "precision": self.precision,
         }
 
 

@@ -47,21 +47,22 @@ recipe: the explicit large- and small-field-of-view weightings of Mikić et al. 
 Supplementary Note 2, implemented verbatim, except that Qorona integrates log₁₀ **Q⊥** in place
 of log₁₀ Q. Every constant is overridable: they are display choices, not physics.
 
-The quadrature runs on a numba ``prange``-over-rays kernel when numba is installed and the grids
-are JIT-able (each ray on its own lane); the NumPy implementation is the no-numba fallback and the
-kernel's reference, and the two agree to floating-point noise.
+The quadrature runs on a CUDA one-ray-per-thread kernel when a GPU is present and the grids are
+JIT-able, else on a numba ``prange``-over-rays kernel (each ray on its own lane); the NumPy
+implementation is the no-numba fallback and both kernels' reference, and all paths agree to
+floating-point noise (``validation/render_parity.py`` characterizes the GPU tiers).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 from astropy import units as u
 
-from qorona.accel import HAVE_NUMBA, apply_workers
+from qorona.accel import HAVE_NUMBA, JitGrid, apply_workers
 from qorona.console import print_success, progress_bar
 from qorona.geometry.camera import OrthographicCamera
 from qorona.render.image import eclipse_alpha, occultation_mask, scale_intensity, write_png
@@ -843,6 +844,129 @@ def _render_numba(
     )
 
 
+def _render_cuda(
+    volume: QPerpVolume,
+    camera: OrthographicCamera,
+    *,
+    preset: WeightingPreset,
+    thomson: ThomsonWeight | None,
+    clamp: tuple[float, float],
+    floor: bool,
+    step: float,
+    occult: Literal["eclipse", "opaque", "none"],
+    r_occult: float,
+    occult_softness: float,
+    percentiles: tuple[float, float],
+    display: Literal["balanced", "raw", "coverage"],
+    polarity_mode: Literal["none", "hue"],
+    precision: str,
+    show_progress: bool,
+) -> RenderResult:
+    """CUDA one-ray-per-thread render: output-identical to :func:`_render_numpy` to FP noise.
+
+    Drives :func:`~qorona.accel.cuda_kernels.render_batch_cuda`, which uploads the volume once and
+    launches the kernel in ray chunks purely to advance the progress bar. ``precision`` selects the
+    kernel tier: ``"mixed"`` (default; ``"float32"`` aliases it) samples in float32 and accumulates
+    in float64, ``"float64"`` is the all-double reference. The per-ray accumulation semantics and
+    the :func:`_finalize` tail are shared with the CPU paths, so the display reconstruction and the
+    eclipse occulter cannot diverge across backends.
+    """
+    from qorona.accel.cuda_kernels import render_batch_cuda
+
+    log_floor, log_max = clamp
+    clamp_lower = floor
+    occult_body = occult == "opaque"
+    rays = camera.rays()
+    height, width = camera.pixels
+    origins = np.ascontiguousarray(rays.origins.reshape(-1, 3))
+    impact = np.ascontiguousarray(rays.impact.reshape(-1))
+    look = np.ascontiguousarray(rays.look, dtype=np.float64)
+    n_rays = origins.shape[0]
+
+    outer_radius = float(volume.grid.radii[-1])
+    n_steps = int(np.ceil(2.0 * outer_radius / step)) + 1
+    s = np.linspace(-outer_radius, outer_radius, n_steps)
+
+    # The dispatcher admits only JIT-able grids here, so the casts are narrowing, not conversions.
+    jit_grid = cast(JitGrid, volume.grid._jit_grid())
+    log_q_perp = np.ascontiguousarray(volume.log_q_perp)
+    sigma, powers, use_powers, scales, use_scales = _preset_factors(preset)
+    (
+        use_thomson,
+        density_vol,
+        density_grid,
+        thomson_pb,
+        coeff_log_inner,
+        coeff_inv_dlog,
+        c_tan_table,
+        c_pol_table,
+    ) = _thomson_kernel_args(thomson, log_q_perp, jit_grid)
+    compute_polarity = polarity_mode != "none"
+    polarity_vol = (
+        np.ascontiguousarray(volume.polarity, dtype=np.float32)
+        if compute_polarity and volume.polarity is not None
+        else np.zeros((1, 1, 1, 1), dtype=np.float32)
+    )
+
+    with progress_bar(
+        "Rendering line-of-sight Q⊥ (cuda)", n_rays, enabled=show_progress
+    ) as progress:
+        signal, coverage, counts, den, onpath, polarity_out = render_batch_cuda(
+            origins,
+            look,
+            impact,
+            s,
+            log_q_perp,
+            jit_grid,
+            sigma,
+            powers,
+            use_powers,
+            scales,
+            use_scales,
+            float(log_floor),
+            float(log_max),
+            clamp_lower,
+            float(r_occult),
+            occult_body,
+            use_thomson,
+            density_vol,
+            cast(JitGrid, density_grid),
+            thomson_pb,
+            coeff_log_inner,
+            coeff_inv_dlog,
+            c_tan_table,
+            c_pol_table,
+            compute_polarity,
+            polarity_vol,
+            precision=precision,
+            chunks=_RENDER_PROGRESS_CHUNKS,
+            progress=progress,
+        )
+
+    polarity = polarity_out if compute_polarity else None
+    return _finalize(
+        signal,
+        coverage,
+        den,
+        onpath,
+        int(counts[:, 0].sum()),
+        int(counts[:, 1].sum()),
+        int(counts[:, 2].sum()),
+        preset=preset,
+        percentiles=percentiles,
+        impact=impact,
+        display=display,
+        polarity=polarity,
+        polarity_mode=polarity_mode,
+        occult=occult,
+        r_occult=r_occult,
+        occult_softness=occult_softness,
+        height=height,
+        width=width,
+        show_progress=show_progress,
+    )
+
+
 def render(
     volume: QPerpVolume,
     camera: OrthographicCamera,
@@ -862,13 +986,17 @@ def render(
     polarity_mode: Literal["none", "hue"] = "none",
     chunk_size: int = 500_000,
     workers: int | None = None,
+    device: str = "auto",
+    precision: str = "mixed",
     show_progress: bool = True,
 ) -> RenderResult:
     """Render the Q⊥ volume to an eclipse-like image from a camera viewpoint.
 
-    Dispatches to a numba ``prange``-over-rays kernel when numba is installed and the volume grid is
-    JIT-able, else to the single-threaded NumPy path (also the kernel's reference); the two are
-    output-identical to floating-point noise.
+    Dispatches to a CUDA one-ray-per-thread kernel when a GPU is usable (``device``) and the grids
+    are JIT-able, else to a numba ``prange``-over-rays kernel when numba is installed, else to the
+    single-threaded NumPy path (also both kernels' reference); all paths are output-identical to
+    floating-point noise. ``device="gpu"`` demands a GPU and raises without one; a non-JIT-able
+    grid falls back silently, exactly as the volume build does.
 
     The optional Thomson weight (``thomson``) is an off-by-default radiometric factor on an
     axis orthogonal to the geometric ``preset``: it biases the rendered Q⊥ toward bright dense
@@ -947,8 +1075,15 @@ def render(
         Rays · line-of-sight steps processed per batch on the NumPy path, bounding its peak memory.
         Unused by the kernel path, which touches one stencil at a time and chunks only for progress.
     workers
-        numba thread count for the kernel (``None`` = all cores; ``1`` = serial). Ignored without
-        numba; the NumPy fallback is single-threaded.
+        numba thread count for the CPU kernel (``None`` = all cores; ``1`` = serial). Ignored by
+        the CUDA path and without numba; the NumPy fallback is single-threaded.
+    device
+        Compute backend: ``"auto"`` (the default) selects the GPU when one is usable and the CPU
+        otherwise; ``"gpu"`` demands a GPU (raises without one); ``"cpu"`` forces the CPU tiers.
+    precision
+        CUDA kernel tier, GPU only (the CPU tiers always compute in float64): ``"mixed"`` (the
+        default) samples in float32 and accumulates in float64; ``"float64"`` is the all-double
+        reference; ``"float32"`` is accepted as an alias of ``"mixed"``.
     show_progress
         Whether to display progress.
 
@@ -984,6 +1119,8 @@ def render(
             polarity_mode=polarity_mode,
             chunk_size=chunk_size,
             workers=workers,
+            device=device,
+            precision=precision,
             show_progress=show_progress,
         )
         disk = render(
@@ -1002,6 +1139,8 @@ def render(
             polarity_mode=polarity_mode,
             chunk_size=chunk_size,
             workers=workers,
+            device=device,
+            precision=precision,
             show_progress=show_progress,
         )
         image = _composite_image(
@@ -1017,9 +1156,30 @@ def render(
             "polarity colouring needs a volume with the polarity channel, but this one has none; "
             "rebuild it with the paint or per-voxel builder (the reference builder omits polarity)"
         )
-    # The kernel needs both the volume grid and (when weighting) the density grid to be JIT-able.
+    from qorona.accel import resolve_device
+
+    # The kernels need both the volume grid and (when weighting) the density grid to be JIT-able.
     thomson_jit = thomson is None or thomson.density.grid._jit_grid() is not None
-    if HAVE_NUMBA and volume.grid._jit_grid() is not None and thomson_jit:
+    kernel_grids = volume.grid._jit_grid() is not None and thomson_jit
+    if resolve_device(device) == "gpu" and kernel_grids:
+        return _render_cuda(
+            volume,
+            camera,
+            preset=preset,
+            thomson=thomson,
+            clamp=clamp,
+            floor=floor,
+            step=step,
+            occult=occult,
+            r_occult=r_occult,
+            occult_softness=occult_softness,
+            percentiles=percentiles,
+            display=display,
+            polarity_mode=polarity_mode,
+            precision=precision,
+            show_progress=show_progress,
+        )
+    if HAVE_NUMBA and kernel_grids:
         return _render_numba(
             volume,
             camera,

@@ -101,9 +101,10 @@ _ARTIFACT_FORMAT = "qorona-volume-v1"
 def _resolved_backend(device: str) -> str:
     """Resolve a requested device to the concrete backend string stamped in provenance.
 
-    ``"gpu:NVIDIA GeForce RTX 4080"`` when the volume baked on the GPU, else ``"cpu"``. Resolved
-    at stamp time (the ``.qor`` is cached and reused across cameras, so the *resolved* backend,
-    not the requested ``auto``, is the reproducible fact). The hardware tier only (gpu/cpu).
+    ``"gpu:NVIDIA GeForce RTX 4080"`` when the stage ran on the GPU, else ``"cpu"``. Resolved at
+    stamp time (the ``.qor`` is cached and reused across cameras, so the *resolved* backend, not
+    the requested ``auto``, is the reproducible fact). The hardware tier only (gpu/cpu); shared by
+    the volume-build and render stamps.
     """
     from qorona.accel import gpu_name, resolve_device
 
@@ -336,6 +337,8 @@ def render_volume(
         display=cast(Any, render_cfg.display),
         polarity_mode=cast(Any, render_cfg.polarity_mode),
         workers=render_cfg.workers,
+        device=render_cfg.device,
+        precision=render_cfg.precision,
         show_progress=show_progress,
     )
 
@@ -675,7 +678,7 @@ def render_provenance(
     prov["weighting"] = weighting_cfg.to_provenance()
     prov["render"] = {
         **render_cfg.to_provenance(),
-        "backend": "cpu",  # the render runs on the CPU (no GPU render backend)
+        "backend": _resolved_backend(render_cfg.device),
         "preset": result.preset_name,
         "display_mode": result.display_mode,
         "mean_coverage": float(np.mean(covered)) if covered.size else 0.0,
