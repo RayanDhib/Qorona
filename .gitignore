@@ -18,6 +18,7 @@ env/
 # Generated artifacts (regenerable)
 *.qor
 *.npz
+site/
 
 # Example solution data (downloaded; see README)
 data/

@@ -976,7 +976,7 @@ def load_volume(
         if "meta" not in archive.files:
             raise ValueError(
                 f"{path} is not a Qorona volume artifact: it carries no 'meta' record. "
-                "Bake one with `qorona build`."
+                "Build one with `qorona build`."
             )
         meta = json.loads(str(archive["meta"].item()))
         stored_format = meta.get("format")

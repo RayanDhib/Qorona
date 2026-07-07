@@ -6,10 +6,10 @@ by sphere cannot represent it. The two ends are therefore labelled by **trace di
 (``backward`` along ``-B̂``, ``forward`` along ``+B̂``) and each carries an :class:`Endpoint`
 code; a line's classification (closed, open, or incomplete: the three mutually exclusive,
 exhaustive classes ``{is_closed, is_open, is_incomplete}``) is *derived* from the two codes,
-so no separate flag can disagree with the feet. This is the layout the reference QSL codes keep
-internally (the two end positions plus a per-end boundary code), and it is what the Q⊥ volume
-fill consumes: trace an interior point both ways, read the precomputed boundary Q⊥ at each foot
-on the sphere its :class:`Endpoint` names, and average.
+so no separate flag can disagree with the feet. This is the natural layout for a field-line
+squashing computation (the two end positions plus a per-end boundary code), and it is what the
+Q⊥ volume fill consumes: trace an interior point both ways, read the precomputed boundary Q⊥ at
+each foot on the sphere its :class:`Endpoint` names, and average.
 
 The lines are stored as a struct-of-arrays rather than a list of per-line objects. This matches
 how the rest of the pipeline holds bulk geometry (:class:`~qorona.field.base.FieldSample`) and

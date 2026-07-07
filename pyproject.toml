@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "qorona"
 version = "0.3.0"
-description = "Synthetic coronal imagery from global MHD solutions via line-of-sight integration of the magnetic squashing factor."
+description = "Synthetic coronal imagery from global MHD solutions via line-of-sight integration of the perpendicular magnetic squashing factor."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
@@ -40,6 +40,8 @@ qorona = "qorona.cli.main:main"
 [project.optional-dependencies]
 # Contributor tooling only; not needed to *use* Qorona.
 dev = ["ruff>=0.15,<0.16", "mypy>=2.1,<2.2", "pytest>=8.0"]
+# Documentation site tooling (MkDocs Material); not needed to use Qorona.
+docs = ["mkdocs-material>=9,<10"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -30,3 +30,28 @@ keywords:
   - quasi-separatrix layers
 version: 0.3.0
 date-released: 2026-06-22
+references:
+  - type: article
+    title: "Qorona: Open, Model-Agnostic Line-of-Sight Rendering of the Perpendicular Squashing Factor for Eclipse-like Coronal Imaging"
+    authors:
+      - family-names: Dhib
+        given-names: Rayan
+      - family-names: Ben Ameur
+        given-names: Firas
+      - family-names: Baratashvili
+        given-names: Tinatin
+      - family-names: Jeong
+        given-names: Hyun-Jin
+      - family-names: Wang
+        given-names: Haopeng
+      - family-names: Noraz
+        given-names: Quentin
+      - family-names: Schmieder
+        given-names: Brigitte
+      - family-names: Lani
+        given-names: Andrea
+      - family-names: Poedts
+        given-names: Stefaan
+    journal: "The Astrophysical Journal"
+    year: 2026
+    notes: "Submitted; under review."

@@ -2,11 +2,11 @@
 ``export-lines`` / ``info``.
 
 A :mod:`click` group wired to the shared :mod:`qorona.console` Rich surface, so progress and styling
-stay uniform. It splits the two cost axes of the pipeline into separate commands: ``build`` bakes
+stay uniform. It splits the two cost axes of the pipeline into separate commands: ``build`` produces
 the viewpoint-independent Q⊥ volume **once** (the minutes-scale stage, where resolution / seeding /
-supersampling sweeps live), ``render`` integrates a baked volume for any camera / preset (seconds,
+supersampling sweeps live), ``render`` integrates a built volume for any camera / preset (seconds,
 where viewpoint / weighting sweeps live), and ``run`` chains both; ``qmap`` slices a fixed-radius
-signed-log-Q⊥ shell from a baked volume, ``fieldlines`` draws the field-line view, ``export-lines``
+signed-log-Q⊥ shell from a built volume, ``fieldlines`` draws the field-line view, ``export-lines``
 serialises traced field lines for external tools, and ``info`` inspects a solution.
 
 Every flag populates the typed :mod:`qorona.config` schema (the single source of truth for defaults
@@ -87,9 +87,9 @@ _DEFAULT_DIMENSION = 1024
 #: compact image suffices; the camera flags override it.
 _WL_DEFAULT_DIMENSION = 512
 
-#: Default field of view (full width, R_sun) of the white-light product: brightness falls off
-#: steeply with height, so a low-corona frame out to ~3 R_sun reads best; ``--fov`` overrides it.
-_WL_DEFAULT_FOV = 6.0
+#: Default field of view (full width, R_sun) of the white-light product; matches the render
+#: default so every product shares one frame. ``--fov`` overrides it.
+_WL_DEFAULT_FOV = 8.0
 
 
 # --- Reusable option groups --------------------------------------------------------------------
@@ -723,7 +723,7 @@ _brightness_options = _compose(
         help="Radial detrend of the selected --frame: newkirk divides by the brightness of the "
         "smooth Newkirk background corona; adaptive self-calibrates the same curve family to "
         "the image's own falloff and amplifies its structure; none keeps the raw falloff "
-        "(default newkirk, adaptive for COCONUT input).",
+        "(default newkirk; adaptive for inputs whose falloff departs from it).",
     ),
     option(
         "--mgn",
@@ -781,7 +781,7 @@ _brightness_options = _compose(
         default=None,
         section="Brightness",
         advanced=True,
-        help="Body/occulter radius in R_sun (default 1.02, just above the limb so the "
+        help="Body/occulter radius in R_sun (default 1.01, just above the limb so the "
         "overwhelming near-limb ring does not eat the display stretch).",
     ),
     option(
@@ -808,8 +808,8 @@ _brightness_options = _compose(
         default=None,
         section="Brightness",
         advanced=True,
-        help="Per-image stretch percentiles 'LOW HIGH' (default 0 100, the full range; clip "
-        "for inputs with pathological bright spots).",
+        help="Per-image stretch percentiles 'LOW HIGH' (default 1 99.5; use 0 100 for the "
+        "full untrimmed range).",
     ),
 )
 _workers_option = option(
@@ -1097,7 +1097,7 @@ _BUILD_DEFAULTS = {
 
 def _rebuild_command(build_prov: dict[str, Any], outer_radius: float) -> str:
     """Reconstruct the ``qorona build`` command from a volume's provenance, with the outer radius
-    set to ``outer_radius``, the bake of the canonical Q-map volume (mapping domain
+    set to ``outer_radius``, the build of the canonical Q-map volume (mapping domain
     ``[1, outer_radius]``). Flags left at their default are omitted."""
     inp = build_prov["input"]
     field = build_prov.get("field", {})
@@ -1130,20 +1130,20 @@ def _warn_qmap_outer_radius(
     The canonical Q-map maps the domain ``[1, r]``: baking with the outer radius at the map radius
     puts the heliospheric current sheet on the Q⊥ ridges. A deeper volume slices the ``[1, outer]``
     mapping, where the current sheet can drift off the ridges; a shallower one cannot reach that
-    radius, so the map is clamped to the boundary. Either way, print the build command that bakes it
-    right.
+    radius, so the map is clamped to the boundary. Either way, print the build command that produces
+    it right.
     """
     radius = qmap_cfg.radius
     if radius > outer_radius * (1.0 + 1e-6):
         print_warning(
             f"r = {radius:g} R_sun is outside this volume (outer = {outer_radius:g}); the map was "
-            f"clamped to the boundary. To map at r = {radius:g}, rebake at that radius:"
+            f"clamped to the boundary. To map at r = {radius:g}, rebuild at that radius:"
         )
     elif outer_radius > radius * 1.01:
         print_warning(
             f"Q-map at r = {radius:g} R_sun sliced from an outer = {outer_radius:g} volume: the "
             f"current sheet may sit off the Q⊥ ridges (a slice of the [1, {outer_radius:g}] "
-            "mapping). For the canonical map, rebake with the outer radius at the map radius:"
+            "mapping). For the canonical map, rebuild with the outer radius at the map radius:"
         )
     else:
         return
@@ -1164,7 +1164,7 @@ def main() -> None:
     """Qorona: synthetic coronal imagery from global MHD solutions.
 
     Render the line-of-sight magnetic squashing factor Q⊥ of a coronal MHD solution into
-    eclipse-like imagery. Bake the viewpoint-independent volume once with `build`, then render any
+    eclipse-like imagery. Build the viewpoint-independent volume once with `build`, then render any
     number of viewpoints cheaply with `render`; `run` does both in one shot, `qmap` slices a
     fixed-radius Q⊥ shell, `fieldlines` draws the field-line view, `export-lines` serialises traced
     lines, and `info` inspects a file.
@@ -1205,7 +1205,7 @@ def build(
     quiet: bool,
     **kw: Any,
 ) -> None:
-    """Bake the viewpoint-independent Q⊥ volume from a solution to a cache file.
+    """Build the viewpoint-independent Q⊥ volume from a solution to a cache file.
 
     The minutes-scale stage: read → resample → Q⊥ volume, written to a dependency-free .qor/.npz
     with its build provenance (input hash, derived CR/JD, every resolved parameter), so any number
@@ -1218,7 +1218,7 @@ def build(
     grid_cfg = _grid_config(kw)
     volume_cfg = _volume_config(kw, workers)
 
-    print_step(f"Baking Q⊥ volume from [bold]{input_path.name}[/bold]")
+    print_step(f"Building Q⊥ volume from [bold]{input_path.name}[/bold]")
     stage_timings: dict[str, float] = {}
     start = time.perf_counter()
     field = pipeline.build_field(
@@ -1282,7 +1282,7 @@ def render(
     quiet: bool,
     **kw: Any,
 ) -> None:
-    """Render a baked Q⊥ volume to an eclipse-like image from a viewpoint.
+    """Render a built Q⊥ volume to an eclipse-like image from a viewpoint.
 
     The seconds-scale stage: load the volume, integrate it for one camera / preset / display, write
     the PNG(s) with the on-image stamp, and print the metrics. Repeat for new viewpoints off the
@@ -1339,7 +1339,7 @@ def render(
     "--resolution",
     default=None,
     section="Q-map",
-    help="Display grid 'NTHETAxNPHI' (default 720x1440; interpolated, capped by the bake's pitch).",
+    help="Display grid 'NTHETAxNPHI' (default 720x1440; interpolated, capped by the build pitch).",
 )
 @option(
     "--slog-max",
@@ -1377,7 +1377,7 @@ def qmap(volume_path: Path, output_path: Path, quiet: bool, **kw: Any) -> None:
         raise click.ClickException(str(error)) from error
     if volume.radial_sign is None:
         raise click.ClickException(
-            f"{volume_path.name} has no radial-sign channel (baked before the Q-map feature); "
+            f"{volume_path.name} has no radial-sign channel (built before the Q-map feature); "
             "re-run `qorona build` to add it."
         )
     _warn_qmap_outer_radius(float(volume.grid.radii[-1]), qmap_cfg, build_prov)
@@ -1408,7 +1408,7 @@ def qmap(volume_path: Path, output_path: Path, quiet: bool, **kw: Any) -> None:
     default=None,
     type=click.Path(dir_okay=False, path_type=Path),
     callback=_writable_output,
-    help="Also persist the baked volume to this .qor/.npz.",
+    help="Also persist the built volume to this .qor/.npz.",
 )
 @_input_options
 @_grid_options
@@ -1564,7 +1564,7 @@ def fieldlines(
     photosphere disk. The default eclipse-photograph look seeds the open fan on the limb with short
     closed loops on the front face (``--seeding limb``), colours open lines by their inner-foot
     ``B·r̂`` polarity (``--colour polarity``), and renders a B_r magnetogram (``--magnetogram``).
-    A self-contained command: it traces the field directly and does not use a baked volume.
+    A self-contained command: it traces the field directly and does not use a built volume.
     """
     kw["input_path"] = input_path
     show_progress = not quiet
@@ -1621,7 +1621,7 @@ def export_lines(
     Reads the solution, traces field lines seeded on a uniform longitude/latitude grid
     (``--seeds``, default 100x100, on the inner boundary unless ``--seed-radius`` overrides it),
     and writes the polylines with their open/closed topology. A self-contained command: it traces
-    the field directly and does not use a baked volume. The file schema is documented in
+    the field directly and does not use a built volume. The file schema is documented in
     ``qorona/io/fieldlines_export.py``.
     """
     kw["input_path"] = input_path
@@ -1669,7 +1669,7 @@ def _input_model(
     return resolve_model(input_path, model=model_flag)
 
 
-#: Flags that configure the re-ingest of a raw solution; meaningless with a baked volume artifact,
+#: Flags that configure the re-ingest of a raw solution; meaningless with a built volume artifact,
 #: which carries its own field grid and metadata, so they are rejected there instead of ignored.
 _INGEST_ONLY_KEYS = (
     "model",
@@ -1707,15 +1707,15 @@ _INGEST_ONLY_KEYS = (
 def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **kw: Any) -> None:
     """Render the white-light / polarized-brightness corona of a solution from a viewpoint.
 
-    INPUT is either a raw solution (read and resampled, as ``build`` would) or a baked ``.qor``
+    INPUT is either a raw solution (read and resampled, as ``build`` would) or a built ``.qor``
     volume artifact (whose stored electron density is reused, skipping the resample). The
     Thomson-scattering brightness is integrated over the density along each line of sight: the
     polarized brightness pB by default, or the total white-light brightness with ``--frame
     total``. The frame is finished by two display stages: the ``--vignette`` radial detrend
-    (``newkirk`` by default, ``adaptive`` for COCONUT input, ``none`` for the raw falloff) and
-    optional ``--mgn`` fine-structure enhancement. ``--export npz`` also writes the raw frames
-    (both pB and total) with their plane-of-sky coordinates. Needs only the density; it neither
-    builds nor uses the Q⊥ payload.
+    (``newkirk`` by default, ``adaptive`` for inputs whose falloff departs from it, ``none`` for
+    the raw falloff) and optional ``--mgn`` fine-structure enhancement. ``--export npz`` also
+    writes the raw frames (both pB and total) with their plane-of-sky coordinates. Needs only
+    the density; it neither builds nor uses the Q⊥ payload.
     """
     kw["input_path"] = input_path
     show_progress = not quiet

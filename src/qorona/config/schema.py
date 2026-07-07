@@ -620,10 +620,10 @@ class BrightnessConfig:
     crossover: float = 10.0
     step: float = 0.02
     occult: str = "eclipse"
-    r_occult: float = 1.02
+    r_occult: float = 1.01
     occult_softness: float = 0.03
     scaling: str | None = None
-    percentiles: tuple[float, float] = (0.0, 100.0)
+    percentiles: tuple[float, float] = (1.0, 99.5)
     workers: int | None = None
 
     def __post_init__(self) -> None:

@@ -30,8 +30,8 @@ gather bandwidth), via
 error norm, the dense-output foot landing) stays float64, the f32 result cast up at the
 :func:`_sample_point` boundary. The coordinate transcendentals and the dipole closed form stay
 float64 too (no gather lever there). The float32 field upload and interpolation gather follow
-FastQSL (Zhang et al. 2022), whose kernels otherwise run essentially all-float32; here the
-f32/f64 boundary is drawn at the gather instead, keeping the transport arithmetic double. The
+FastQSL (Zhang et al. 2022); here the f32/f64 boundary is drawn at the gather instead, keeping
+the transport arithmetic double. The
 mixed-vs-float64 per-line Q⊥ agreement (the float32 tricubic noise floor) is reported by
 ``validation/cuda_parity.py``.
 """

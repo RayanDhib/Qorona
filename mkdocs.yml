@@ -1,0 +1,62 @@
+site_name: Qorona
+site_description: Synthetic coronal imagery from global MHD solutions
+site_url: https://rayandhib.github.io/Qorona/
+repo_url: https://github.com/RayanDhib/Qorona
+repo_name: RayanDhib/Qorona
+
+theme:
+  name: material
+  logo: assets/favicon.png
+  favicon: assets/favicon.png
+  # System font stack: no external font fetch, so the site works on restricted networks.
+  font: false
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - toc.integrate
+    - content.code.copy
+    - search.suggest
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - pymdownx.superfences
+  - pymdownx.details
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - Example data: getting-started/example-data.md
+      - First eclipse image: getting-started/first-eclipse-image.md
+      - Supported models: getting-started/supported-models.md
+      - HPC clusters: getting-started/hpc.md
+  - How it runs:
+      - The Q⊥ volume: qperp-volume.md
+      - GPU acceleration: gpu.md
+  - Products:
+      - Squashing-factor render: products/squashing-factor.md
+      - Polarity view: products/polarity.md
+      - White-light imaging: products/white-light.md
+      - Q-maps: products/qmaps.md
+      - Field lines: products/fieldlines.md

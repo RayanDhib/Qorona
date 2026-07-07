@@ -3,8 +3,8 @@
 A Q-map is a constant-radius slice of the viewpoint-independent Q⊥ volume, signed by the local
 radial field at the shell. Because Q⊥ is constant along a field line, a shell sample equals the
 line's boundary-to-boundary value, so slicing the cached volume is the same quantity the
-references obtain by tracing each shell point, and the same bake-once method PSI uses (Chitta
-et al. 2023, Nat. Astron. 7, 133; Mikić et al. 2018, Nat. Astron. 2, 913). The displayed quantity is
+references obtain by tracing each shell point (Chitta et al. 2023, Nat. Astron. 7, 133;
+Mikić et al. 2018, Nat. Astron. 2, 913). The displayed quantity is
 
     sign(B·r̂) · log₁₀ max(Q⊥, 2),
 

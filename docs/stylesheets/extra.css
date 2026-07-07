@@ -1,0 +1,50 @@
+/* One colour identity across the site: links, nav labels, and logo all wear the
+   logo's perpendicular-sign blue, brightened for hover on each scheme. */
+[data-md-color-scheme="default"] {
+  --md-typeset-a-color: #3c6ea5;
+  --md-accent-fg-color: #2c5f9e;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-typeset-a-color: #a7c9f0;
+  --md-accent-fg-color: #cfe0f7;
+}
+
+/* Figures render at native resolution but display capped, so pages stay scannable;
+   wide figures (e.g. Q-maps) are bounded by the column width instead. */
+.md-typeset img {
+  display: block;
+  margin: 0 auto;
+  max-width: 100%;
+  max-height: 24rem;
+  width: auto;
+}
+
+.md-typeset table img {
+  max-height: none;
+}
+
+/* Left-nav section labels: the brand blue, set apart from the page links. */
+.md-nav--primary .md-nav__item--section > .md-nav__link {
+  font-weight: 700;
+  color: #a7c9f0;
+  margin-top: 1.4em;
+}
+
+[data-md-color-scheme="default"] .md-nav--primary .md-nav__item--section > .md-nav__link {
+  color: #3c6ea5;
+}
+
+/* The sidebar's site title follows the same blue. */
+.md-nav--primary > .md-nav__title {
+  color: #a7c9f0;
+}
+
+[data-md-color-scheme="default"] .md-nav--primary > .md-nav__title {
+  color: #3c6ea5;
+}
+
+/* Hide the in-page contents tree entirely when a page has only one section. */
+.md-nav--secondary:has(> .md-nav__list > .md-nav__item:only-child) {
+  display: none;
+}

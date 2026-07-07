@@ -4,180 +4,100 @@
   <a href="https://github.com/RayanDhib/Qorona/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/RayanDhib/Qorona/ci.yml?branch=main&label=CI" alt="CI"></a>
   <a href="https://doi.org/10.5281/zenodo.20630699"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20630699-blue" alt="DOI"></a>
   <a href="https://pypi.org/project/qorona/"><img src="https://img.shields.io/pypi/v/qorona" alt="PyPI"></a>
+  <a href="https://rayandhib.github.io/Qorona/"><img src="https://img.shields.io/badge/docs-site-blue" alt="Documentation"></a>
 </p>
 
 Qorona turns a global coronal **MHD solution** into **eclipse-like synthetic imagery**. Its primary
-product is a line-of-sight integral of the magnetic **squashing factor Q⊥**, the quantity that lights
-up the thin loops, streamers, and current sheets seen at a total solar eclipse. The result is
-rendered for morphological comparison against eclipse and coronagraph observations.
+product is a line-of-sight integral of the perpendicular magnetic **squashing factor Q⊥**, the
+quantity that lights up the thin loops, streamers, and current sheets seen at a total solar
+eclipse. The result is rendered for morphological comparison against eclipse and coronagraph
+observations.
 
 ```
 coronal MHD solution ──▶ read ──▶ resample ──▶ Q⊥ volume ──▶ LOS render ──▶ synthetic eclipse image
 ```
 
+**[Documentation](https://rayandhib.github.io/Qorona/)** covers installation, every product
+(squashing-factor render, polarity view, white-light imaging, Q-maps, field lines), the Q⊥
+volume, and the HPC and GPU pages.
+
 ## Install
 
-**With pip** you install the latest release; it is the quickest way to get the `qorona` command:
-
 ```bash
 pip install qorona
 ```
 
-**With conda** you clone the repository and build the provided environment from its root, giving you
-the development version (`main`) as an editable checkout, e.g. to develop or add a model reader:
-
-```bash
-git clone https://github.com/RayanDhib/Qorona.git
-cd Qorona
-conda env create -f environment.yml
-conda activate qorona
-```
-
-## On a cluster
-
-Qorona installs from PyPI into a plain virtual environment; no conda needed:
-
-```bash
-module purge            # optional; stops other modules leaking packages via PYTHONPATH
-module load python      # any Python ≥ 3.11
-python -m venv ~/envs/qorona && source ~/envs/qorona/bin/activate
-pip install qorona
-```
-
-On GPU nodes, load the site's CUDA module (`module load cuda`) so numba finds the toolkit;
-`--device gpu` errors loudly if the GPU is unusable rather than silently falling back. Two flags
-are made for batch jobs: `--workers` pins the kernel threads to your allocation (numba otherwise
-takes every core it sees), and `--quiet` keeps job logs readable:
-
-```bash
-qorona build <solution> -o <solution>.qor --device gpu --workers $SLURM_CPUS_PER_TASK --quiet
-```
-
-## Example data
-
-The quickstart uses `hmi_lmax50.CFmesh.xz` (~165 MB), an HMI-driven COCONUT corona MHD solution.
-It is distributed as a [release asset](https://github.com/RayanDhib/Qorona/releases/tag/v0.1.0), not committed to the repo: download it
-into `data/` before running the commands below. Qorona reads the compressed `.xz` directly, with no
-manual decompression step.
+For a development checkout (e.g. to add a model reader), clone and build the conda environment;
+see the [installation guide](https://rayandhib.github.io/Qorona/getting-started/installation/).
 
 ## Quickstart
 
-Qorona splits the pipeline at its natural cost seam: the **Q⊥ volume is expensive and
-viewpoint-independent** (bake it once), while a **render off that volume is cheap** (do it for many
-cameras). Three commands follow from that:
+The quickstart data, `coconut_corona.CFmesh.xz` (~165 MB, an HMI-driven COCONUT solution), is a
+[release asset](https://github.com/RayanDhib/Qorona/releases/tag/v0.1.0): download it into `data/`.
+The pipeline splits at its natural cost seam: build the viewpoint-independent Q⊥ volume once,
+then render any number of viewpoints off it in seconds.
 
 ```bash
 # 1. Inspect a solution (model, mesh, variables, boundaries), no rendering.
-qorona info data/hmi_lmax50.CFmesh.xz --timestamp 2025-10-09T18:19:52
+qorona info data/coconut_corona.CFmesh.xz --timestamp 2025-10-09T18:19:52
 
-# 2. Bake the viewpoint-independent Q⊥ volume once (the minutes-scale stage).
-qorona build data/hmi_lmax50.CFmesh.xz -o data/hmi_lmax50.qor \
+# 2. Build the viewpoint-independent Q⊥ volume once (the minutes-scale stage).
+qorona build data/coconut_corona.CFmesh.xz -o data/coconut_corona.qor \
     --timestamp 2025-10-09T18:19:52 --outer-radius 8
 
 # 3. Render any number of viewpoints off that volume (seconds each).
-qorona render data/hmi_lmax50.qor -o data/eclipse.png --fov 8 --longitude 317 --latitude 6.2
-qorona render data/hmi_lmax50.qor -o data/polarity.png --fov 8 --longitude 317 --latitude 6.2 --polarity-mode hue
-qorona render data/hmi_lmax50.qor -o data/sun.png --fov 3 --longitude 317 --latitude 6.2 --occult opaque --preset small-fov --step 0.002
-qorona render data/hmi_lmax50.qor -o data/composite.png --fov 8 --longitude 317 --latitude 6.2 --occult composite
+qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 317 --latitude 6.2
 ```
 
-`--quality` picks the baked volume's resolution: `fast` for a quick preview, `standard` (the
-default), or `high` for the finest structure (timings below).
+![Synthetic eclipse render of the COCONUT corona](docs/assets/eclipse.png)
 
-Or do it all in one shot:
-
-```bash
-qorona run data/hmi_lmax50.CFmesh.xz -o data/eclipse.png \
-    --timestamp 2025-10-09T18:19:52 --fov 8 --longitude 317 --save-volume data/hmi_lmax50.qor
-```
-
-For a field-line view:
-
-```bash
-qorona fieldlines data/hmi_lmax50.CFmesh.xz -o data/fieldlines.png --fov 8 --longitude 317
-```
-
-For a white-light / polarized-brightness view, rendered from the solution's electron density
-(no Q⊥ volume involved; a baked `.qor` also works as input, reusing its stored density):
-
-```bash
-qorona wl data/hmi_lmax50.CFmesh.xz -o data/wl.png \
-    --timestamp 2025-10-09T18:19:52 --longitude 317 --latitude 6.2 [--fov 6]
-qorona wl data/hmi_lmax50.qor -o data/wl.png --longitude 317 --latitude 6.2 [--fov 6]
-```
-
-`--frame polarized|total` picks the brightness frame, `--vignette` the radial detrend,
-`--percentiles LOW HIGH` the display stretch; the camera flags are the same as `render`.
-
-For a Q-map (a longitude/latitude shell of signed-log Q⊥ at a fixed radius, the
-viewpoint-independent sibling of `render`), bake with the outer radius at the map radius:
-
-```bash
-qorona build data/hmi_lmax50.CFmesh.xz -o data/hmi_lmax50_r3.qor \
-    --timestamp 2025-10-09T18:19:52 --outer-radius 3
-qorona qmap data/hmi_lmax50_r3.qor -o data/qmap.png --radius 3
-```
-
-Every command prints a polished end-of-run summary of its parameters and metrics, and the rendered
-PNG carries a corner stamp (CR · timestamp · sub-observer angles · roll · FOV) for reproducibility. Run
-`qorona <command> --help` for the common options, or `--help-all` for the complete flag reference
-(grid resolution, builder, engine tolerances, and more); the defaults reproduce the published
-whole-corona Q⊥ render.
-
-## GPU acceleration
-
-Volume builds are CUDA-accelerated end to end, with no extra Qorona dependency: the kernels ride
-the default-install numba and activate whenever it sees a CUDA-capable NVIDIA GPU (driver + CUDA
-toolkit). Nothing to configure: `qorona build` already uses the GPU when one is present.
-
-```bash
-qorona build ... --device gpu                       # force the GPU (errors if none is usable)
-qorona build ... --device cpu                       # multi-core CPU path (the reference)
-qorona build ... --device gpu --precision float64   # all-double reference (~2× slower than mixed)
-```
-
-- `--device auto` (default) picks the GPU when present; the CPU kernels remain the reference
-  implementation and produce the same images.
-- `--precision mixed` (default) runs the field interpolation in float32 and everything else in
-  float64, log-invisible against the `float64` reference. `float32` is an experimental fully-float32
-  paint variant. GPU-only knob; the CPU path always computes in float64.
-- Device memory adapts to free VRAM (the Q⊥ accumulation tiles itself), so the same command runs
-  on small cards and at very high resolutions alike.
-- The resolved backend and precision are stamped into the volume's provenance and the end-of-run
-  summary.
-
-Indicative volume-build timings (RTX 4080 vs 32-core CPU, mixed precision; not a benchmark):
-
-| Q⊥ volume                                                | GPU    | CPU     |
-|----------------------------------------------------------|--------|---------|
-| `--quality standard` (default), 384×360×720 (100 M vox)  | ~85 s  | ~9 min  |
-| `--quality high`, 576×540×1080 (336 M vox)               | ~3 min | ~22 min |
+The [first eclipse image](https://rayandhib.github.io/Qorona/getting-started/first-eclipse-image/)
+walkthrough annotates these commands; the
+[product pages](https://rayandhib.github.io/Qorona/products/squashing-factor/) cover the
+polarity view, white-light imaging, Q-maps, and field lines.
 
 ## How it works
 
-The pipeline processes a single MHD snapshot through four stages, each isolated behind a clean
-interface so a new input model is added by writing one reader and a new viewpoint costs only a
-render:
-
-1. **Read & resample** the native solution onto an internal regular spherical grid.
-2. **Trace** magnetic field lines and **transport** deviation vectors along them.
-3. **Squashing factor**: assemble Q⊥ boundary-to-boundary and bake it into a viewpoint-independent
-   volume (cached to a dependency-free `.qor`).
-4. **Render**: integrate log₁₀ Q⊥ along the line of sight on an orthographic plane-of-sky camera,
-   with depth colouring and eclipse occultation.
-
-The reference output is the line-of-sight squashing-factor render of the corona's fine structure.
+Four stages behind clean interfaces: read and resample the native solution onto an internal
+spherical grid; trace field lines and transport deviation vectors along them; assemble the
+squashing factor Q⊥ into a viewpoint-independent volume (cached to a dependency-free `.qor`);
+integrate log₁₀ Q⊥ along the line of sight on a plane-of-sky camera. Details in the
+[documentation](https://rayandhib.github.io/Qorona/).
 
 ## Supported models
 
-Qorona is model-agnostic: each coronal model and file format sits behind a common reader interface,
-so the whole pipeline runs on any solution once a reader exists.
+Qorona is model-agnostic: each coronal model and file format sits behind a common reader
+interface, so the whole pipeline runs on any solution once a reader exists. Currently supported:
+**COCONUT** (COOLFluiD `.CFmesh`, Tecplot `.plt`) and **MAS** (HDF4). Adding a model means writing one reader; a contributor guide
+is planned.
 
-**Currently supported:** COCONUT (COOLFluiD `.CFmesh`, Tecplot `.plt`) and MAS (one HDF4 file
-per variable; point the CLI at any file of the set).
+## Citing
 
-Support for other coronal MHD models can be added by writing a single reader against that interface.
-A contributor guide is planned.
+If you use Qorona, please cite both the software and its accompanying paper.
+
+**Software** (all versions), via the Zenodo concept DOI:
+[10.5281/zenodo.20630699](https://doi.org/10.5281/zenodo.20630699).
+
+**Paper** (under review at *The Astrophysical Journal*; the reference will be updated when it is
+published):
+
+> Dhib, R., Ben Ameur, F., Baratashvili, T., Jeong, H.-J., Wang, H., Noraz, Q., Schmieder, B.,
+> Lani, A., & Poedts, S. *Qorona: Open, Model-Agnostic Line-of-Sight Rendering of the
+> Perpendicular Squashing Factor for Eclipse-like Coronal Imaging*. Submitted to The
+> Astrophysical Journal (2026).
+
+```bibtex
+@article{dhib2026qorona,
+  author  = {Dhib, Rayan and Ben Ameur, Firas and Baratashvili, Tinatin and
+             Jeong, Hyun-Jin and Wang, Haopeng and Noraz, Quentin and
+             Schmieder, Brigitte and Lani, Andrea and Poedts, Stefaan},
+  title   = {{Qorona: Open, Model-Agnostic Line-of-Sight Rendering of the
+             Perpendicular Squashing Factor for Eclipse-like Coronal Imaging}},
+  journal = {The Astrophysical Journal},
+  year    = {2026},
+  note    = {Submitted}
+}
+```
 
 ## License
 
