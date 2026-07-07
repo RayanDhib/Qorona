@@ -27,7 +27,7 @@ qorona wl data/coconut_corona.qor -o docs/assets/white-light.png \
 - `--mgn`: optional fine-structure enhancement (multi-scale Gaussian normalization), applied
   last; needs sunkit-image, which is not part of the default install.
 - `--occult eclipse|none`: the occulter (default `eclipse`).
-- `--r-occult`: occulter radius in solar radii (default 1.01).
+- `--r-occult`: occulter radius in solar radii (default 1.02).
 - `--export npz`: also write the raw frames (both pB and total, with plane-of-sky
   coordinates) beside the PNG.
 - `--width`, `--height`: image size in pixels (default 512, smaller than `render`'s 1024).

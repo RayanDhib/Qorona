@@ -79,8 +79,9 @@ integrate log₁₀ Q⊥ along the line of sight on a plane-of-sky camera.
 
 Qorona is model-agnostic: each coronal model and file format sits behind a common reader
 interface, so the whole pipeline runs on any solution once a reader exists. Currently supported:
-**COCONUT** (COOLFluiD `.CFmesh`, Tecplot `.plt`) and **MAS** (HDF4). Adding a model means writing one reader; a contributor guide
-is planned.
+**COCONUT** ([COOLFluiD](https://github.com/andrealani/COOLFluiD) `.CFmesh`, Tecplot `.plt`)
+and **[MAS](https://www.predsci.com/)** (HDF4). A contributor guide for adding a reader is
+planned.
 
 ## Citing
 

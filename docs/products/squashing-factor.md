@@ -60,9 +60,9 @@ qorona render data/coconut_corona.qor -o docs/assets/occult-<mode>.png \
     --fov 3 --longitude 317 --latitude 6.2 --preset small-fov --step 0.002 --occult <mode>
 ```
 
-`composite` is made for the whole-corona view: the eclipse image with the disk filled by its
-near-side structure, toned down so the corona keeps the stage; `--disk-tone` and
-`--disk-desat` tune it.
+`composite` is made for the whole-corona view: the eclipse image with the disk filled by the
+near-limb view, toned down so the corona keeps the stage; `--disk-tone` and `--disk-desat`
+tune it.
 
 ![Composite-occultation render of the COCONUT corona](../assets/composite.png)
 

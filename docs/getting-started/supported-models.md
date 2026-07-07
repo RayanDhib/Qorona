@@ -6,8 +6,9 @@ inferred from the file extension; `--model` overrides the inference when needed.
 
 ## COCONUT
 
-Two formats: COOLFluiD `.CFmesh` files (including `.xz`-compressed ones, read directly) and
-Tecplot `.plt` exports. Point any command at the solution file:
+Two formats: [COOLFluiD](https://github.com/andrealani/COOLFluiD) `.CFmesh` files (including
+`.xz`-compressed ones, read directly) and Tecplot `.plt` exports. Point any command at the
+solution file:
 
 ```bash
 qorona info data/coconut_corona.CFmesh.xz --timestamp 2025-10-09T18:19:52
@@ -15,9 +16,11 @@ qorona info data/coconut_corona.CFmesh.xz --timestamp 2025-10-09T18:19:52
 
 ## MAS
 
-MAS distributes one HDF4 file per variable (`rho002.hdf`, `br002.hdf`, ...). Point the CLI at
-any file of the set; the companion variables are located automatically. The file name must
-contain one of the MAS variable tokens (`rho`, `br`, `bt`, `bp`, `vr`, `vt`, `vp`, `t`, `p`).
+[MAS](https://www.predsci.com/) (Predictive Science) distributes one HDF4 file per variable
+(`rho002.hdf`, `br002.hdf`, ...). Point the CLI at any file of the set; the companion variables
+are located automatically. The file name must contain one of the MAS variable tokens (`rho`,
+`br`, `bt`, `bp`, `vr`, `vt`, `vp`, `t`, `p`). Public MAS solutions are available from
+Predictive Science's [MHDweb](https://www.predsci.com/mhdweb/data_access.php).
 
 ```bash
 qorona info br002.hdf

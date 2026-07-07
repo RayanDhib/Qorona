@@ -469,7 +469,7 @@ _render_options = _compose(
         default=None,
         section="Render",
         help="Body treatment: eclipse (dark disk), opaque (solid 3-D body), composite (the "
-        "eclipse view with the disk filled by its near-side structure, toned down), none "
+        "eclipse view with the disk filled by the near-limb view, toned down), none "
         "(default eclipse).",
     ),
     option(
@@ -781,7 +781,7 @@ _brightness_options = _compose(
         default=None,
         section="Brightness",
         advanced=True,
-        help="Body/occulter radius in R_sun (default 1.01, just above the limb so the "
+        help="Body/occulter radius in R_sun (default 1.02, just above the limb so the "
         "overwhelming near-limb ring does not eat the display stretch).",
     ),
     option(

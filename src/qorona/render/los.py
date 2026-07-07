@@ -36,7 +36,7 @@ These details are load-bearing:
   sees past an opaque body) and an *image-level* dark disk (the eclipse occulter). The ``occult``
   mode selects them: ``"eclipse"`` (default, the primary synthetic-eclipse image) integrates the
   full off-limb corona and darkens the disk; ``"opaque"`` keeps the body opaque (a 3-D view);
-  ``"composite"`` renders the eclipse view with the disk filled by its own near-side structure,
+  ``"composite"`` renders the eclipse view with the disk filled by the near-limb view,
   toned down (two passes of the standard machinery combined by :func:`_composite_image`);
   ``"none"`` disables both. The in-integral mask is the only part in the hot loop (kept
   kernel/NumPy parity-exact); the dark disk is a post-stretch radial vignette in
@@ -1008,8 +1008,8 @@ def render(
     body) and an *image-level* dark disk (the eclipse occulter). ``"eclipse"`` (the default, the
     primary synthetic-eclipse image) integrates the full off-limb corona on both sides and darkens
     the disk image-side; ``"opaque"`` keeps the body opaque so near-side structure shows
-    (a 3-D view); ``"composite"`` renders the eclipse view with the disk filled by its own
-    near-side structure, separately stretched, toned by ``disk_tone`` / ``disk_desat``, and
+    (a 3-D view); ``"composite"`` renders the eclipse view with the disk filled by the
+    near-limb view, separately stretched, toned by ``disk_tone`` / ``disk_desat``, and
     finished with a rim glow (a disk-corona composite; see :func:`_composite_disk`); ``"none"``
     disables both for a fully translucent corona.
 
@@ -1039,7 +1039,7 @@ def render(
     occult
         Occultation mode. ``"eclipse"``: dark solar disk, off-limb corona only (the total-eclipse
         look); ``"opaque"``: opaque body, near-side corona over the disk shows (a 3-D view);
-        ``"composite"``: the eclipse view with the disk filled by its own near-side structure,
+        ``"composite"``: the eclipse view with the disk filled by the near-limb view,
         toned down (a disk-corona composite); ``"none"``: no occultation, full corona on both
         sides including behind the disk.
     r_occult

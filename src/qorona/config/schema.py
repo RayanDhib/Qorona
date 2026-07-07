@@ -620,7 +620,7 @@ class BrightnessConfig:
     crossover: float = 10.0
     step: float = 0.02
     occult: str = "eclipse"
-    r_occult: float = 1.01
+    r_occult: float = 1.02
     occult_softness: float = 0.03
     scaling: str | None = None
     percentiles: tuple[float, float] = (1.0, 99.5)
