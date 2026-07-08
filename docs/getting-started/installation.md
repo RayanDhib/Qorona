@@ -1,7 +1,7 @@
 # Installation
 
-The default install is the complete Qorona: every runtime dependency needed to use every
-feature. Python 3.11 or newer is required.
+The default install pulls every runtime dependency for the standard products. Python 3.11 or
+newer is required.
 
 ## With pip
 

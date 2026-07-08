@@ -22,12 +22,10 @@ qorona build data/coconut_corona.CFmesh.xz -o data/coconut_corona.qor \
     --timestamp 2025-10-09T18:19:52 --outer-radius 8
 ```
 
-The minutes-scale stage: trace the field, assemble Q⊥, and cache it to `coconut_corona.qor`. At
-the default `standard` quality this is about 85 seconds on an RTX 4080 or about 9 minutes on a
-32-core CPU; `--quality fast` gives a minute-scale preview. `--quality fast|standard|high`
-picks the volume resolution, and `--outer-radius` sets how far out the volume extends, in
-solar radii; the [Q⊥ volume page](../qperp-volume.md) covers both. `--timestamp` is optional
-(it drives the on-image Carrington-rotation stamp).
+The minutes-scale stage: trace the field, assemble Q⊥, and cache it to `coconut_corona.qor`.
+`--quality fast` gives a minute-scale preview (timings on the [GPU page](../gpu.md)); `--quality`
+and `--outer-radius` are covered on the [Q⊥ volume page](../qperp-volume.md). `--timestamp` is
+optional (it drives the on-image Carrington-rotation stamp).
 
 ## 3. Render
 

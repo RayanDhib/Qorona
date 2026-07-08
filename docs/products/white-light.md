@@ -33,7 +33,7 @@ qorona wl data/coconut_corona.qor -o data/white-light.png \
   coordinates) beside the PNG.
 - `--width`, `--height`: image size in pixels (default 1024, as for `render`).
 - Camera flags are the same as the [squashing-factor render](squashing-factor.md); `wl`
-  defaults to a wider `--fov 10` so the streamers keep headroom (the render keeps 8).
+  defaults to `--fov 10`.
 
 !!! note "Extra packages for `--vignette wow` and `--mgn`"
     These two treatments are backed by external enhancement libraries that are not part of

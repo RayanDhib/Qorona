@@ -61,7 +61,7 @@ qorona render data/coconut_corona.qor -o data/occult-<mode>.png \
 ```
 
 `composite` is made for the whole-corona view: the eclipse image with the disk filled by the
-near-limb view, toned down so the corona keeps the stage; `--disk-tone` and `--disk-desat`
+near-limb view, toned down so the corona stays dominant; `--disk-tone` and `--disk-desat`
 tune it.
 
 ![Composite-occultation render of the COCONUT corona](../assets/composite.png)
