@@ -56,3 +56,124 @@
 .md-nav--secondary:has(> .md-nav__list > .md-nav__item:only-child) {
   display: none;
 }
+
+/* --- Identity: one local font file, nothing fetched from outside the site. Qorona
+   Wordmark carries exactly the mark's six glyphs (italic Q, upright "orona", and the
+   perp sign), so it renders the wordmark and nothing else; all running text, headings,
+   and code stay on the system families, which cover every character uniformly. */
+@font-face {
+  font-family: "Qorona Wordmark";
+  font-style: normal;
+  font-weight: 400;
+  src: url("../assets/fonts/qorona-wordmark.woff2") format("woff2");
+}
+
+/* The site name in the header wears the wordmark, with the blue perp sign appended.
+   The serif's metrics seat its ink slightly high next to the logo; the top nudge
+   recentres it. */
+.md-header__topic:first-child .md-ellipsis {
+  font-family: "Qorona Wordmark", Georgia, serif;
+  font-weight: 400;
+  font-size: 1.05rem;
+  letter-spacing: -0.015em;
+  position: relative;
+  top: 0.05em;
+}
+
+.md-header__topic:first-child .md-ellipsis::after {
+  content: "⊥";
+  font-size: 0.36em;
+  vertical-align: -0.05em;
+  margin-left: 0.07em;
+  color: #a6c8f0;
+}
+
+/* The sidebar site title follows the wordmark. On desktop it only repeats the header
+   wordmark sitting right above it, so it is shown in the mobile drawer alone. */
+.md-nav--primary > .md-nav__title {
+  font-family: "Qorona Wordmark", Georgia, serif;
+  font-weight: 400;
+}
+
+@media screen and (min-width: 76.25em) {
+  .md-nav--primary > .md-nav__title {
+    display: none;
+  }
+}
+
+/* Landing hero: a black masthead band, deliberately the same in both colour schemes;
+   the eclipse render sits behind the wordmark as dim atmosphere. */
+.qhero {
+  position: relative;
+  overflow: hidden;
+  background: #000;
+  border-radius: 6px;
+  padding: 3.2rem 2.2rem 2.8rem;
+  margin: 0.2rem 0 1.6rem;
+}
+
+.qhero .qhero-bg {
+  position: absolute;
+  right: -6%;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 54%;
+  max-height: none;
+  margin: 0;
+  opacity: 0.55;
+}
+
+.qhero .qhero-fade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, #000 42%, rgba(0, 0, 0, 0.25) 78%, rgba(0, 0, 0, 0.45) 100%);
+}
+
+.qhero .qhero-inner {
+  position: relative;
+}
+
+.qhero .qhero-wm {
+  font-family: "Qorona Wordmark", Georgia, serif;
+  font-weight: 400;
+  font-size: clamp(2.6rem, 6vw, 3.4rem);
+  line-height: 0.9;
+  letter-spacing: -0.015em;
+  color: #eef1f5;
+  margin: 0;
+}
+
+.qhero .qhero-perp {
+  font-size: 0.36em;
+  vertical-align: -0.05em;
+  margin-left: 0.07em;
+  color: #a6c8f0;
+}
+
+.qhero .qhero-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 0.62rem;
+  color: #d6dce4;
+  margin: 1rem 0 0;
+}
+
+.qhero .qhero-rule {
+  width: 44px;
+  height: 2px;
+  background: #a6c8f0;
+  margin-top: 1.2rem;
+}
+
+/* The landing keeps its h1 for the page title; the hero band shows the wordmark instead. */
+.md-typeset .qhide {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+

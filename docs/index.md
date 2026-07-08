@@ -1,4 +1,14 @@
-# Qorona
+# Qorona {.qhide}
+
+<div class="qhero">
+  <img class="qhero-bg" src="assets/hero-eclipse.jpg" alt="">
+  <div class="qhero-fade"></div>
+  <div class="qhero-inner">
+    <p class="qhero-wm">Qorona<span class="qhero-perp">&#x22A5;</span></p>
+    <p class="qhero-tag">Synthetic coronal imagery from global MHD solutions</p>
+    <div class="qhero-rule"></div>
+  </div>
+</div>
 
 Qorona turns a global coronal **MHD solution** into **eclipse-like synthetic imagery**. Its
 primary product is a line-of-sight integral of the perpendicular magnetic **squashing factor

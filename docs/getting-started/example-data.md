@@ -3,14 +3,14 @@
 Pick a working directory; every command in these docs runs from it, with the data in `data/`
 beneath it.
 
-The quickstart and every figure in this documentation use `coconut_corona.CFmesh.xz` (~165 MB), an
-HMI-driven COCONUT coronal MHD solution. It is distributed as a release asset, not committed to
+The quickstart and every figure in this documentation use `coconut_corona.CFmesh.xz` (~165 MB), a
+COCONUT coronal MHD solution. It is distributed as a release asset, not committed to
 the repository: download it into `data/` before running the commands.
 
 ```bash
 mkdir -p data
 curl -L -o data/coconut_corona.CFmesh.xz \
-    https://github.com/RayanDhib/Qorona/releases/download/v0.1.0/coconut_corona.CFmesh.xz
+    https://github.com/RayanDhib/Qorona/releases/download/v0.4.0/coconut_corona.CFmesh.xz
 ```
 
 Qorona reads the compressed `.xz` directly; there is no manual decompression step. Building a

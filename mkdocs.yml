@@ -6,6 +6,7 @@ repo_name: RayanDhib/Qorona
 
 theme:
   name: material
+  custom_dir: overrides
   logo: assets/favicon.png
   favicon: assets/favicon.png
   # System font stack: no external font fetch, so the site works on restricted networks.

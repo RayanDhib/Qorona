@@ -47,8 +47,8 @@ details.
 
 ## Quickstart
 
-The quickstart data, `coconut_corona.CFmesh.xz` (~165 MB, an HMI-driven COCONUT solution), is a
-[release asset](https://github.com/RayanDhib/Qorona/releases/tag/v0.1.0): download it into `data/`.
+The quickstart data, `coconut_corona.CFmesh.xz` (~165 MB, an example COCONUT solution), is a
+[release asset](https://github.com/RayanDhib/Qorona/releases/tag/v0.4.0): download it into `data/`.
 The pipeline splits at its natural cost seam: build the viewpoint-independent Q⊥ volume once,
 then render any number of viewpoints off it in seconds.
 
