@@ -9,7 +9,7 @@ total solar eclipse.
 ![Synthetic eclipse render of the COCONUT corona](../assets/eclipse.png)
 
 ```bash
-qorona render data/coconut_corona.qor -o docs/assets/eclipse.png --fov 8 --longitude 317 --latitude 6.2
+qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 317 --latitude 6.2
 ```
 
 ## The flags that matter
@@ -35,7 +35,7 @@ disk.
 ![Near-limb render of the COCONUT corona with the opaque body](../assets/near-limb.png)
 
 ```bash
-qorona render data/coconut_corona.qor -o docs/assets/near-limb.png \
+qorona render data/coconut_corona.qor -o data/near-limb.png \
     --fov 3 --longitude 317 --latitude 6.2 --preset small-fov --step 0.002 --occult opaque
 ```
 
@@ -56,7 +56,7 @@ same near-limb setting as the opaque view above:
 | ![Eclipse occultation](../assets/occult-eclipse.png) | ![No occultation](../assets/occult-none.png) |
 
 ```bash
-qorona render data/coconut_corona.qor -o docs/assets/occult-<mode>.png \
+qorona render data/coconut_corona.qor -o data/occult-<mode>.png \
     --fov 3 --longitude 317 --latitude 6.2 --preset small-fov --step 0.002 --occult <mode>
 ```
 
@@ -67,6 +67,6 @@ tune it.
 ![Composite-occultation render of the COCONUT corona](../assets/composite.png)
 
 ```bash
-qorona render data/coconut_corona.qor -o docs/assets/composite.png \
+qorona render data/coconut_corona.qor -o data/composite.png \
     --fov 8 --longitude 317 --latitude 6.2 --occult composite
 ```

@@ -9,7 +9,7 @@ field directly and does not use a built volume.
 ![Field-line view of the COCONUT corona](../assets/fieldlines.png)
 
 ```bash
-qorona fieldlines data/coconut_corona.CFmesh.xz -o docs/assets/fieldlines.png \
+qorona fieldlines data/coconut_corona.CFmesh.xz -o data/fieldlines.png \
     --timestamp 2025-10-09T18:19:52 --fov 8 --longitude 317 --latitude 6.2 --seeds 1650
 ```
 

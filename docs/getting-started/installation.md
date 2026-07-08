@@ -14,7 +14,7 @@ pip install qorona
 ## With conda (development checkout)
 
 Clone the repository and build the provided environment from its root. This gives you the
-development version (`main`) as an editable checkout, e.g. to develop or to add a model reader:
+development version (`main`) as an editable checkout:
 
 ```bash
 git clone https://github.com/RayanDhib/Qorona.git

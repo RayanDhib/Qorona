@@ -83,13 +83,13 @@ from qorona.io.readers import resolve_model
 #: full default ``pixels`` otherwise lives once on :class:`~qorona.config.CameraConfig`.
 _DEFAULT_DIMENSION = 1024
 
-#: Default image dimension of the white-light product: the brightness frames are smooth, so a
-#: compact image suffices; the camera flags override it.
-_WL_DEFAULT_DIMENSION = 512
+#: Default image dimension of the white-light product, matching the Q⊥ render; the camera flags
+#: override it.
+_WL_DEFAULT_DIMENSION = 1024
 
-#: Default field of view (full width, R_sun) of the white-light product; matches the render
-#: default so every product shares one frame. ``--fov`` overrides it.
-_WL_DEFAULT_FOV = 8.0
+#: Default field of view (full width, R_sun) of the white-light product, wider than the render's
+#: 8 so the streamers keep headroom instead of touching the frame. ``--fov`` overrides it.
+_WL_DEFAULT_FOV = 10.0
 
 
 # --- Reusable option groups --------------------------------------------------------------------
@@ -720,9 +720,10 @@ _brightness_options = _compose(
         type=click.Choice(BRIGHTNESS_VIGNETTES),
         default=None,
         section="Brightness",
-        help="Radial detrend of the selected --frame: newkirk divides by the brightness of the "
-        "smooth Newkirk background corona; adaptive self-calibrates the same curve family to "
-        "the image's own falloff and amplifies its structure; none keeps the raw falloff "
+        help="Display treatment of the selected --frame: newkirk divides by the brightness of "
+        "the smooth Newkirk background corona; adaptive self-calibrates the same curve family "
+        "to the image's own falloff and amplifies its structure; wow whitens the raw frame's "
+        "wavelet spectrum (needs sunkit-image and watroo); none keeps the raw falloff "
         "(default newkirk; adaptive for inputs whose falloff departs from it).",
     ),
     option(
@@ -1074,8 +1075,8 @@ def _parse_resolution(text: str) -> tuple[int, int]:
 
 def _qmap_config(kw: dict[str, Any]) -> QMapConfig:
     fields = _present(kw, "radius", "slog_max")
-    if kw.get("export_npz") is not None:
-        fields["export_npz"] = kw["export_npz"]
+    if kw.get("export_formats"):
+        fields["export_formats"] = tuple(kw["export_formats"])
     if kw.get("resolution"):
         fields["n_theta"], fields["n_phi"] = _parse_resolution(kw["resolution"])
     return QMapConfig(**fields)
@@ -1350,11 +1351,13 @@ def render(
     help="Colour ceiling for slog Q⊥ (default 5).",
 )
 @option(
-    "--export-npz/--no-export-npz",
-    "export_npz",
-    default=None,
+    "--export",
+    "export_formats",
+    type=click.Choice(EXPORT_FORMATS),
+    multiple=True,
     section="Q-map",
-    help="Also write the raw shell arrays as a .npz beside the figure (default off).",
+    help="Also write the raw shell arrays to this format beside the figure; repeatable. "
+    "Currently only npz.",
 )
 @_annotate_options
 @_quiet_option
@@ -1711,11 +1714,11 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
     volume artifact (whose stored electron density is reused, skipping the resample). The
     Thomson-scattering brightness is integrated over the density along each line of sight: the
     polarized brightness pB by default, or the total white-light brightness with ``--frame
-    total``. The frame is finished by two display stages: the ``--vignette`` radial detrend
-    (``newkirk`` by default, ``adaptive`` for inputs whose falloff departs from it, ``none`` for
-    the raw falloff) and optional ``--mgn`` fine-structure enhancement. ``--export npz`` also
-    writes the raw frames (both pB and total) with their plane-of-sky coordinates. Needs only
-    the density; it neither builds nor uses the Q⊥ payload.
+    total``. The frame is finished by two display stages: the ``--vignette`` treatment
+    (``newkirk`` by default, ``adaptive`` for inputs whose falloff departs from it, ``wow`` for
+    wavelet whitening, ``none`` for the raw falloff) and optional ``--mgn`` fine-structure
+    enhancement. ``--export npz`` also writes the raw frames (both pB and total) with their
+    plane-of-sky coordinates. Needs only the density; it neither builds nor uses the Q⊥ payload.
     """
     kw["input_path"] = input_path
     show_progress = not quiet
@@ -1942,8 +1945,9 @@ def _qmap_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
         f"coverage {float(qm['coverage']):.1%}",
         f"sub-floor {float(qm['sub_floor_fraction']):.1%}",
     ]
-    if qm.get("export_npz"):
-        parts.append("export npz (raw shell)")
+    exported = qm.get("export_formats")
+    if exported:
+        parts.append(f"export {'+'.join(exported)} (raw shell)")
     if "qmap" in timings:
         parts.append(f"slice {timings['qmap']:.1f} s")
     return " · ".join(parts)

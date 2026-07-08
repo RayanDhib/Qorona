@@ -10,6 +10,14 @@
   --md-accent-fg-color: #cfe0f7;
 }
 
+/* The highlighter tags a decimal's integer part as a number and leaves ".xx" as plain text,
+   so a value like 6.2 splits into two colours in code blocks. Render code numbers in the
+   default code colour so decimals read as one value. */
+[data-md-color-scheme="default"],
+[data-md-color-scheme="slate"] {
+  --md-code-hl-number-color: var(--md-code-fg-color);
+}
+
 /* Figures render at native resolution but display capped, so pages stay scannable;
    wide figures (e.g. Q-maps) are bounded by the column width instead. */
 .md-typeset img {

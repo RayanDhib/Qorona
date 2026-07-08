@@ -1,8 +1,6 @@
 # HPC clusters
 
-Qorona installs from PyPI; pick whichever your cluster makes easiest.
-
-**With pip**, into a plain virtual environment:
+**With pip**, the released version into a plain virtual environment:
 
 ```bash
 module purge            # optional; stops other modules leaking packages via PYTHONPATH
@@ -11,13 +9,13 @@ python -m venv ~/envs/qorona && source ~/envs/qorona/bin/activate
 pip install qorona
 ```
 
-**With conda**, if you prefer it or a binary dependency (e.g. pyhdf/HDF4) is easier from
-conda-forge:
+**With conda**, the development version from source:
 
 ```bash
-conda create -n qorona -c conda-forge python=3.11
+git clone https://github.com/RayanDhib/Qorona.git
+cd Qorona
+conda env create -f environment.yml
 conda activate qorona
-pip install qorona
 ```
 
 Two flags are made for batch jobs: `--workers` pins the kernel threads to your allocation

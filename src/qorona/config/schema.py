@@ -39,7 +39,7 @@ FIELDLINE_SHOW = ("all", "open", "closed")
 FIELDLINE_SEEDING = ("limb", "uniform")
 FIELDLINE_COLOUR = ("rainbow", "polarity")
 BRIGHTNESS_FRAMES = ("polarized", "total")
-BRIGHTNESS_VIGNETTES = ("adaptive", "newkirk", "none")
+BRIGHTNESS_VIGNETTES = ("adaptive", "newkirk", "none", "wow")
 BRIGHTNESS_SCALINGS = ("linear", "log")
 EXPORT_FORMATS = ("npz",)
 DEVICE_MODES = ("auto", "gpu", "cpu")
@@ -423,14 +423,15 @@ class QMapConfig:
 
     ``radius`` (R☉) is the shell radius; ``n_theta``/``n_phi`` the longitude/latitude sample grid;
     ``slog_max`` the colour ceiling (``None`` → :data:`~qorona.render.shell.DEFAULT_SLOG_MAX`);
-    ``export_npz`` also writes the raw shell arrays.
+    ``export_formats`` lists the data sidecars written beside the figure (currently ``"npz"``, the
+    raw shell arrays).
     """
 
     radius: float = 3.0
     n_theta: int = 720
     n_phi: int = 1440
     slog_max: float | None = None
-    export_npz: bool = False
+    export_formats: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require(self.radius > 0.0, f"radius must be positive, got {self.radius}")
@@ -442,13 +443,16 @@ class QMapConfig:
             self.slog_max is None or self.slog_max > 0.0,
             f"slog_max must be positive, got {self.slog_max}",
         )
+        object.__setattr__(self, "export_formats", tuple(self.export_formats))
+        for fmt in self.export_formats:
+            _one_of(fmt, EXPORT_FORMATS, "export format")
 
     def to_provenance(self) -> dict[str, object]:
         return {
             "radius": self.radius,
             "resolution": f"{self.n_theta}x{self.n_phi}",
             "slog_max": self.slog_max,
-            "export_npz": self.export_npz,
+            "export_formats": list(self.export_formats),
         }
 
 
@@ -598,11 +602,13 @@ class BrightnessConfig:
     The viewpoint-independent inputs to the standalone brightness product (the camera is a separate
     config, as for the Q⊥ render). ``frame`` selects the polarized brightness ``pB`` (the default,
     the reference target) or the total white-light brightness. The selected frame is finished by
-    two display stages, applied in order: the ``vignette`` radial detrend (``"newkirk"`` divides by
+    two display stages, applied in order: the ``vignette`` treatment (``"newkirk"`` divides by
     the brightness of the smooth Newkirk background corona; ``"adaptive"`` self-calibrates the same
     curve family to the image's own falloff and amplifies its structure, for coronae whose
-    stratification departs from the Newkirk profile; ``"none"`` keeps the raw falloff) and the
-    optional ``mgn`` local fine-structure enhancement (calibrated for the steep-gradient pB frame;
+    stratification departs from the Newkirk profile; ``"wow"`` whitens the raw frame's wavelet
+    spectrum, which flattens the falloff along the way, and needs the optional sunkit-image and
+    watroo packages; ``"none"`` keeps the raw falloff) and the optional ``mgn`` local
+    fine-structure enhancement (calibrated for the steep-gradient pB frame;
     on the total frame it still runs but is less physically meaningful). ``u`` and ``crossover``
     are the Thomson coefficient knobs, ``scaling`` / ``percentiles`` the display stretch; the
     line-of-sight ``step`` and the occultation triple mirror :class:`RenderConfig`, with the

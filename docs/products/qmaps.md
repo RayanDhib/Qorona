@@ -13,7 +13,7 @@ Build the volume with `--outer-radius` equal to the map radius, then slice:
 ```bash
 qorona build data/coconut_corona.CFmesh.xz -o data/coconut_corona_or3.qor \
     --timestamp 2025-10-09T18:19:52 --outer-radius 3
-qorona qmap data/coconut_corona_or3.qor -o docs/assets/qmap.png --radius 3
+qorona qmap data/coconut_corona_or3.qor -o data/qmap.png --radius 3
 ```
 
 ## The flags that matter
@@ -22,4 +22,4 @@ qorona qmap data/coconut_corona_or3.qor -o docs/assets/qmap.png --radius 3
 - `--resolution NTHETAxNPHI`: display grid (default 720x1440; interpolated, capped by the
   build's pitch).
 - `--slog-max`: colour ceiling for the signed log (default 5).
-- `--export-npz`: also write the raw shell arrays beside the figure.
+- `--export npz`: also write the raw shell arrays beside the figure.

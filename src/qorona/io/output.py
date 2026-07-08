@@ -86,17 +86,20 @@ def write_brightness(
     """Write the white-light / pB render's PNG and stamp it, returning the path written.
 
     Selects the requested frame (the polarized ``pB`` or the total white-light brightness) and
-    finishes it through the display stages, in order: the vignette radial detrend (``newkirk`` /
-    ``adaptive``, skipped for ``none``) and the optional MGN local fine-structure enhancement.
-    Writes a percentile-stretched 8-bit grayscale PNG and applies the shared provenance stamp.
-    MGN is calibrated for the pB frame; on the total frame it still renders but is less
-    physically meaningful, so a note is printed.
+    finishes it through the display stages, in order: the vignette treatment (the ``newkirk`` /
+    ``adaptive`` radial detrends, the ``wow`` wavelet whitening of the raw frame, skipped for
+    ``none``) and the optional MGN local fine-structure enhancement. Writes a
+    percentile-stretched 8-bit grayscale PNG and applies the shared provenance stamp. The
+    ``wow`` output is signed, so its stretch is anchored on a corona-pixel mask instead of the
+    positive pixels. MGN is calibrated for the pB frame; on the total frame it still renders but
+    is less physically meaningful, so a note is printed.
 
     Raises
     ------
     ImportError
-        If ``mgn`` is requested without ``sunkit-image`` installed (the only stage that needs it);
-        the message names the missing package and the alternatives.
+        If ``mgn`` or the ``wow`` channel is requested without its optional packages installed
+        (``sunkit-image``, plus ``watroo`` for ``wow``); the message names the missing packages
+        and the alternatives.
 
     Returns
     -------
@@ -108,9 +111,11 @@ def write_brightness(
         mgn_enhance,
         newkirk_vignette,
         save_pb_png,
+        wow_enhance,
     )
 
     image = result.total if brightness_cfg.frame == "total" else result.polarized
+    valid = None
     if brightness_cfg.vignette == "newkirk":
         image = newkirk_vignette(
             image,
@@ -133,6 +138,11 @@ def write_brightness(
             u=brightness_cfg.u,
             crossover=brightness_cfg.crossover,
         )
+    elif brightness_cfg.vignette == "wow":
+        # The same corona definition the vignettes encode by zeroing: whitened structure is
+        # signed, so the non-corona pixels are masked at PNG time instead.
+        valid = (image > 0.0) & (result.impact >= brightness_cfg.r_occult)
+        image = wow_enhance(image)
     if brightness_cfg.mgn:
         if brightness_cfg.frame == "total":
             print_warning(
@@ -145,6 +155,7 @@ def write_brightness(
         output_cfg.path,
         scaling=cast(Any, brightness_cfg.scaling),
         percentiles=brightness_cfg.percentiles,
+        valid=valid,
     )
     written = [output_cfg.path]
     _apply_stamp(written, output_cfg, provenance)
@@ -159,7 +170,8 @@ def write_qmap(
     The headline product is the publication figure (lon/lat axes, diverging colour bar, title),
     drawn with matplotlib. Without matplotlib the bare colour raster is written instead, with the
     provenance corner stamp (the figure carries its provenance in the title). When
-    ``qmap_cfg.export_npz`` the raw shell arrays ride alongside as a dependency-free ``.npz``.
+    ``"npz"`` is in ``qmap_cfg.export_formats`` the raw shell arrays ride alongside as a
+    dependency-free ``.npz``.
     """
     import json
 
@@ -175,7 +187,7 @@ def write_qmap(
         )
         result.save_png(output_cfg.path, slog_max=qmap_cfg.slog_max)
         _apply_stamp(written, output_cfg, provenance)
-    if qmap_cfg.export_npz:
+    if "npz" in qmap_cfg.export_formats:
         npz_path = output_cfg.export_path("npz")
         result.save_npz(npz_path, meta=json.dumps(provenance, default=str))
         written.append(npz_path)

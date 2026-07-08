@@ -1,7 +1,7 @@
-"""Display treatments for a brightness frame: the radial detrends and fine-structure enhancement.
+"""Display treatments for a brightness frame: radial detrends, whitening, and enhancement.
 
 A finished brightness image (pB or total) spans many decades radially, so it is displayed through
-a detrend that reveals the faint structure at all heights. Two kinds of stage, both 2-D
+a detrend that reveals the faint structure at all heights. Three kinds of stage, all 2-D
 post-processes on the integrated frame (no MHD data access):
 
 - **Radial detrend** (the vignette): divide the frame by a reference radial brightness curve.
@@ -10,18 +10,27 @@ post-processes on the integrated frame (no MHD data access):
   ``adaptive`` channel (:func:`adaptive_vignette`) self-calibrates the same hydrostatic curve
   family to the image's own falloff and amplifies the remaining azimuthal structure, for coronae
   whose stratification departs from the Newkirk profile.
+- **Wavelet whitening** (:func:`wow_enhance`): Wavelets Optimized Whitening, which equalizes the
+  power of the frame's wavelet spectrum across locations and scales, via
+  ``sunkit_image.enhance.wow``. Whitening flattens the radial falloff along the way, so this is
+  the ``wow`` vignette channel: an alternative treatment applied to the raw frame, not a stage
+  on top of a vignette. Its output is signed (whitened structure is zero-centred), unlike the
+  always-positive vignette outputs.
 - **Fine-structure enhancement** (:func:`mgn_enhance`): Multi-scale Gaussian Normalization, a
   local (neighbourhood-based) contrast equalization, the multi-scale generalisation of an
-  unsharp mask, via ``sunkit_image.enhance.mgn``. ``sunkit-image`` is not installed by default;
-  without it only this stage is unavailable and it fails with a friendly note, while the
-  detrends and the raw frame still render. MGN is calibrated for the steep-gradient pB frame;
-  on total it still runs but is less meaningful.
+  unsharp mask, via ``sunkit_image.enhance.mgn``. MGN is calibrated for the steep-gradient pB
+  frame; on total it still runs but is less meaningful.
+
+``sunkit-image`` (plus ``watroo`` for WOW) is not installed by default; without it only the two
+enhancement stages are unavailable and they fail with a friendly note, while the detrends and
+the raw frame still render.
 
 All leave the integrated frame untouched and return a new display frame; :func:`save_pb_png`
 writes any of them to an 8-bit grayscale PNG with a percentile stretch.
 
 Newkirk background corona: Newkirk (1961), ApJ 133, 983. Multi-scale Gaussian Normalization:
-Morgan & Druckmüller (2014), Solar Physics 289, 2945.
+Morgan & Druckmüller (2014), Solar Physics 289, 2945. Wavelets Optimized Whitening: Auchère,
+Soubrié, Pelouze & Buchlin (2023), A&A 670, A66.
 """
 
 from __future__ import annotations
@@ -43,11 +52,13 @@ __all__ = [
     "ADAPTIVE_MARGIN",
     "MGN_MISSING_HINT",
     "NEWKIRK_EXPONENT",
+    "WOW_MISSING_HINT",
     "adaptive_vignette",
     "mgn_enhance",
     "newkirk_profile",
     "newkirk_vignette",
     "save_pb_png",
+    "wow_enhance",
 ]
 
 #: Newkirk (1961) coronal-density exponent: the background model is ``Nₑ ∝ 10^(4.32 R☉/r)``.
@@ -85,6 +96,13 @@ _FIT_EXPONENT_STEP = 0.05
 MGN_MISSING_HINT = (
     "the MGN pB fine-structure enhancement needs sunkit-image; install it with "
     "`pip install sunkit-image`, or use the newkirk / adaptive vignettes or the raw frame instead"
+)
+
+#: Friendly guidance shown when the ``wow`` channel is requested without its packages installed.
+WOW_MISSING_HINT = (
+    "the wow display channel needs sunkit-image and watroo; install them with "
+    "`pip install sunkit-image watroo`, or use the newkirk / adaptive vignettes or the raw "
+    "frame instead"
 )
 
 
@@ -411,11 +429,61 @@ def mgn_enhance(
         ``(H, W)`` MGN-enhanced frame.
     """
     try:
-        from sunkit_image.enhance import mgn  # type: ignore
+        from sunkit_image.enhance import mgn
     except ImportError as error:  # pragma: no cover - exercised only without sunkit-image installed
         raise ImportError(MGN_MISSING_HINT) from error
     data = np.nan_to_num(np.asarray(polarized, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
     return mgn(data, sigma=sigma, k=k, gamma=gamma, h=h, weights=weights)
+
+
+def wow_enhance(
+    image: np.ndarray,
+    *,
+    h: float = 0.9,
+    gamma: float = 3.2,
+    n_scales: int | None = None,
+    denoise_coefficients: list[float] | None = None,
+) -> np.ndarray:
+    """Return the frame treated by Wavelets Optimized Whitening (the ``wow`` display channel).
+
+    A thin wrapper over ``sunkit_image.enhance.wow`` (array-in / array-out, so no sunpy ``Map``
+    is needed). The channel default ``h = 0.9`` merges the gamma-stretched original at weight ``h``
+    with the whitened detail at weight ``1 - h``; WOW's own default is the pure whitening
+    (``h = 0``), a much stronger look. The output is signed: whitened structure is zero-centred,
+    so the display stretch must span the full range (:func:`save_pb_png` with ``valid``).
+    Non-finite samples are zeroed first (WOW does not accept ``NaN``). Raises
+    :class:`ImportError` with :data:`WOW_MISSING_HINT` if ``sunkit-image`` or ``watroo`` is not
+    installed (the latter is imported lazily inside ``sunkit_image.enhance.wow``).
+
+    Parameters
+    ----------
+    image
+        ``(H, W)`` brightness frame (pB or total).
+    h
+        Merge weight of the gamma-stretched original (channel default ``0.9``).
+    gamma
+        Stretch exponent of the merged original (WOW's own default).
+    n_scales
+        Wavelet scales (``None`` ⇒ the maximum the frame size allows).
+    denoise_coefficients
+        Per-scale noise thresholds, in noise standard deviations (``None`` ⇒ no denoising).
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(H, W)`` whitened frame, signed.
+    """
+    try:
+        from sunkit_image.enhance import wow
+    except ImportError as error:  # pragma: no cover - exercised only without sunkit-image installed
+        raise ImportError(WOW_MISSING_HINT) from error
+    data = np.nan_to_num(np.asarray(image, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    try:
+        return wow(
+            data, h=h, gamma=gamma, n_scales=n_scales, denoise_coefficients=denoise_coefficients
+        )
+    except ImportError as error:  # pragma: no cover - exercised only without watroo installed
+        raise ImportError(WOW_MISSING_HINT) from error
 
 
 def save_pb_png(
@@ -424,6 +492,7 @@ def save_pb_png(
     *,
     scaling: Literal["linear", "log"] = "log",
     percentiles: tuple[float, float] = (1.0, 99.5),
+    valid: np.ndarray | None = None,
 ) -> None:
     """Write a 2-D brightness display frame to ``path`` as an 8-bit grayscale PNG.
 
@@ -431,14 +500,21 @@ def save_pb_png(
     already-flattened vignetted or MGN frames, logarithmic for the raw falloff) to ``[0, 1]``,
     then grayscale 8-bit.
 
-    The stretch percentiles are anchored on the pixels carrying positive brightness: the occulted
-    disk and the off-shell background are zero and are not corona measurements, so they are
-    excluded from the percentile (a log stretch would otherwise read those zeros as ``log10(0)``
-    and collapse the corona's dynamic range to the top of the scale, washing it to white).
+    By default the stretch percentiles are anchored on the pixels carrying positive brightness:
+    the occulted disk and the off-shell background are zero and are not corona measurements, so
+    they are excluded from the percentile (a log stretch would otherwise read those zeros as
+    ``log10(0)`` and collapse the corona's dynamic range to the top of the scale, washing it to
+    white). A signed frame (the ``wow`` channel) carries corona structure on both sides of zero,
+    so the positive-pixel anchor does not apply; the caller passes ``valid``, an ``(H, W)``
+    boolean mask of the corona pixels, which anchors the stretch instead and blanks the
+    non-valid pixels to black after it.
     """
     arr = np.asarray(frame, dtype=float)
     flat = arr.reshape(-1)
-    stretched = scale_intensity(flat[:, None], scaling, percentiles, anchor=flat > 0.0)[:, 0]
+    anchor = (flat > 0.0) if valid is None else np.asarray(valid, dtype=bool).reshape(-1)
+    stretched = scale_intensity(flat[:, None], scaling, percentiles, anchor=anchor)[:, 0]
+    if valid is not None:
+        stretched = np.where(anchor, stretched, 0.0)
     gray = (np.clip(np.nan_to_num(stretched), 0.0, 1.0) * 255.0).round().astype(np.uint8)
     image = np.repeat(gray.reshape(*arr.shape, 1), 3, axis=2)
     write_png(Path(path), np.ascontiguousarray(image))

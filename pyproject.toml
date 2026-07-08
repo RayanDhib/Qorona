@@ -68,9 +68,20 @@ warn_redundant_casts = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
-# astropy, scipy, sunpy, and pyhdf ship no type information (no py.typed marker or bundled
-# stubs); ignore their missing imports rather than vendoring stub packages.
-module = ["astropy", "astropy.*", "scipy", "scipy.*", "sunpy", "sunpy.*", "pyhdf", "pyhdf.*"]
+# astropy, scipy, sunpy, sunkit-image, and pyhdf ship no type information (no py.typed marker
+# or bundled stubs); ignore their missing imports rather than vendoring stub packages.
+module = [
+    "astropy",
+    "astropy.*",
+    "scipy",
+    "scipy.*",
+    "sunpy",
+    "sunpy.*",
+    "sunkit_image",
+    "sunkit_image.*",
+    "pyhdf",
+    "pyhdf.*",
+]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

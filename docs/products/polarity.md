@@ -8,7 +8,7 @@ read at a glance.
 ![Polarity-coloured eclipse render of the COCONUT corona](../assets/polarity.png)
 
 ```bash
-qorona render data/coconut_corona.qor -o docs/assets/polarity.png \
+qorona render data/coconut_corona.qor -o data/polarity.png \
     --fov 8 --longitude 317 --latitude 6.2 --polarity-mode hue
 ```
 
