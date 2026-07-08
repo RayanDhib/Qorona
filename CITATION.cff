@@ -28,8 +28,8 @@ keywords:
   - astronomy software
   - squashing factor
   - quasi-separatrix layers
-version: 0.3.0
-date-released: 2026-06-22
+version: 0.4.0
+date-released: 2026-07-08
 references:
   - type: article
     title: "Qorona: Open, Model-Agnostic Line-of-Sight Rendering of the Perpendicular Squashing Factor for Eclipse-like Coronal Imaging"
