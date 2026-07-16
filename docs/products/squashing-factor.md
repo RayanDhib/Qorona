@@ -21,6 +21,17 @@ qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 31
   (default `large-fov`).
 - `--step`: line-of-sight sample spacing in solar radii (default 0.02).
 - `--width`, `--height`: image size in pixels (default 1024).
+- `--export fits`: also write the quantitative render (LOS-averaged log₁₀ Q⊥, float32,
+  WCS-registered) beside the PNG; needs a timestamp. Drop the file into
+  [JHelioviewer](https://www.jhelioviewer.org) and it registers at the correct scale,
+  orientation, position, and time for overlay on observed imagery; `sunpy.map.Map` reads
+  the same registration for scripted analysis. `--observer earth` points the camera from
+  the real Earth viewpoint
+  at that epoch, so the overlay matches Earth-based observations exactly; the registration
+  assumes a Carrington-aligned solution frame (the case for synoptic-driven runs). With
+  `--occult composite` the FITS fills the disk with the near-side surface Q; with the
+  default eclipse occulter the disk stays NaN (transparent in JHelioviewer, so real disk
+  imagery shows through).
 
 `qorona render --help` shows the common options, `--help-all` the complete reference (display
 clamp, stretch percentiles, stamp placement, and more).

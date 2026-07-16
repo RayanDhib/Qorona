@@ -31,6 +31,7 @@ from qorona.pipeline.run import (
     render_volume,
     run,
     save_volume,
+    sub_earth_point,
     sub_floor_voxels,
     volume_brightness_provenance,
 )
@@ -56,6 +57,7 @@ __all__ = [
     "render_volume",
     "run",
     "save_volume",
+    "sub_earth_point",
     "sub_floor_voxels",
     "volume_brightness_provenance",
 ]

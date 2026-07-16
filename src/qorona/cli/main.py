@@ -51,7 +51,9 @@ from qorona.config import (
     OCCULT_MODES,
     POLARITY_MODES,
     PRECISION_MODES,
+    QMAP_EXPORT_FORMATS,
     QUALITY_PRESETS,
+    RENDER_EXPORT_FORMATS,
     RESAMPLERS,
     SPACING_LAWS,
     VOLUME_BUILDERS,
@@ -435,6 +437,15 @@ def _camera_options(
             section="Camera",
             help=f"Image height in pixels (default {default_dimension}).",
         ),
+        option(
+            "--observer",
+            type=click.Choice(("earth",)),
+            default=None,
+            section="Camera",
+            help="Named observer: derive the sub-observer longitude/latitude (and the "
+            "FITS observer distance) from its ephemeris at the timestamp. Currently: earth. "
+            "Assumes the solution frame is Carrington-aligned.",
+        ),
     )
 
 
@@ -564,6 +575,16 @@ _output_options = _compose(
         section="Output",
         advanced=True,
         help="Also write the grayscale measurement PNG (default off).",
+    ),
+    option(
+        "--export",
+        "export_formats",
+        type=click.Choice(RENDER_EXPORT_FORMATS),
+        multiple=True,
+        section="Output",
+        advanced=True,
+        help="Also write the quantitative render (LOS-averaged log10 Q_perp, "
+        "WCS-registered) beside the PNG; repeatable. Currently only fits.",
     ),
     _annotate_options,
 )
@@ -742,8 +763,9 @@ _brightness_options = _compose(
         multiple=True,
         section="Output",
         advanced=True,
-        help="Also write the raw data (both pB and total B + plane-of-sky coordinates) to this "
-        "format beside the PNG; repeatable. Currently only npz.",
+        help="Also write raw data beside the PNG; repeatable. npz: both raw frames + "
+        "plane-of-sky coordinates. fits: the display frame + raw frames, WCS-registered "
+        "(needs a timestamp).",
     ),
     option(
         "--limb-darkening",
@@ -921,13 +943,39 @@ def _volume_config(kw: dict[str, Any], workers: int | None) -> VolumeConfig:
     return VolumeConfig(**fields)
 
 
+def _observer_gate(kw: dict[str, Any], timestamp: str | None) -> None:
+    """Reject ``--observer earth`` calls that conflict with manual pointing or lack an epoch.
+
+    Called by ``_camera_config`` for every command; commands whose expensive compute precedes
+    camera resolution (the ``wl`` raw-solution path) also call it up front to fail fast.
+    """
+    if kw.get("observer") != "earth":
+        return
+    if kw.get("longitude") is not None or kw.get("latitude") is not None:
+        raise click.UsageError(
+            "--observer earth derives the sub-observer point from the ephemeris; "
+            "drop --longitude/--latitude, or drop --observer to point manually"
+        )
+    if timestamp is None:
+        raise click.UsageError(
+            "--observer earth needs an epoch; pass --timestamp (or bake the volume with one)"
+        )
+
+
 def _camera_config(
     kw: dict[str, Any],
     *,
     default_dimension: int = _DEFAULT_DIMENSION,
     default_fov: float | None = None,
+    timestamp: str | None = None,
 ) -> CameraConfig:
     fields = _present(kw, "longitude", "latitude", "roll", "fov")
+    _observer_gate(kw, timestamp)
+    if kw.get("observer") == "earth":
+        assert timestamp is not None  # _observer_gate rejects the missing-epoch case
+        longitude, latitude, distance = pipeline.sub_earth_point(timestamp)
+        fields["longitude"], fields["latitude"] = longitude, latitude
+        fields["observer_distance"] = distance
     if default_fov is not None and "fov" not in fields:
         fields["fov"] = default_fov
     height, width = kw.get("height"), kw.get("width")
@@ -1292,7 +1340,6 @@ def render(
     """
     kw["device"] = device
     show_progress = not quiet
-    camera_cfg = _camera_config(kw)
     weighting_cfg = _weighting_config(kw)
     render_cfg = _render_config(kw, workers)
     output_cfg = _output_config(kw, output_path)
@@ -1302,6 +1349,13 @@ def render(
         volume, density, build_prov = pipeline.load_volume(volume_path)
     except ValueError as error:
         raise click.ClickException(str(error)) from error
+    resolved_timestamp = timestamp or build_prov.get("input", {}).get("timestamp")
+    if "fits" in output_cfg.export_formats and not resolved_timestamp:
+        raise click.ClickException(
+            "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
+            "pass --timestamp (or bake the volume with one)"
+        )
+    camera_cfg = _camera_config(kw, timestamp=resolved_timestamp)
     start = time.perf_counter()
     result = pipeline.render_volume(
         volume, camera_cfg, weighting_cfg, render_cfg, density=density, show_progress=show_progress
@@ -1353,7 +1407,7 @@ def render(
 @option(
     "--export",
     "export_formats",
-    type=click.Choice(EXPORT_FORMATS),
+    type=click.Choice(QMAP_EXPORT_FORMATS),
     multiple=True,
     section="Q-map",
     help="Also write the raw shell arrays to this format beside the figure; repeatable. "
@@ -1444,10 +1498,15 @@ def run(
     input_cfg = _input_config(kw)
     grid_cfg = _grid_config(kw)
     volume_cfg = _volume_config(kw, workers)
-    camera_cfg = _camera_config(kw)
+    camera_cfg = _camera_config(kw, timestamp=kw.get("timestamp"))
     weighting_cfg = _weighting_config(kw)
     render_cfg = _render_config(kw, workers)
     output_cfg = _output_config(kw, output_path)
+    if "fits" in output_cfg.export_formats and kw.get("timestamp") is None:
+        raise click.ClickException(
+            "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
+            "pass --timestamp"
+        )
 
     print_step(f"Running the full pipeline on [bold]{input_path.name}[/bold]")
     stage_timings: dict[str, float] = {}
@@ -1574,7 +1633,7 @@ def fieldlines(
     input_cfg = _input_config(kw)
     grid_cfg = _grid_config(kw)
     fieldlines_cfg = _fieldlines_config(kw, workers)
-    camera_cfg = _camera_config(kw)
+    camera_cfg = _camera_config(kw, timestamp=kw.get("timestamp"))
     output_cfg = _output_config(kw, output_path)
 
     print_step(f"Tracing field lines from [bold]{input_path.name}[/bold]")
@@ -1676,7 +1735,6 @@ def _input_model(
 #: which carries its own field grid and metadata, so they are rejected there instead of ignored.
 _INGEST_ONLY_KEYS = (
     "model",
-    "timestamp",
     "variables",
     "n_r",
     "n_theta",
@@ -1718,18 +1776,27 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
     (``newkirk`` by default, ``adaptive`` for inputs whose falloff departs from it, ``wow`` for
     wavelet whitening, ``none`` for the raw falloff) and optional ``--mgn`` fine-structure
     enhancement. ``--export npz`` also writes the raw frames (both pB and total) with their
-    plane-of-sky coordinates. Needs only the density; it neither builds nor uses the Q⊥ payload.
+    plane-of-sky coordinates. ``--export fits`` writes the display frame plus the raw frames as
+    a WCS-registered FITS and needs a timestamp. Needs only the density; it neither builds nor
+    uses the Q⊥ payload.
     """
     kw["input_path"] = input_path
     show_progress = not quiet
-    camera_cfg = _camera_config(
-        kw, default_dimension=_WL_DEFAULT_DIMENSION, default_fov=_WL_DEFAULT_FOV
-    )
+    from_volume = zipfile.is_zipfile(input_path)
     output_cfg = _output_config(kw, output_path)
+    # For a raw solution the --observer and FITS timestamp gates fire here, before the expensive
+    # resample; a volume artifact may carry the epoch itself, so its gates wait for the fast
+    # load below.
+    if not from_volume:
+        _observer_gate(kw, kw.get("timestamp"))
+        if "fits" in output_cfg.export_formats and kw.get("timestamp") is None:
+            raise click.ClickException(
+                "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
+                "pass --timestamp"
+            )
 
     print_step(f"Rendering white-light corona from [bold]{input_path.name}[/bold]")
     start = time.perf_counter()
-    from_volume = zipfile.is_zipfile(input_path)
     build_prov: dict[str, Any] | None = None
     if from_volume:
         rejected = [key for key in _INGEST_ONLY_KEYS if kw.get(key) is not None]
@@ -1761,6 +1828,21 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
             )
     field_time = time.perf_counter() - start
 
+    resolved_timestamp = kw.get("timestamp") or (
+        (build_prov or {}).get("input", {}).get("timestamp")
+    )
+    if "fits" in output_cfg.export_formats and not resolved_timestamp:
+        raise click.ClickException(
+            "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
+            "pass --timestamp (or bake the volume with one)"
+        )
+    camera_cfg = _camera_config(
+        kw,
+        default_dimension=_WL_DEFAULT_DIMENSION,
+        default_fov=_WL_DEFAULT_FOV,
+        timestamp=resolved_timestamp,
+    )
+
     if (
         kw.get("vignette") is None
         and _input_model(from_volume, input_path, build_prov, kw.get("model")) == "coconut"
@@ -1779,7 +1861,12 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
     if from_volume:
         assert build_prov is not None  # set with the volume load above
         provenance = pipeline.volume_brightness_provenance(
-            build_prov, brightness_cfg, camera_cfg, output_cfg, result
+            build_prov,
+            brightness_cfg,
+            camera_cfg,
+            output_cfg,
+            result,
+            timestamp_override=kw.get("timestamp"),
         )
     else:
         provenance = pipeline.brightness_provenance(

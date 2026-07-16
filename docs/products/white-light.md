@@ -31,6 +31,10 @@ qorona wl data/coconut_corona.qor -o data/white-light.png \
 - `--r-occult`: occulter radius in solar radii (default 1.02).
 - `--export npz`: also write the raw frames (both pB and total, with plane-of-sky
   coordinates) beside the PNG.
+- `--export fits`: the display frame plus the raw pB/total frames as a WCS-registered
+  FITS (needs a timestamp); loads into [JHelioviewer](https://www.jhelioviewer.org) or
+  `sunpy.map.Map` correctly
+  registered. See the squashing-factor page for the JHelioviewer overlay workflow.
 - `--width`, `--height`: image size in pixels (default 1024, as for `render`).
 - Camera flags are the same as the [squashing-factor render](squashing-factor.md); `wl`
   defaults to `--fov 10`.

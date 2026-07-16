@@ -221,7 +221,10 @@ class RenderResult:
     signal
         ``(H, W, 3)`` the raw weight-normalised log₁₀ Q⊥ per channel, before intensity scaling;
         ``NaN`` where a pixel has no valid sample. The quantitative product: comparable across
-        pixels regardless of missing fraction (the weight-normalised average).
+        pixels regardless of missing fraction (the weight-normalised average). In
+        ``"composite"`` mode the occulter hole (``NaN`` in the eclipse base) carries the disk
+        pass's near-side surface Q instead, with a hard hand-off at the occulter radius;
+        ``grayscale`` and ``coverage`` follow the same merge.
     polarity
         ``(H, W)`` per-pixel net magnetic polarity in ``[-1, +1]``: the weight-averaged mean
         footpoint sign along the line of sight (warm ``> 0`` outward / cool ``< 0`` inward), or
@@ -1010,7 +1013,7 @@ def render(
     the disk image-side; ``"opaque"`` keeps the body opaque so near-side structure shows
     (a 3-D view); ``"composite"`` renders the eclipse view with the disk filled by the
     near-limb view, separately stretched, toned by ``disk_tone`` / ``disk_desat``, and
-    finished with a rim glow (a disk-corona composite; see :func:`_composite_disk`); ``"none"``
+    finished with a rim glow (a disk-corona composite; see :func:`_composite_image`); ``"none"``
     disables both for a fully translucent corona.
 
     Parameters
@@ -1101,8 +1104,12 @@ def render(
         # The composite is two passes of the standard machinery: the eclipse base, and the disk
         # layer as a small-fov opaque render (its scale-height weighting and disk-anchored log
         # stretch are what keep the on-disk structure legible and coloured), screened together
-        # image-side. The result carries the eclipse base's quantitative arrays: the composite is
-        # a presentation of the same data, not a new measurement.
+        # image-side. The quantitative arrays carry the base's off-limb corona with the disk
+        # pass's near-side surface Q filling the occulter hole: a hard hand-off at ``r_occult``,
+        # never a blend, because the two passes weight the line of sight differently and mixed
+        # values would not be a measurement of either. The grayscale is rederived from the merged
+        # signal the way :func:`_finalize` derives it (channel-mean, linear stretch), minus the
+        # eclipse vignette, which would black out the filled hole.
         base = render(
             volume,
             camera,
@@ -1143,10 +1150,24 @@ def render(
             precision=precision,
             show_progress=show_progress,
         )
-        image = _composite_image(
-            base.image, disk.image, camera.rays().impact, r_occult, disk_tone, disk_desat
+        impact = camera.rays().impact
+        image = _composite_image(base.image, disk.image, impact, r_occult, disk_tone, disk_desat)
+        hole = np.isnan(base.signal) & (impact < r_occult)[..., None]
+        signal = np.where(hole, disk.signal, base.signal)
+        hole_pixel = hole.all(axis=2)
+        coverage = np.where(hole_pixel, disk.coverage, base.coverage)
+        polarity = base.polarity
+        if polarity is not None and disk.polarity is not None:
+            polarity = np.where(hole_pixel, disk.polarity, polarity)
+        grayscale = scale_intensity(signal.mean(axis=2)[..., None], "linear", percentiles)[..., 0]
+        return replace(
+            base,
+            image=image,
+            grayscale=grayscale,
+            coverage=coverage,
+            signal=signal,
+            polarity=polarity,
         )
-        return replace(base, image=image)
     if display not in ("balanced", "raw", "coverage"):
         raise ValueError(f"display must be 'balanced', 'raw', or 'coverage', not {display!r}")
     if polarity_mode not in ("none", "hue"):

@@ -2,8 +2,9 @@
 
 Writes the rendered :class:`~qorona.render.los.RenderResult` to PNG, reusing the dependency-free
 ``save_png`` / ``save_grayscale_png`` in :mod:`qorona.render.los` (a hand-rolled PNG writer over
-stdlib zlib, no Pillow), and owns *which* images are written and the post-write annotation stamp,
-keeping :mod:`qorona.render` self-contained.
+stdlib zlib, no Pillow), and owns *which* products are written per run: the images, the post-write
+annotation stamp, and the requested data sidecars (the ``.npz`` exports here, the WCS-registered
+FITS via :mod:`qorona.io.fits`), keeping :mod:`qorona.render` self-contained.
 
 The stamp is a corner text overlay (CR · UTC · sub-observer φ/θ · roll · FOV) drawn on the *saved*
 PNG so it sits at final resolution, following the frame-labelling convention of eclipse-prediction
@@ -35,17 +36,19 @@ _OUTLINE_PX = 1
 def write_outputs(
     result: RenderResult, output_cfg: OutputConfig, provenance: dict[str, Any]
 ) -> list[Path]:
-    """Write the render's PNG(s) and stamp them, returning the paths written.
+    """Write the render's PNG(s), stamp them, and export any FITS sidecar, returning the paths.
 
     The depth-coloured image is always written; the grayscale measurement image is written when
     ``output_cfg.save_grayscale``. When ``output_cfg.annotate`` and Pillow is installed, each
     written PNG is stamped with the provenance corner overlay; without Pillow the stamp is skipped
-    with a friendly note and the images are still written.
+    with a friendly note and the images are still written. When ``"fits"`` is in
+    ``output_cfg.export_formats``, the WCS-registered quantitative FITS
+    (:func:`qorona.io.fits.write_render_fits`) is written beside the image.
 
     Returns
     -------
     list of Path
-        The image files written, in write order (colour first).
+        The files written, in write order (colour PNG first).
     """
     written: list[Path] = []
     result.save_png(output_cfg.path)
@@ -55,6 +58,12 @@ def write_outputs(
         result.save_grayscale_png(grayscale_path)
         written.append(grayscale_path)
     _apply_stamp(written, output_cfg, provenance)
+    if "fits" in output_cfg.export_formats:
+        from qorona.io.fits import write_render_fits
+
+        fits_path = output_cfg.export_path("fits")
+        write_render_fits(result, fits_path, provenance)
+        written.append(fits_path)
     return written
 
 
@@ -83,7 +92,7 @@ def write_brightness(
     output_cfg: OutputConfig,
     provenance: dict[str, Any],
 ) -> list[Path]:
-    """Write the white-light / pB render's PNG and stamp it, returning the path written.
+    """Write the white-light / pB render's PNG and stamp it, returning the paths written.
 
     Selects the requested frame (the polarized ``pB`` or the total white-light brightness) and
     finishes it through the display stages, in order: the vignette treatment (the ``newkirk`` /
@@ -92,7 +101,10 @@ def write_brightness(
     percentile-stretched 8-bit grayscale PNG and applies the shared provenance stamp. The
     ``wow`` output is signed, so its stretch is anchored on a corona-pixel mask instead of the
     positive pixels. MGN is calibrated for the pB frame; on the total frame it still renders but
-    is less physically meaningful, so a note is printed.
+    is less physically meaningful, so a note is printed. When ``"fits"`` is in
+    ``output_cfg.export_formats``, the WCS-registered white-light FITS
+    (:func:`qorona.io.fits.write_brightness_fits`) is written beside the image, carrying the
+    stretched display frame plus the raw ``PB``/``TOTAL`` extensions.
 
     Raises
     ------
@@ -104,7 +116,7 @@ def write_brightness(
     Returns
     -------
     list of Path
-        The image file written.
+        The files written, image first.
     """
     from qorona.radiation.display import (
         adaptive_vignette,
@@ -159,6 +171,19 @@ def write_brightness(
     )
     written = [output_cfg.path]
     _apply_stamp(written, output_cfg, provenance)
+    if "fits" in output_cfg.export_formats:
+        from qorona.io.fits import write_brightness_fits
+        from qorona.radiation.display import stretch_frame
+
+        display = stretch_frame(
+            image,
+            scaling=cast(Any, brightness_cfg.scaling),
+            percentiles=brightness_cfg.percentiles,
+            valid=valid,
+        )
+        fits_path = output_cfg.export_path("fits")
+        write_brightness_fits(result, display, fits_path, provenance)
+        written.append(fits_path)
     return written
 
 
@@ -214,13 +239,13 @@ def export_brightness(
     white-light brightness) with the plane-of-sky coordinate axes (``x_rsun`` / ``y_rsun``), the
     impact-parameter grid, and the integrated radial shell, independent of the displayed
     frame/stages, so a downstream tool (NRGF, WOW, or a custom detrend) processes the unstyled
-    data. Only the dependency-free ``.npz`` is written (FITS+WCS is a planned addition); the
-    run provenance travels as a JSON string in ``meta``.
+    data. The dependency-free ``.npz`` is this function's format (the FITS sidecar belongs to the
+    product writers); the run provenance travels as a JSON string in ``meta``.
 
     Returns
     -------
     list of Path
-        The sidecar files written, one per requested export format.
+        The sidecar files this function wrote; formats owned by other writers are not listed.
     """
     import json
 
@@ -228,8 +253,8 @@ def export_brightness(
 
     written: list[Path] = []
     for fmt in output_cfg.export_formats:
-        path = output_cfg.export_path(fmt)
         if fmt == "npz":
+            path = output_cfg.export_path(fmt)
             np.savez_compressed(
                 path,
                 total=result.total.astype(np.float32),
@@ -240,7 +265,7 @@ def export_brightness(
                 shell=np.array([result.r_inner, result.r_outer], dtype=np.float32),
                 meta=np.array(json.dumps(provenance, default=str)),
             )
-        written.append(path)
+            written.append(path)
     return written
 
 

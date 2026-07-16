@@ -25,8 +25,9 @@ post-processes on the integrated frame (no MHD data access):
 enhancement stages are unavailable and they fail with a friendly note, while the detrends and
 the raw frame still render.
 
-All leave the integrated frame untouched and return a new display frame; :func:`save_pb_png`
-writes any of them to an 8-bit grayscale PNG with a percentile stretch.
+All leave the integrated frame untouched and return a new display frame; :func:`stretch_frame`
+maps any of them to the ``[0, 1]`` display range with a percentile stretch, and
+:func:`save_pb_png` writes the stretched frame to an 8-bit grayscale PNG.
 
 Newkirk background corona: Newkirk (1961), ApJ 133, 983. Multi-scale Gaussian Normalization:
 Morgan & Druckmüller (2014), Solar Physics 289, 2945. Wavelets Optimized Whitening: Auchère,
@@ -58,6 +59,7 @@ __all__ = [
     "newkirk_profile",
     "newkirk_vignette",
     "save_pb_png",
+    "stretch_frame",
     "wow_enhance",
 ]
 
@@ -486,6 +488,29 @@ def wow_enhance(
         raise ImportError(WOW_MISSING_HINT) from error
 
 
+def stretch_frame(
+    frame: np.ndarray,
+    *,
+    scaling: Literal["linear", "log"] = "log",
+    percentiles: tuple[float, float] = (1.0, 99.5),
+    valid: np.ndarray | None = None,
+) -> np.ndarray:
+    """Stretch a 2-D brightness frame to the ``[0, 1]`` display range.
+
+    The percentile stretch shared by the PNG writer and the FITS display frame: linear
+    for the flattened vignetted/MGN frames, logarithmic for the raw falloff, anchored on
+    the positive pixels, or on the caller's ``valid`` corona mask for signed frames
+    (whose non-valid pixels are blanked to 0 after the stretch).
+    """
+    arr = np.asarray(frame, dtype=float)
+    flat = arr.reshape(-1)
+    anchor = (flat > 0.0) if valid is None else np.asarray(valid, dtype=bool).reshape(-1)
+    stretched = scale_intensity(flat[:, None], scaling, percentiles, anchor=anchor)[:, 0]
+    if valid is not None:
+        stretched = np.where(anchor, stretched, 0.0)
+    return np.clip(np.nan_to_num(stretched), 0.0, 1.0).reshape(arr.shape)
+
+
 def save_pb_png(
     frame: np.ndarray,
     path: str | Path,
@@ -496,25 +521,12 @@ def save_pb_png(
 ) -> None:
     """Write a 2-D brightness display frame to ``path`` as an 8-bit grayscale PNG.
 
-    The shared writer for every treatment stack: a per-image percentile stretch (linear for the
-    already-flattened vignetted or MGN frames, logarithmic for the raw falloff) to ``[0, 1]``,
-    then grayscale 8-bit.
-
-    By default the stretch percentiles are anchored on the pixels carrying positive brightness:
-    the occulted disk and the off-shell background are zero and are not corona measurements, so
-    they are excluded from the percentile (a log stretch would otherwise read those zeros as
-    ``log10(0)`` and collapse the corona's dynamic range to the top of the scale, washing it to
-    white). A signed frame (the ``wow`` channel) carries corona structure on both sides of zero,
-    so the positive-pixel anchor does not apply; the caller passes ``valid``, an ``(H, W)``
-    boolean mask of the corona pixels, which anchors the stretch instead and blanks the
-    non-valid pixels to black after it.
+    The shared writer for every treatment stack: :func:`stretch_frame` to the ``[0, 1]``
+    display range, then grayscale 8-bit. ``scaling``, ``percentiles``, and ``valid`` (the
+    corona-pixel mask that anchors the stretch of a signed frame, the ``wow`` channel)
+    pass through to the stretch.
     """
-    arr = np.asarray(frame, dtype=float)
-    flat = arr.reshape(-1)
-    anchor = (flat > 0.0) if valid is None else np.asarray(valid, dtype=bool).reshape(-1)
-    stretched = scale_intensity(flat[:, None], scaling, percentiles, anchor=anchor)[:, 0]
-    if valid is not None:
-        stretched = np.where(anchor, stretched, 0.0)
-    gray = (np.clip(np.nan_to_num(stretched), 0.0, 1.0) * 255.0).round().astype(np.uint8)
-    image = np.repeat(gray.reshape(*arr.shape, 1), 3, axis=2)
+    stretched = stretch_frame(frame, scaling=scaling, percentiles=percentiles, valid=valid)
+    gray = (stretched * 255.0).round().astype(np.uint8)
+    image = np.repeat(gray[:, :, None], 3, axis=2)
     write_png(Path(path), np.ascontiguousarray(image))

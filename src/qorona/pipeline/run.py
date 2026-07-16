@@ -560,6 +560,16 @@ def derive_jd(timestamp: str) -> float:
     return float(_utc_time(timestamp).jd)
 
 
+def sub_earth_point(timestamp: str) -> tuple[float, float, float]:
+    """Return Earth's sub-observer Carrington ``(longitude, latitude)`` in degrees and its
+    heliocentric distance in AU at a UTC ISO-8601 ``timestamp``."""
+    import astropy.units as u
+    from sunpy.coordinates.sun import B0, L0, earth_distance
+
+    time = _utc_time(timestamp)
+    return float(L0(time).deg), float(B0(time).deg), float(earth_distance(time).to_value(u.au))
+
+
 def _ephemeris(timestamp: str | None) -> dict[str, object]:
     """Return ``{"cr", "jd"}`` derived from ``timestamp``, or an empty mapping if it is ``None``."""
     if timestamp is None:
@@ -824,14 +834,23 @@ def volume_brightness_provenance(
     camera_cfg: CameraConfig,
     output_cfg: OutputConfig,
     result: BrightnessResult,
+    *,
+    timestamp_override: str | None = None,
 ) -> dict[str, Any]:
-    """Assemble the white-light render's provenance for a render off a baked volume artifact.
+    """Assemble the white-light render's provenance for a render off a baked volume artifact,
+    with an optional ``timestamp_override`` re-deriving CR/JD for the stamp.
 
     Mirrors :func:`render_provenance`: the volume's build provenance rides whole (so the stamp and
     summary read the original input and field blocks without re-supplying them), extended with the
     brightness parameters and image metrics, the camera, and the output.
     """
     prov = json.loads(json.dumps(build_prov))  # deep copy
+    if timestamp_override is not None:
+        prov["input"] = {
+            **prov.get("input", {}),
+            "timestamp": timestamp_override,
+            **_ephemeris(timestamp_override),
+        }
     prov["brightness"] = {**brightness_cfg.to_provenance(), **_brightness_metrics(result)}
     prov["camera"] = camera_cfg.to_provenance()
     prov["output"] = output_cfg.to_provenance()

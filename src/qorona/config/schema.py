@@ -41,7 +41,9 @@ FIELDLINE_COLOUR = ("rainbow", "polarity")
 BRIGHTNESS_FRAMES = ("polarized", "total")
 BRIGHTNESS_VIGNETTES = ("adaptive", "newkirk", "none", "wow")
 BRIGHTNESS_SCALINGS = ("linear", "log")
-EXPORT_FORMATS = ("npz",)
+EXPORT_FORMATS = ("npz", "fits")
+RENDER_EXPORT_FORMATS = ("fits",)
+QMAP_EXPORT_FORMATS = ("npz",)
 DEVICE_MODES = ("auto", "gpu", "cpu")
 PRECISION_MODES = ("float64", "mixed", "float32")
 
@@ -264,7 +266,9 @@ class CameraConfig:
 
     Angles are in **degrees** here (friendly at the CLI) and converted to the camera's radians/R☉
     convention at the pipeline edge. ``pixels`` is ``(height, width)`` to match
-    :class:`~qorona.geometry.camera.OrthographicCamera`.
+    :class:`~qorona.geometry.camera.OrthographicCamera`. ``observer_distance`` is the synthetic
+    observer's heliocentric distance in AU, read only by the FITS export (the orthographic render
+    is distance-free).
     """
 
     longitude: float = 0.0
@@ -272,6 +276,7 @@ class CameraConfig:
     roll: float = 0.0
     fov: float = 25.0
     pixels: tuple[int, int] = (1024, 1024)
+    observer_distance: float = 1.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "pixels", (int(self.pixels[0]), int(self.pixels[1])))
@@ -279,6 +284,10 @@ class CameraConfig:
         _require(
             self.pixels[0] > 0 and self.pixels[1] > 0,
             f"pixels must be positive, got {self.pixels}",
+        )
+        _require(
+            self.observer_distance > 0.0,
+            f"observer_distance must be > 0 AU, got {self.observer_distance}",
         )
 
     def to_provenance(self) -> dict[str, object]:
@@ -288,6 +297,7 @@ class CameraConfig:
             "roll": self.roll,
             "fov": self.fov,
             "pixels": list(self.pixels),
+            "observer_distance": self.observer_distance,
         }
 
 
@@ -423,8 +433,8 @@ class QMapConfig:
 
     ``radius`` (R☉) is the shell radius; ``n_theta``/``n_phi`` the longitude/latitude sample grid;
     ``slog_max`` the colour ceiling (``None`` → :data:`~qorona.render.shell.DEFAULT_SLOG_MAX`);
-    ``export_formats`` lists the data sidecars written beside the figure (currently ``"npz"``, the
-    raw shell arrays).
+    ``export_formats`` lists the data sidecars written beside the figure, drawn from the Q-map's
+    own :data:`QMAP_EXPORT_FORMATS` (currently ``"npz"``, the raw shell arrays).
     """
 
     radius: float = 3.0
@@ -445,7 +455,7 @@ class QMapConfig:
         )
         object.__setattr__(self, "export_formats", tuple(self.export_formats))
         for fmt in self.export_formats:
-            _one_of(fmt, EXPORT_FORMATS, "export format")
+            _one_of(fmt, QMAP_EXPORT_FORMATS, "export format")
 
     def to_provenance(self) -> dict[str, object]:
         return {
@@ -684,8 +694,9 @@ class OutputConfig:
 
     The colour PNG is the headline product; the grayscale measurement image is opt-in. The on-image
     provenance stamp is on by default and bypassed with ``annotate=False``. ``export_formats`` lists
-    the dependency-free data sidecars to write beside the image (currently ``"npz"``; the brightness
-    products write the raw frames + plane-of-sky coordinates there).
+    the data sidecars to write beside the image: the dependency-free ``"npz"`` (the brightness
+    products write the raw frames + plane-of-sky coordinates there) and the WCS-registered
+    ``"fits"``.
     """
 
     path: Path

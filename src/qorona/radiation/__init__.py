@@ -21,6 +21,7 @@ from qorona.radiation.display import (
     newkirk_profile,
     newkirk_vignette,
     save_pb_png,
+    stretch_frame,
     wow_enhance,
 )
 from qorona.radiation.thomson import (
@@ -44,5 +45,6 @@ __all__ = [
     "newkirk_vignette",
     "render_brightness",
     "save_pb_png",
+    "stretch_frame",
     "wow_enhance",
 ]
