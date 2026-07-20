@@ -20,7 +20,8 @@ dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
     "astropy>=6.0",
-    "sunpy>=5.0",
+    # [map] for the FITS/WCS export.
+    "sunpy[map]>=5.0",
     "rich>=13.0",
     "click>=8.0",
     # numba 0.66.0's int() intrinsic loses its lowering when a signature is reused across kernel
