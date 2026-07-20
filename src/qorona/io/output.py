@@ -283,8 +283,7 @@ def _apply_stamp(written: list[Path], output_cfg: OutputConfig, provenance: dict
     lines = _stamp_lines(provenance, output_cfg.annotate_content)
     if not lines and output_cfg.annotate_content == "date":
         print_warning(
-            "--annotate-content date needs a --timestamp to know the date; "
-            "images written unstamped"
+            "--annotate-content date needs a --timestamp to know the date; images written unstamped"
         )
         return
     try:

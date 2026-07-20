@@ -75,9 +75,7 @@ def camera_wcs_header(
     distance = float(camera["observer_distance"]) * u.au
 
     observer = SkyCoord(
-        HeliographicCarrington(
-            lon * u.deg, lat * u.deg, distance, observer="self", obstime=time
-        )
+        HeliographicCarrington(lon * u.deg, lat * u.deg, distance, observer="self", obstime=time)
     )
     reference = SkyCoord(
         0 * u.arcsec, 0 * u.arcsec, frame=Helioprojective(observer=observer, obstime=time)
