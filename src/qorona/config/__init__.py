@@ -9,6 +9,7 @@ constructing the same dataclasses.
 from __future__ import annotations
 
 from qorona.config.schema import (
+    ANNOTATE_CONTENTS,
     ANNOTATE_POSITIONS,
     BRIGHTNESS_FRAMES,
     BRIGHTNESS_OCCULT_MODES,
@@ -48,6 +49,7 @@ from qorona.config.schema import (
 )
 
 __all__ = [
+    "ANNOTATE_CONTENTS",
     "ANNOTATE_POSITIONS",
     "BRIGHTNESS_FRAMES",
     "BRIGHTNESS_OCCULT_MODES",

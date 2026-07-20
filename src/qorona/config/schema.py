@@ -35,6 +35,7 @@ DISPLAY_MODES = ("balanced", "raw", "coverage")
 OCCULT_MODES = ("eclipse", "opaque", "composite", "none")
 BRIGHTNESS_OCCULT_MODES = ("eclipse", "none")
 ANNOTATE_POSITIONS = ("bottom-left", "bottom-right", "top-left", "top-right")
+ANNOTATE_CONTENTS = ("full", "date")
 FIELDLINE_SHOW = ("all", "open", "closed")
 FIELDLINE_SEEDING = ("limb", "uniform")
 FIELDLINE_COLOUR = ("rainbow", "polarity")
@@ -693,22 +694,25 @@ class OutputConfig:
     """Where the image is written, how it is annotated, and which data sidecars to export.
 
     The colour PNG is the headline product; the grayscale measurement image is opt-in. The on-image
-    provenance stamp is on by default and bypassed with ``annotate=False``. ``export_formats`` lists
-    the data sidecars to write beside the image: the dependency-free ``"npz"`` (the brightness
-    products write the raw frames + plane-of-sky coordinates there) and the WCS-registered
-    ``"fits"``.
+    provenance stamp is on by default and bypassed with ``annotate=False``; ``annotate_content``
+    selects what it says — the ``"full"`` provenance block or just the ``"date"`` (observation date
+    and time). ``export_formats`` lists the data sidecars to write beside the image: the
+    dependency-free ``"npz"`` (the brightness products write the raw frames + plane-of-sky
+    coordinates there) and the WCS-registered ``"fits"``.
     """
 
     path: Path
     save_grayscale: bool = False
     annotate: bool = True
     annotate_position: str = "bottom-left"
+    annotate_content: str = "full"
     export_formats: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "path", Path(self.path))
         object.__setattr__(self, "export_formats", tuple(self.export_formats))
         _one_of(self.annotate_position, ANNOTATE_POSITIONS, "annotate_position")
+        _one_of(self.annotate_content, ANNOTATE_CONTENTS, "annotate_content")
         for fmt in self.export_formats:
             _one_of(fmt, EXPORT_FORMATS, "export format")
 
@@ -726,6 +730,7 @@ class OutputConfig:
             "save_grayscale": self.save_grayscale,
             "annotate": self.annotate,
             "annotate_position": self.annotate_position,
+            "annotate_content": self.annotate_content,
             "export_formats": list(self.export_formats),
         }
 

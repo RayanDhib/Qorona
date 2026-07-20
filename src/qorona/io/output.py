@@ -6,9 +6,10 @@ stdlib zlib, no Pillow), and owns *which* products are written per run: the imag
 annotation stamp, and the requested data sidecars (the ``.npz`` exports here, the WCS-registered
 FITS via :mod:`qorona.io.fits`), keeping :mod:`qorona.render` self-contained.
 
-The stamp is a corner text overlay (CR · UTC · sub-observer φ/θ · roll · FOV) drawn on the *saved*
-PNG so it sits at final resolution, following the frame-labelling convention of eclipse-prediction
-renders; ``annotate=False`` is a one-flag bypass. It needs a font renderer (**Pillow**), in the
+The stamp is a corner text overlay (CR · UTC · sub-observer φ/θ · roll · FOV, or just the date/time
+with ``annotate_content="date"``) drawn on the *saved* PNG so it sits at final resolution, following
+the frame-labelling convention of eclipse-prediction renders; ``annotate=False`` is a one-flag
+bypass. It needs a font renderer (**Pillow**), in the
 default install: when Pillow is absent the overlay is skipped with a note and the run continues.
 Non-ASCII glyphs degrade to ASCII surrogates only on the bitmap-font fallback.
 """
@@ -279,7 +280,13 @@ def _apply_stamp(written: list[Path], output_cfg: OutputConfig, provenance: dict
     """
     if not output_cfg.annotate:
         return
-    lines = _stamp_lines(provenance)
+    lines = _stamp_lines(provenance, output_cfg.annotate_content)
+    if not lines and output_cfg.annotate_content == "date":
+        print_warning(
+            "--annotate-content date needs a --timestamp to know the date; "
+            "images written unstamped"
+        )
+        return
     try:
         for path in written:
             _annotate_png(path, lines, position=output_cfg.annotate_position)
@@ -290,15 +297,18 @@ def _apply_stamp(written: list[Path], output_cfg: OutputConfig, provenance: dict
         )
 
 
-def _stamp_lines(provenance: dict[str, Any]) -> list[str]:
+def _stamp_lines(provenance: dict[str, Any], content: str = "full") -> list[str]:
     """Assemble the stamp's text lines from the run provenance.
 
-    The CR and date lines appear only when a ``--timestamp`` was supplied (the mesh has no date);
-    the camera angle / roll / FOV lines always stamp. ``R_sun`` is spelled out so it renders without
-    a special glyph.
+    With ``content="full"``, the CR and date lines appear only when a ``--timestamp`` was supplied
+    (the mesh has no date); the camera angle / roll / FOV lines always stamp. ``R_sun`` is spelled
+    out so it renders without a special glyph. With ``content="date"``, the stamp is the single
+    date/time line — or nothing without a ``--timestamp``.
     """
-    lines: list[str] = []
     inp = provenance.get("input", {}) if isinstance(provenance.get("input"), dict) else {}
+    if content == "date":
+        return [_date_line(inp["timestamp"])] if inp.get("timestamp") else []
+    lines: list[str] = []
     camera = provenance.get("camera", {}) if isinstance(provenance.get("camera"), dict) else {}
     if inp.get("cr") is not None:
         lines.append(f"CR {inp['cr']}")
@@ -314,6 +324,24 @@ def _stamp_lines(provenance: dict[str, Any]) -> list[str]:
     if qmap:
         lines.append(f"Q-map  r = {float(qmap['radius']):g} R_sun")
     return lines
+
+
+def _date_line(timestamp: str) -> str:
+    """Format the ``--timestamp`` as the date-only stamp line (``2012-06-14 13:30 UTC``).
+
+    Seconds appear only when non-zero; a date-only timestamp stamps without a time of day. An
+    unparseable string (the CLI validates, but provenance may come from elsewhere) stamps verbatim.
+    """
+    from datetime import datetime
+
+    try:
+        moment = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return f"{timestamp} UTC"
+    if "T" not in timestamp and ":" not in timestamp:
+        return moment.strftime("%Y-%m-%d")
+    clock = "%H:%M:%S" if moment.second or moment.microsecond else "%H:%M"
+    return moment.strftime(f"%Y-%m-%d {clock} UTC")
 
 
 def _ascii_safe(text: str) -> str:

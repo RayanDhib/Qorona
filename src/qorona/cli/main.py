@@ -36,6 +36,7 @@ import click
 from qorona import __version__, pipeline
 from qorona.cli.help import QoronaGroup, option
 from qorona.config import (
+    ANNOTATE_CONTENTS,
     ANNOTATE_POSITIONS,
     BRIGHTNESS_FRAMES,
     BRIGHTNESS_OCCULT_MODES,
@@ -566,6 +567,15 @@ _annotate_options = _compose(
         advanced=True,
         help="Stamp corner (default bottom-left).",
     ),
+    option(
+        "--annotate-content",
+        type=click.Choice(ANNOTATE_CONTENTS),
+        default=None,
+        section="Output",
+        advanced=True,
+        help="Stamp text: the full provenance block, or just the observation "
+        "date and time (default full).",
+    ),
 )
 _output_options = _compose(
     option(
@@ -1037,6 +1047,8 @@ def _output_config(kw: dict[str, Any], output_path: Path) -> OutputConfig:
         fields["annotate"] = kw["annotate"]
     if kw.get("annotate_position") is not None:
         fields["annotate_position"] = kw["annotate_position"]
+    if kw.get("annotate_content") is not None:
+        fields["annotate_content"] = kw["annotate_content"]
     if kw.get("export_formats"):
         fields["export_formats"] = tuple(kw["export_formats"])
     return OutputConfig(**fields)
