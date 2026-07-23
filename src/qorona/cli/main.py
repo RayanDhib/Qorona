@@ -7,7 +7,7 @@ the viewpoint-independent Q⊥ volume **once** (the minutes-scale stage, where r
 supersampling sweeps live), ``render`` integrates a built volume for any camera / preset (seconds,
 where viewpoint / weighting sweeps live), and ``run`` chains both; ``qmap`` slices a fixed-radius
 signed-log-Q⊥ shell from a built volume, ``fieldlines`` draws the field-line view, ``export-lines``
-serialises traced field lines for external tools, and ``info`` inspects a solution.
+serialises traced field lines to SunJSON for JHelioviewer, and ``info`` inspects a solution.
 
 Every flag populates the typed :mod:`qorona.config` schema (the single source of truth for defaults
 and validation); a flag left unset defers to the dataclass, so the help text's stated defaults are
@@ -49,6 +49,7 @@ from qorona.config import (
     FIELDLINE_COLOUR,
     FIELDLINE_SEEDING,
     FIELDLINE_SHOW,
+    FIELDLINES_EXPORT_FORMATS,
     OCCULT_MODES,
     POLARITY_MODES,
     PRECISION_MODES,
@@ -1228,7 +1229,7 @@ def main() -> None:
     eclipse-like imagery. Build the viewpoint-independent volume once with `build`, then render any
     number of viewpoints cheaply with `render`; `run` does both in one shot, `qmap` slices a
     fixed-radius Q⊥ shell, `fieldlines` draws the field-line view, `export-lines` serialises traced
-    lines, and `info` inspects a file.
+    lines to SunJSON for JHelioviewer, and `info` inspects a file.
     """
     # Silence numba CUDA low-occupancy warnings from the one-seed warm-up and partial final chunks.
     try:
@@ -1626,6 +1627,16 @@ def info(input_path: Path, quiet: bool, **kw: Any) -> None:
 @_grid_options
 @_fieldlines_options
 @_camera_options()
+@option(
+    "--export",
+    "export_formats",
+    type=click.Choice(FIELDLINES_EXPORT_FORMATS),
+    multiple=True,
+    section="Output",
+    advanced=True,
+    help="Also write the drawn line bundle beside the PNG; repeatable. sunjson: the kept "
+    "lines with their draw colours, for JHelioviewer (needs a timestamp).",
+)
 @_annotate_options
 @_workers_option
 @_quiet_option
@@ -1638,7 +1649,9 @@ def fieldlines(
     photosphere disk. The default eclipse-photograph look seeds the open fan on the limb with short
     closed loops on the front face (``--seeding limb``), colours open lines by their inner-foot
     ``B·r̂`` polarity (``--colour polarity``), and renders a B_r magnetogram (``--magnetogram``).
-    A self-contained command: it traces the field directly and does not use a built volume.
+    ``--export sunjson`` also writes exactly the drawn bundle as SunJSON for JHelioviewer beside
+    the PNG. A self-contained command: it traces the field directly and does not use a built
+    volume.
     """
     kw["input_path"] = input_path
     show_progress = not quiet
@@ -1647,6 +1660,10 @@ def fieldlines(
     fieldlines_cfg = _fieldlines_config(kw, workers)
     camera_cfg = _camera_config(kw, timestamp=kw.get("timestamp"))
     output_cfg = _output_config(kw, output_path)
+    if "sunjson" in output_cfg.export_formats and input_cfg.timestamp is None:
+        raise click.ClickException(
+            "--export sunjson needs a timestamp for the JHelioviewer timeline; pass --timestamp"
+        )
 
     print_step(f"Tracing field lines from [bold]{input_path.name}[/bold]")
     start = time.perf_counter()
@@ -1662,6 +1679,16 @@ def fieldlines(
         input_cfg, grid_cfg, fieldlines_cfg, camera_cfg, output_cfg, result, field=field
     )
     written = write_fieldlines(result, output_cfg, provenance)
+    if "sunjson" in output_cfg.export_formats:
+        written.append(
+            write_fieldlines_json(
+                result.lines,
+                output_cfg.export_path("sunjson"),
+                provenance,
+                keep=result.keep,
+                colours=result.colours,
+            )
+        )
     print_success(f"Wrote [bold]{output_path}[/bold]")
     _print_summary(
         provenance,
@@ -1680,7 +1707,7 @@ def fieldlines(
     required=True,
     type=click.Path(dir_okay=False, path_type=Path),
     callback=_writable_output,
-    help="Destination field-line file (.json).",
+    help="Destination SunJSON file (.json).",
 )
 @_input_options
 @_grid_options
@@ -1690,19 +1717,24 @@ def fieldlines(
 def export_lines(
     input_path: Path, output_path: Path, workers: int | None, quiet: bool, **kw: Any
 ) -> None:
-    """Export traced field lines of a solution to JSON for external tools.
+    """Export traced field lines of a solution to SunJSON for JHelioviewer.
 
     Reads the solution, traces field lines seeded on a uniform longitude/latitude grid
     (``--seeds``, default 100x100, on the inner boundary unless ``--seed-radius`` overrides it),
-    and writes the polylines with their open/closed topology. A self-contained command: it traces
-    the field directly and does not use a built volume. The file schema is documented in
-    ``qorona/io/fieldlines_export.py``.
+    and writes the polylines with their open/closed topology, coloured by inner-foot ``B·r̂``
+    polarity. Drop the file onto a running JHelioviewer to load it; ``--timestamp`` places it on
+    the timeline. A self-contained command: it traces the field directly and does not use a built
+    volume. The file schema is documented in ``qorona/io/fieldlines_export.py``.
     """
     kw["input_path"] = input_path
     show_progress = not quiet
     input_cfg = _input_config(kw)
     grid_cfg = _grid_config(kw)
     export_cfg = _export_config(kw, workers)
+    if input_cfg.timestamp is None:
+        raise click.ClickException(
+            "SunJSON needs an observation time for the JHelioviewer timeline; pass --timestamp"
+        )
 
     print_step(f"Exporting field lines from [bold]{input_path.name}[/bold]")
     start = time.perf_counter()
@@ -1999,6 +2031,9 @@ def _fieldlines_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
         f"{int(fld['n_incomplete'])} incomplete",
         f"width {float(fld['line_width']):.1f} px",
     ]
+    exported = prov.get("output", {}).get("export_formats")
+    if exported:
+        parts.append(f"export {'+'.join(exported)} (drawn bundle)")
     if "fieldlines" in timings:
         parts.append(f"trace+draw {timings['fieldlines']:.1f} s")
     return " · ".join(parts)

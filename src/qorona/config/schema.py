@@ -42,9 +42,13 @@ FIELDLINE_COLOUR = ("rainbow", "polarity")
 BRIGHTNESS_FRAMES = ("polarized", "total")
 BRIGHTNESS_VIGNETTES = ("adaptive", "newkirk", "none", "wow")
 BRIGHTNESS_SCALINGS = ("linear", "log")
-EXPORT_FORMATS = ("npz", "fits")
+EXPORT_FORMATS = ("npz", "fits", "sunjson")
 RENDER_EXPORT_FORMATS = ("fits",)
 QMAP_EXPORT_FORMATS = ("npz",)
+FIELDLINES_EXPORT_FORMATS = ("sunjson",)
+
+#: File suffix per export format where it differs from the format name (SunJSON is a .json file).
+_EXPORT_SUFFIXES = {"sunjson": "json"}
 DEVICE_MODES = ("auto", "gpu", "cpu")
 PRECISION_MODES = ("float64", "mixed", "float32")
 
@@ -695,10 +699,11 @@ class OutputConfig:
 
     The colour PNG is the headline product; the grayscale measurement image is opt-in. The on-image
     provenance stamp is on by default and bypassed with ``annotate=False``; ``annotate_content``
-    selects what it says — the ``"full"`` provenance block or just the ``"date"`` (observation date
+    selects what it says: the ``"full"`` provenance block or just the ``"date"`` (observation date
     and time). ``export_formats`` lists the data sidecars to write beside the image: the
     dependency-free ``"npz"`` (the brightness products write the raw frames + plane-of-sky
-    coordinates there) and the WCS-registered ``"fits"``.
+    coordinates there), the WCS-registered ``"fits"``, and the field-line view's ``"sunjson"``
+    (the drawn bundle for JHelioviewer, written as a ``.json``).
     """
 
     path: Path
@@ -721,8 +726,8 @@ class OutputConfig:
         return self.path.with_name(f"{self.path.stem}_grayscale{self.path.suffix}")
 
     def export_path(self, fmt: str) -> Path:
-        """Return the data-sidecar path for ``fmt`` (``<stem>.<fmt>`` beside the image)."""
-        return self.path.with_suffix(f".{fmt}")
+        """Return the data-sidecar path for ``fmt`` (``<stem>.<ext>`` beside the image)."""
+        return self.path.with_suffix(f".{_EXPORT_SUFFIXES.get(fmt, fmt)}")
 
     def to_provenance(self) -> dict[str, object]:
         return {

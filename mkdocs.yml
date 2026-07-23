@@ -55,6 +55,7 @@ nav:
   - How it runs:
       - The Q⊥ volume: qperp-volume.md
       - GPU acceleration: gpu.md
+      - Export to JHelioviewer: jhelioviewer.md
   - Products:
       - Squashing-factor render: products/squashing-factor.md
       - Polarity view: products/polarity.md

@@ -42,4 +42,5 @@ coronal MHD solution ──▶ read ──▶ resample ──▶ Q⊥ volume ─
 command that produced its figure.
 
 **How it runs**: [the Q⊥ volume](qperp-volume.md) (build once, render many),
-[GPU acceleration](gpu.md), and, on clusters, the [HPC guide](getting-started/hpc.md).
+[GPU acceleration](gpu.md), [export to JHelioviewer](jhelioviewer.md), and, on clusters, the
+[HPC guide](getting-started/hpc.md).

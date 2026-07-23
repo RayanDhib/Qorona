@@ -21,4 +21,6 @@ qorona fieldlines data/coconut_corona.CFmesh.xz -o data/fieldlines.png \
 - `--magnetogram / --no-magnetogram`: the B_r disk (default on).
 - `--show all|open|closed`: which lines to draw (default `all`).
 - `--depth-fade`: dim far-side lines by up to this fraction (default 0.4).
+- `--export sunjson`: also write exactly the drawn bundle as SunJSON beside the PNG (needs
+  `--timestamp`). See [Export to JHelioviewer](../jhelioviewer.md).
 - Camera flags are the same as the [squashing-factor render](squashing-factor.md).

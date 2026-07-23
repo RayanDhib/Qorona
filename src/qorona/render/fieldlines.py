@@ -82,12 +82,21 @@ class FieldLineImage:
         the shared provenance stamp.
     n_open, n_closed, n_incomplete
         Counts of open, closed, and incomplete (dropped) traced lines.
+    lines
+        The full traced bundle (with polylines).
+    keep
+        ``(n,)`` bool: the drawn lines; the SunJSON export writes exactly this sub-bundle.
+    colours
+        ``(keep.sum(), 3)`` per-drawn-line colour, linear RGB in [0, 1], in draw order.
     """
 
     image: np.ndarray
     n_open: int
     n_closed: int
     n_incomplete: int
+    lines: FieldLines
+    keep: np.ndarray
+    colours: np.ndarray
 
     def summary(self) -> str:
         """Return a one-line classification breakdown for end-of-run reporting."""
@@ -219,6 +228,9 @@ def render_field_lines(
         n_open=int(lines.is_open.sum()),
         n_closed=int(lines.is_closed.sum()),
         n_incomplete=int(lines.is_incomplete.sum()),
+        lines=lines,
+        keep=keep,
+        colours=kept_colours,
     )
 
 

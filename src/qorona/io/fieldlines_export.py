@@ -27,7 +27,7 @@ outward/inward open lines are warm/cool and closed lines are neutral grey.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -64,13 +64,13 @@ def _sunjson_time(metadata: dict[str, Any]) -> str:
     input_metadata = metadata.get("input")
     timestamp = input_metadata.get("timestamp") if isinstance(input_metadata, dict) else None
     if not isinstance(timestamp, str) or not timestamp:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
 
     # InputConfig has already validated this timestamp.  Normalising here removes a timezone
     # suffix because that is the representation used by the reference JHelioviewer exporter.
     moment = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     if moment.tzinfo is not None:
-        moment = moment.astimezone(timezone.utc)
+        moment = moment.astimezone(UTC)
     return moment.strftime("%Y-%m-%dT%H:%M:%S")
 
 
@@ -96,26 +96,45 @@ def write_fieldlines_json(
     metadata: dict[str, Any],
     *,
     field: Field | None = None,
+    keep: np.ndarray | None = None,
+    colours: np.ndarray | None = None,
 ) -> Path:
     """Write complete traced lines as JHelioviewer SunJSON and return the destination path.
 
     ``metadata`` supplies the observation timestamp already recorded by Qorona's pipeline.  When
     ``field`` is supplied, open lines use the same inner-foot polarity colours as the PNG
     field-line render and closed lines use its neutral grey; the library-level fallback is white.
+    ``keep`` restricts the export to a sub-bundle (a boolean mask over the traced lines, complete
+    lines only; default all complete lines) and ``colours`` overrides the palette with explicit
+    per-kept-line linear RGB in [0, 1]; together they let the field-line view export exactly its
+    drawn bundle in its drawn colours.
     """
     if lines.paths is None:
         raise ValueError("lines carry no polylines; trace with store_path=True")
+    keep = lines.is_complete if keep is None else np.asarray(keep, dtype=bool)
+    if bool((keep & lines.is_incomplete).any()):
+        raise ValueError("keep selects incomplete lines; export complete lines only")
+    selected = np.nonzero(keep)[0]
+    if colours is None:
+        rgba = _sunjson_colours(lines, field)[selected]
+    else:
+        if colours.shape[0] != selected.size:
+            raise ValueError(
+                f"colours must have one row per kept line, got {colours.shape[0]} "
+                f"for {selected.size} kept"
+            )
+        rgb_8bit = np.round(np.clip(colours, 0.0, 1.0) * 255.0).astype(np.uint8)
+        rgba = np.column_stack((rgb_8bit, np.full((rgb_8bit.shape[0], 1), 255, dtype=np.uint8)))
 
     closed = lines.is_closed
-    colours = _sunjson_colours(lines, field)
     geometry = []
-    for index in np.nonzero(lines.is_complete)[0]:
+    for position, index in enumerate(selected):
         coordinates = _xyz_to_sunjson_coordinates(lines.paths[index])
         geometry.append(
             {
                 "type": "line",
                 "coordinates": np.round(coordinates, _COORDINATE_DECIMALS).tolist(),
-                "colors": [[int(channel) for channel in colours[index]]],
+                "colors": [[int(channel) for channel in rgba[position]]],
                 "thickness": _DEFAULT_THICKNESS,
                 "topology": "closed" if closed[index] else "open",
             }

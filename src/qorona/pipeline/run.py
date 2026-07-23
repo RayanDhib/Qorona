@@ -763,12 +763,12 @@ def export_provenance(
     field: Field,
     lines: FieldLines,
 ) -> dict[str, Any]:
-    """Assemble the export's provenance: the mapping the summary and the file's metadata read.
+    """Assemble the export's provenance: the mapping the end-of-run summary reads.
 
     Mirrors :func:`fieldlines_provenance` (minus camera and image output): the input (path +
     content hash + derived CR/JD), the field grid, and the export parameters with the resolved
-    seed radius and the line tallies. JSON-safe, so the writer stores it as the file's
-    ``metadata`` block.
+    seed radius and the line tallies. SunJSON has no metadata slot, so the file carries only the
+    input timestamp (the layer's ``time``); the summary is the run's provenance record.
     """
     seed_radius = (
         export_cfg.seed_radius if export_cfg.seed_radius is not None else field.domain.inner_radius
