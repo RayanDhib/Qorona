@@ -1713,7 +1713,7 @@ def export_lines(
     trace_time = time.perf_counter() - trace_start
 
     provenance = pipeline.export_provenance(input_cfg, grid_cfg, export_cfg, field, lines)
-    written = write_fieldlines_json(lines, output_path, provenance)
+    written = write_fieldlines_json(lines, output_path, provenance, field=field)
     print_success(f"Wrote [bold]{output_path}[/bold]")
     _print_summary(
         provenance,
