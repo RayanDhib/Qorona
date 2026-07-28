@@ -35,7 +35,8 @@ qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 31
 
 Seconds per viewpoint, any number of viewpoints off the one volume. `--fov` is the field of
 view (full width) in solar radii; `--longitude` and `--latitude` set the sub-observer
-heliographic point, `--roll` the camera roll.
+heliographic point, `--roll` the camera roll. [Camera and viewpoint](../camera.md) covers the
+frame those angles are read in and how to point at Earth's viewpoint on a given date.
 
 The figure below is exactly this render:
 

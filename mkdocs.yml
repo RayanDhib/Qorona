@@ -54,6 +54,7 @@ nav:
       - HPC clusters: getting-started/hpc.md
   - How it runs:
       - The Q⊥ volume: qperp-volume.md
+      - Camera and viewpoint: camera.md
       - GPU acceleration: gpu.md
       - Export to JHelioviewer: jhelioviewer.md
   - Products:
