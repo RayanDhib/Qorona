@@ -33,8 +33,9 @@ The build-time knobs, beyond `--quality`:
 - `--outer-radius`: how far out the volume extends, in solar radii (default 12.5). Match it to
   the product: 8 is comfortable for a whole-corona render at `--fov 8`, while a
   [Q-map](products/qmaps.md) wants the outer radius equal to the map radius.
-- `--closed neutral|dominant`: closed-loop polarity treatment (default `neutral`), read back
-  by the [polarity view](products/polarity.md).
+- `--closed neutral|dominant`: polarity assigned to closed loops, whose two feet have
+  opposite sign (`neutral`, the default, keeps them neutral; `dominant` takes the sign of
+  the stronger foot). Read back by the [polarity view](products/polarity.md).
 - `--device auto|gpu|cpu` and `--precision`: the compute backend, covered in
   [GPU acceleration](gpu.md).
 - `--workers` and `--quiet`: thread count and quiet output, made for

@@ -325,7 +325,10 @@ _volume_options = _compose(
         default=None,
         section="Volume",
         advanced=True,
-        help="Closed-loop polarity: neutral (feet cancel to 0) or dominant (default neutral).",
+        help=(
+            "Closed-loop polarity: neutral cancels the opposite feet to 0, dominant takes "
+            "the stronger foot (default neutral)."
+        ),
     ),
     option(
         "--rtol",

@@ -16,8 +16,11 @@ qorona render data/coconut_corona.qor -o data/polarity.png \
 
 - `--polarity-mode hue`: warm = outward, cool = inward; `none` (the default) is the plain
   render.
-- The polarity sign is stored in the volume, and the closed-field treatment is chosen at
-  build time: `qorona build --closed neutral|dominant` (default `neutral`, where the two feet
-  of a closed loop cancel to zero).
+- The polarity sign is stored in the volume, so the closed-loop treatment is chosen at
+  build time: `qorona build --closed neutral|dominant`. An open line takes the sign of
+  B·r̂ at its single photospheric foot; a closed loop has two feet of opposite sign, so
+  it has no single rooting polarity. `neutral` (the default) keeps closed loops white,
+  separating open from closed field at a glance; `dominant` takes the sign of the
+  stronger foot.
 - Camera and display flags are the same as the
   [squashing-factor render](squashing-factor.md).
