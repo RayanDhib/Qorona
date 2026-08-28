@@ -10,9 +10,8 @@ minutes-scale stage), :func:`render_volume` integrates it for any camera (second
 :func:`save_volume` / :func:`load_volume` persist the volume between the two as a dependency-free
 ``.npz`` (the ``.qor`` suffix aliases it).
 
-The CR/JD derivation (:func:`derive_cr`, :func:`derive_jd`) turns a user-supplied UTC
-``--timestamp`` into a Carrington rotation (sunpy) and Julian date (astropy), both already Qorona
-dependencies; the ``.CFmesh`` mesh carries no date, so these are *derived*, never inferred.
+The CR/JD derivation lives in :mod:`qorona.ephemeris`; this layer only records the Carrington
+rotation and Julian date it returns into a run's provenance.
 """
 
 from __future__ import annotations
@@ -57,6 +56,7 @@ from qorona.config.schema import (
     STEP_PER_FOV,
     WL_OCCULT_FACTOR,
 )
+from qorona.ephemeris import derive_cr, derive_jd
 from qorona.field.base import Field
 from qorona.field.density import DensityVolume
 from qorona.field.sampled import SampledField
@@ -669,46 +669,7 @@ def run(cfg: RunConfig, *, show_progress: bool = True) -> RenderResult:
     )
 
 
-# --- Carrington rotation / Julian date derivation -----------------------------------------
-
-
-def _utc_time(timestamp: str) -> Any:
-    """Parse a UTC ISO-8601 ``timestamp`` into an :class:`astropy.time.Time` (friendly on error)."""
-    from astropy.time import Time
-
-    try:
-        return Time(timestamp, scale="utc")
-    except Exception as exc:
-        raise ValueError(
-            f"could not parse timestamp {timestamp!r} as a UTC ISO-8601 datetime "
-            f"(e.g. '2024-04-08T18:17:00'): {exc}"
-        ) from exc
-
-
-def derive_cr(timestamp: str) -> int:
-    """Return the active Carrington-rotation number at a UTC ISO-8601 ``timestamp``.
-
-    The active rotation is ``floor(carrington_rotation_number(t))``; sunpy's fractional part is the
-    phase within the rotation.
-    """
-    from sunpy.coordinates.sun import carrington_rotation_number
-
-    return int(carrington_rotation_number(_utc_time(timestamp)))
-
-
-def derive_jd(timestamp: str) -> float:
-    """Return the Julian date for a UTC ISO-8601 ``timestamp``."""
-    return float(_utc_time(timestamp).jd)
-
-
-def sub_earth_point(timestamp: str) -> tuple[float, float, float]:
-    """Return Earth's sub-observer Carrington ``(longitude, latitude)`` in degrees and its
-    heliocentric distance in AU at a UTC ISO-8601 ``timestamp``."""
-    import astropy.units as u
-    from sunpy.coordinates.sun import B0, L0, earth_distance
-
-    time = _utc_time(timestamp)
-    return float(L0(time).deg), float(B0(time).deg), float(earth_distance(time).to_value(u.au))
+# --- Provenance assembly -----------------------------------------------------------------------
 
 
 def _ephemeris(timestamp: str | None) -> dict[str, object]:
@@ -716,9 +677,6 @@ def _ephemeris(timestamp: str | None) -> dict[str, object]:
     if timestamp is None:
         return {}
     return {"cr": derive_cr(timestamp), "jd": derive_jd(timestamp)}
-
-
-# --- Provenance assembly -----------------------------------------------------------------------
 
 
 def content_hash(path: str | Path) -> str:
@@ -818,11 +776,13 @@ def render_provenance(
     result: RenderResult,
     *,
     timestamp_override: str | None = None,
+    frame_override: str | None = None,
 ) -> dict[str, Any]:
     """Extend a build provenance with the render's camera / weighting / render / output and metrics.
 
     A render off a baked volume recovers the date for the stamp from ``build_prov`` without
-    re-supplying it; an explicit ``timestamp_override`` re-derives CR/JD for the stamp.
+    re-supplying it; an explicit ``timestamp_override`` re-derives CR/JD for the stamp, and a
+    ``frame_override`` declares the solution frame for a volume baked without one (or corrects it).
     """
     prov = json.loads(json.dumps(build_prov))  # deep copy
     if timestamp_override is not None:
@@ -831,6 +791,8 @@ def render_provenance(
             "timestamp": timestamp_override,
             **_ephemeris(timestamp_override),
         }
+    if frame_override is not None:
+        prov["input"] = {**prov.get("input", {}), "frame": frame_override}
     covered = result.coverage[result.coverage > 0.0]
     prov["camera"] = camera_cfg.to_provenance()
     prov["weighting"] = weighting_cfg.to_provenance()
@@ -984,9 +946,12 @@ def volume_brightness_provenance(
     result: BrightnessResult,
     *,
     timestamp_override: str | None = None,
+    frame_override: str | None = None,
 ) -> dict[str, Any]:
     """Assemble the white-light render's provenance for a render off a baked volume artifact,
-    with an optional ``timestamp_override`` re-deriving CR/JD for the stamp.
+    with an optional ``timestamp_override`` re-deriving CR/JD for the stamp, and a
+    ``frame_override`` declaring the solution frame for a volume baked without one (or correcting
+    it).
 
     Mirrors :func:`render_provenance`: the volume's build provenance rides whole (so the stamp and
     summary read the original input and field blocks without re-supplying them), extended with the
@@ -999,6 +964,8 @@ def volume_brightness_provenance(
             "timestamp": timestamp_override,
             **_ephemeris(timestamp_override),
         }
+    if frame_override is not None:
+        prov["input"] = {**prov.get("input", {}), "frame": frame_override}
     prov["brightness"] = {**brightness_cfg.to_provenance(), **_brightness_metrics(result)}
     prov["camera"] = camera_cfg.to_provenance()
     prov["output"] = output_cfg.to_provenance()

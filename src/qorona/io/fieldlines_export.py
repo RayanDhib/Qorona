@@ -18,10 +18,11 @@ converts those points to the spherical coordinates expected by JHelioviewer::
       ]
     }
 
-Incomplete lines (an end stopped at a null or a guard) are omitted.  Cartesian coordinates are
-assumed to use the COCONUT convention: x-y is the solar equatorial plane, z is solar north, and
-``atan2(y, x)`` is Carrington longitude.  Colours match the PNG renderer's polarity palette:
-outward/inward open lines are warm/cool and closed lines are neutral grey.
+Incomplete lines (an end stopped at a null or a guard) are omitted.  Cartesian coordinates use the
+ingest convention: x-y is the solar equatorial plane, z is solar north, and ``atan2(y, x)`` is the
+solution frame's longitude, taken to Carrington (what JHelioviewer expects) by the declared frame's
+offset, read from the same metadata as the time.  Colours match the PNG renderer's polarity
+palette: outward/inward open lines are warm/cool and closed lines are neutral grey.
 """
 
 from __future__ import annotations
@@ -44,19 +45,41 @@ _DEFAULT_COLOR = [255, 255, 255, 255]
 _DEFAULT_THICKNESS = 0.004
 
 
-def _xyz_to_sunjson_coordinates(xyz: np.ndarray) -> np.ndarray:
-    """Convert one Cartesian ``(N, 3)`` R_sun polyline to ``[r, lon, lat]`` SunJSON points."""
+def _xyz_to_sunjson_coordinates(xyz: np.ndarray, longitude_offset: float = 0.0) -> np.ndarray:
+    """Convert one Cartesian ``(N, 3)`` R_sun polyline to ``[r, lon, lat]`` SunJSON points, with
+    ``longitude_offset`` (deg) taking the solution frame's longitude to Carrington."""
     points = np.asarray(xyz, dtype=float)
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError(f"field-line path must have shape (N, 3), got {points.shape}")
 
     x, y, z = points.T
     radius = np.linalg.norm(points, axis=1)
-    longitude = np.degrees(np.arctan2(y, x)) % 360.0
+    longitude = (np.degrees(np.arctan2(y, x)) + longitude_offset) % 360.0
     with np.errstate(divide="ignore", invalid="ignore"):
         latitude = np.degrees(np.arcsin(np.clip(z / radius, -1.0, 1.0)))
     latitude = np.nan_to_num(latitude)
     return np.column_stack((radius, longitude, latitude))
+
+
+def _longitude_offset(metadata: dict[str, Any]) -> float:
+    """Return the offset taking the declared frame's longitudes to Carrington, zero for a
+    Carrington-aligned (or undeclared) frame; a Stonyhurst frame needs the timestamp."""
+    from qorona.config.schema import DEFAULT_FRAME
+    from qorona.ephemeris import carrington_offset
+
+    input_metadata = metadata.get("input")
+    if not isinstance(input_metadata, dict):
+        return 0.0
+    frame = input_metadata.get("frame")
+    if frame in (None, DEFAULT_FRAME):
+        return 0.0
+    timestamp = input_metadata.get("timestamp")
+    if not isinstance(timestamp, str) or not timestamp:
+        raise ValueError(
+            f"a {frame} solution needs a timestamp to place its longitudes in Carrington; "
+            "pass --timestamp"
+        )
+    return carrington_offset(frame, timestamp)
 
 
 def _sunjson_time(metadata: dict[str, Any]) -> str:
@@ -101,7 +124,9 @@ def write_fieldlines_json(
 ) -> Path:
     """Write complete traced lines as JHelioviewer SunJSON and return the destination path.
 
-    ``metadata`` supplies the observation timestamp already recorded by Qorona's pipeline.  When
+    ``metadata["input"]`` supplies the observation timestamp and the solution frame declaration
+    already recorded by Qorona's pipeline; a Stonyhurst frame without a timestamp raises
+    :class:`ValueError`, since its longitudes cannot be placed in Carrington.  When
     ``field`` is supplied, open lines use the same inner-foot polarity colours as the PNG
     field-line render and closed lines use its neutral grey; the library-level fallback is white.
     ``keep`` restricts the export to a sub-bundle (a boolean mask over the traced lines, complete
@@ -127,9 +152,10 @@ def write_fieldlines_json(
         rgba = np.column_stack((rgb_8bit, np.full((rgb_8bit.shape[0], 1), 255, dtype=np.uint8)))
 
     closed = lines.is_closed
+    longitude_offset = _longitude_offset(metadata)
     geometry = []
     for position, index in enumerate(selected):
-        coordinates = _xyz_to_sunjson_coordinates(lines.paths[index])
+        coordinates = _xyz_to_sunjson_coordinates(lines.paths[index], longitude_offset)
         geometry.append(
             {
                 "type": "line",

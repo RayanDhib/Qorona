@@ -19,7 +19,8 @@ orientation, position, and time; `sunpy.map.Map` reads the same registration for
 analysis. The run's full provenance rides in the FITS header.
 
 - `--observer earth` points the camera from the real Earth viewpoint at the timestamp, so
-  the overlay matches Earth-based observations exactly.
+  the overlay matches Earth-based observations exactly (any named observer works the same
+  way; see [Camera](camera.md)).
 - The disk: with the default eclipse occulter it stays NaN, transparent in JHelioviewer, so
   real disk imagery shows through; `render --occult composite` fills it with the near-side
   surface Q instead.
@@ -43,8 +44,11 @@ qorona export-lines data/coconut_corona.CFmesh.xz -o data/coconut_fieldlines.jso
     --timestamp 2025-10-09T18:19:52 --seeds 40 80
 ```
 
-## The frame assumption
+## The solution frame
 
-Both routes write positions in the solution's own frame and assume it is Carrington-aligned:
-true for synoptic-driven runs (COCONUT, MAS), not guaranteed in general. It underlies the
-`--observer earth` registration and the SunJSON longitudes alike.
+Both routes write positions in Carrington coordinates, which is what JHelioviewer expects, and
+both start from the solution's own frame: the FITS observer and the SunJSON longitudes are
+shifted by the declared frame's offset (`--frame`, see [Camera](camera.md)), zero for a
+Carrington frame and L0 for a Stonyhurst one. The frame is therefore part of the registration:
+exported under the wrong one, a product lands up to 360 degrees off in longitude, and nothing in
+the file reveals it. Without a declaration Qorona falls back to Carrington and warns.

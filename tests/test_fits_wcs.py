@@ -1,4 +1,6 @@
-"""FITS/WCS registration guard: the exported header against the camera's own projection.
+"""FITS/WCS registration guard, plus the solution-frame identities the registration rests on.
+
+The guard checks the exported header against the camera's own projection.
 
 Known plane-of-sky points must land on the same pixels through astropy/sunpy's WCS
 machinery as through ``OrthographicCamera.project``, pinning the scale, rotation-sign,
@@ -80,3 +82,39 @@ def test_wcs_header_matches_camera_projection() -> None:
     # FITS rows count from the bottom; the writers flip vertically at write time.
     assert np.allclose(px, cols, atol=1e-3)
     assert np.allclose((height - 1) - py, rows, atol=1e-3)
+
+
+def test_stonyhurst_frame_registration() -> None:
+    """The analytic identities the frame offset must satisfy: Earth in a Stonyhurst frame sits
+    at longitude 0 (latitude B0) by definition, the offset is L0, and a Stonyhurst camera at
+    longitude 0 registers at Carrington longitude L0 with a zero Stonyhurst observer longitude."""
+    from astropy.time import Time
+    from sunpy.coordinates.sun import B0, L0
+
+    from qorona.ephemeris import carrington_offset, sub_observer_point
+    from qorona.io.fits import camera_wcs_header
+
+    timestamp = "2019-07-02T19:23:00"
+    time = Time(timestamp, scale="utc")
+    sub_earth_longitude, sub_earth_latitude = float(L0(time).deg), float(B0(time).deg)
+
+    longitude, latitude, distance = sub_observer_point("earth", timestamp, "stonyhurst")
+    assert longitude == pytest.approx(0.0, abs=1e-9)
+    assert latitude == pytest.approx(sub_earth_latitude, abs=1e-9)
+    assert 0.98 < distance < 1.02  # AU
+    assert carrington_offset("stonyhurst", timestamp) == pytest.approx(sub_earth_longitude)
+    assert carrington_offset(None, timestamp) == 0.0
+    assert sub_observer_point("earth", timestamp, None)[0] == pytest.approx(sub_earth_longitude)
+
+    camera = {
+        "longitude": 0.0,
+        "latitude": latitude,
+        "roll": 0.0,
+        "fov": 8.0,
+        "pixels": [64, 64],
+        "observer_distance": distance,
+    }
+    header = camera_wcs_header(camera, timestamp, (64, 64), frame="stonyhurst")
+    assert header["CRLN_OBS"] == pytest.approx(sub_earth_longitude, abs=1e-6)
+    assert header["HGLN_OBS"] == pytest.approx(0.0, abs=0.01)  # sunpy derives it from the observer
+    assert "stonyhurst" in str(header["COMMENT"])

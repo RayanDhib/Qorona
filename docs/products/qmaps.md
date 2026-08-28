@@ -1,10 +1,12 @@
 # Q-maps
 
-A synoptic Q-map: signed-log₁₀ Q⊥ on a Carrington longitude/latitude grid at a fixed radius,
+A synoptic Q-map: signed-log₁₀ Q⊥ on a longitude/latitude grid at a fixed radius,
 sliced from a built volume with no re-ingest or tracing; the viewpoint-independent sibling of
 `render`. The displayed quantity is sign(B·r̂) · log₁₀ Q⊥, signed by the radial-field
 polarity: the neutral line between the two colours traces the base of the heliospheric
-current sheet, and the saturated ridges are the S-web arcs.
+current sheet, and the saturated ridges are the S-web arcs. The grid is in the solution's own
+declared frame (`--frame`, Carrington or Stonyhurst longitudes; see
+[Camera and viewpoint](../camera.md)).
 
 Build the volume with `--outer-radius` equal to the map radius, then slice:
 

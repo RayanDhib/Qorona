@@ -42,9 +42,15 @@ ANNOTATE_CONTENTS = ("full", "date")
 FIELDLINE_SHOW = ("all", "open", "closed")
 FIELDLINE_SEEDING = ("limb", "uniform")
 FIELDLINE_COLOUR = ("rainbow", "polarity")
-BRIGHTNESS_FRAMES = ("polarized", "total")
+BRIGHTNESS_COMPONENTS = ("polarized", "total")
 BRIGHTNESS_VIGNETTES = ("adaptive", "newkirk", "none", "wow")
 BRIGHTNESS_SCALINGS = ("linear", "log")
+#: Heliographic frames a solution's longitudes may be in; both share the solar rotation axis.
+SOLUTION_FRAMES = ("carrington", "stonyhurst")
+#: Accepted spellings beyond the canonical names (HEEQ is Stonyhurst in Cartesian form).
+FRAME_ALIASES = {"heeq": "stonyhurst"}
+#: The frame every consumer assumes when none was declared.
+DEFAULT_FRAME = "carrington"
 EXPORT_FORMATS = ("npz", "fits", "sunjson")
 RENDER_EXPORT_FORMATS = ("fits",)
 QMAP_EXPORT_FORMATS = ("npz",)
@@ -113,20 +119,29 @@ def _validate_turn_guard(
 
 @dataclass(frozen=True)
 class InputConfig:
-    """The solution to read and the optional UTC timestamp from which CR/JD are derived.
+    """The solution to read, the optional UTC timestamp from which CR/JD are derived, and the
+    optional declaration of the heliographic frame its longitudes are in.
 
     The ``.CFmesh`` mesh carries no date, so a Carrington rotation and Julian date are *derived*
     from a user-supplied ``timestamp`` (UTC ISO-8601), never inferred; without it the CR/date
-    provenance is simply absent.
+    provenance is simply absent. Likewise no file can tell whether its longitudes are Carrington
+    or Stonyhurst: ``frame`` records the user's declaration (``"carrington"`` or
+    ``"stonyhurst"``, with ``"heeq"`` accepted for the latter) and stays ``None`` when nothing
+    was declared, which every frame-sensitive consumer takes as Carrington while saying so.
     """
 
     path: Path
     model: str | None = None
     timestamp: str | None = None
+    frame: str | None = None
     variables: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "path", Path(self.path))
+        if self.frame is not None:
+            frame = FRAME_ALIASES.get(self.frame.lower(), self.frame.lower())
+            _one_of(frame, SOLUTION_FRAMES, "frame")
+            object.__setattr__(self, "frame", frame)
         if self.variables is not None:
             object.__setattr__(self, "variables", tuple(self.variables))
 
@@ -135,6 +150,7 @@ class InputConfig:
             "path": str(self.path),
             "model": self.model,
             "timestamp": self.timestamp,
+            "frame": self.frame,
             "variables": list(self.variables) if self.variables is not None else None,
         }
 
@@ -658,18 +674,18 @@ class ExportConfig:
 
 @dataclass(frozen=True)
 class BrightnessConfig:
-    """The white-light / polarized-brightness (pB) render: frame, display stages, and knobs.
+    """The white-light / polarized-brightness (pB) render: component, display stages, and knobs.
 
     The viewpoint-independent inputs to the standalone brightness product (the camera is a separate
-    config, as for the Q⊥ render). ``frame`` selects the polarized brightness ``pB`` (the default,
-    the reference target) or the total white-light brightness. The selected frame is finished by
-    two display stages, applied in order: the ``vignette`` treatment (``"newkirk"`` divides by
-    the brightness of the smooth Newkirk background corona; ``"adaptive"`` self-calibrates the same
-    curve family to the image's own falloff and amplifies its structure, for coronae whose
-    stratification departs from the Newkirk profile; ``"wow"`` whitens the raw frame's wavelet
-    spectrum, which flattens the falloff along the way, and needs the optional sunkit-image and
-    watroo packages; ``"none"`` keeps the raw falloff) and the optional ``mgn`` local
-    fine-structure enhancement (calibrated for the steep-gradient pB frame;
+    config, as for the Q⊥ render). ``component`` selects the polarized brightness ``pB`` (the
+    default, the reference target) or the total white-light brightness. The selected component is
+    finished by two display stages, applied in order: the ``vignette`` treatment (``"newkirk"``
+    divides by the brightness of the smooth Newkirk background corona; ``"adaptive"``
+    self-calibrates the same curve family to the image's own falloff and amplifies its structure,
+    for coronae whose stratification departs from the Newkirk profile; ``"wow"`` whitens the raw
+    frame's wavelet spectrum, which flattens the falloff along the way, and needs the optional
+    sunkit-image and watroo packages; ``"none"`` keeps the raw falloff) and the optional ``mgn``
+    local fine-structure enhancement (calibrated for the steep-gradient pB frame;
     on the total frame it still runs but is less physically meaningful). ``u`` and ``crossover``
     are the Thomson coefficient knobs, ``scaling`` / ``percentiles`` the display stretch; the
     line-of-sight ``step`` and the occultation triple mirror :class:`RenderConfig`. ``None`` on
@@ -682,7 +698,7 @@ class BrightnessConfig:
     for inputs with pathological bright spots.
     """
 
-    frame: str = "polarized"
+    component: str = "polarized"
     vignette: str = "newkirk"
     mgn: bool = False
     u: float = 0.6
@@ -699,7 +715,7 @@ class BrightnessConfig:
         object.__setattr__(
             self, "percentiles", (float(self.percentiles[0]), float(self.percentiles[1]))
         )
-        _one_of(self.frame, BRIGHTNESS_FRAMES, "frame")
+        _one_of(self.component, BRIGHTNESS_COMPONENTS, "component")
         _one_of(self.vignette, BRIGHTNESS_VIGNETTES, "vignette")
         _one_of(self.occult, BRIGHTNESS_OCCULT_MODES, "occult")
         scaling = self.scaling
@@ -729,7 +745,7 @@ class BrightnessConfig:
 
     def to_provenance(self) -> dict[str, object]:
         return {
-            "frame": self.frame,
+            "component": self.component,
             "vignette": self.vignette,
             "mgn": self.mgn,
             "u": self.u,

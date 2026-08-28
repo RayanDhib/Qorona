@@ -6,11 +6,13 @@ astropy/sunpy tool) registered in scale, orientation, position, and time.
 Helioprojective coordinates and the solar FITS keyword conventions follow
 Thompson (2006), A&A 449, 791.
 
-The solution frame is Carrington-aligned (ingest contract: ``+z`` is the solar
-rotation axis, the azimuth is Carrington longitude), so the camera's sub-observer
-``(longitude, latitude)`` is the observer's Carrington position. The TAN
-projection's intermediate coordinates are linear in plane-of-sky distance, so the
-plate scale ``(pixel pitch)·R☉/D`` registers plane-of-sky features exactly.
+The camera's sub-observer ``(longitude, latitude)`` is in the solution's own heliographic
+frame (ingest contract: ``+z`` is the solar rotation axis). The observer is placed in
+Carrington coordinates by adding the frame's longitude offset
+(:func:`qorona.ephemeris.carrington_offset`: zero for a Carrington-aligned solution, L0 for a
+Stonyhurst one), so every observer card follows from one correctly placed observer. The TAN
+projection's intermediate coordinates are linear in plane-of-sky distance, so the plate scale
+``(pixel pitch)·R☉/D`` registers plane-of-sky features exactly.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ _REPO_URL = "https://github.com/RayanDhib/Qorona"
 
 
 def camera_wcs_header(
-    camera: dict[str, Any], timestamp: str, shape: tuple[int, int]
+    camera: dict[str, Any], timestamp: str, shape: tuple[int, int], *, frame: str | None = None
 ) -> fits.Header:
     """Build the helioprojective TAN registration header for one image HDU.
 
@@ -45,13 +47,16 @@ def camera_wcs_header(
     ----------
     camera
         The camera provenance block: ``longitude`` / ``latitude`` (sub-observer
-        Carrington degrees), ``roll`` (degrees), ``fov`` (full width, R☉), and
-        ``observer_distance`` (AU).
+        degrees in the solution frame), ``roll`` (degrees), ``fov`` (full width,
+        R☉), and ``observer_distance`` (AU).
     timestamp
         UTC ISO-8601 epoch; becomes ``DATE-OBS`` / ``DATE-AVG`` and the observer
         ephemeris epoch.
     shape
         ``(H, W)`` image shape in pixels.
+    frame
+        The declared solution frame (``"carrington"`` / ``"stonyhurst"``), or
+        ``None`` when undeclared (taken as Carrington; the COMMENT card says so).
 
     Returns
     -------
@@ -68,9 +73,12 @@ def camera_wcs_header(
     from sunpy.map import make_fitswcs_header
     from sunpy.sun import constants as sun_constants
 
+    from qorona.ephemeris import carrington_offset
+
     time = Time(timestamp, scale="utc")
     height, width = int(shape[0]), int(shape[1])
-    lon, lat = float(camera["longitude"]), float(camera["latitude"])
+    lon = (float(camera["longitude"]) + carrington_offset(frame, timestamp)) % 360.0
+    lat = float(camera["latitude"])
     roll = float(np.deg2rad(float(camera["roll"])))
     distance = float(camera["observer_distance"]) * u.au
 
@@ -101,7 +109,11 @@ def camera_wcs_header(
         header[key] = value
     header["CRLN_OBS"] = (lon, "[deg] observer Carrington longitude")
     header["CRLT_OBS"] = (lat, "[deg] observer Carrington latitude")
-    header["COMMENT"] = "WCS assumes the solution frame is Carrington-aligned"
+    header["COMMENT"] = (
+        f"solution frame: {frame}"
+        if frame
+        else "solution frame undeclared; taken as Carrington-aligned"
+    )
     header["DATE-OBS"] = (time.isot, "epoch of the modelled observation (UTC)")
     header["DATE-AVG"] = (time.isot, "same as DATE-OBS (instantaneous snapshot)")
     return header
@@ -117,6 +129,12 @@ def _required_timestamp(provenance: dict[str, Any]) -> str:
             "pass --timestamp (or bake the volume with one)"
         )
     return str(timestamp)
+
+
+def _provenance_frame(provenance: dict[str, Any]) -> str | None:
+    """Return the declared solution frame from the run provenance, ``None`` when undeclared."""
+    inp = provenance.get("input", {})
+    return inp.get("frame") if isinstance(inp, dict) else None
 
 
 def _identity_cards(header: fits.Header, provenance: dict[str, Any], detector: str) -> None:
@@ -179,7 +197,9 @@ def write_render_fits(result: RenderResult, path: Path, provenance: dict[str, An
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)  # all-NaN pixels
         data = np.nanmean(result.signal, axis=2)
-    header = camera_wcs_header(provenance["camera"], timestamp, data.shape)
+    header = camera_wcs_header(
+        provenance["camera"], timestamp, data.shape, frame=_provenance_frame(provenance)
+    )
     _identity_cards(header, provenance, detector="QPERP")
     _citation_cards(header)
     header["BTYPE"] = ("log10(Qperp)", "LOS-averaged log10 squashing factor")
@@ -207,7 +227,8 @@ def write_brightness_fits(
 
     timestamp = _required_timestamp(provenance)
     camera = provenance["camera"]
-    header = camera_wcs_header(camera, timestamp, display.shape)
+    solution_frame = _provenance_frame(provenance)
+    header = camera_wcs_header(camera, timestamp, display.shape, frame=solution_frame)
     _identity_cards(header, provenance, detector="WL")
     _citation_cards(header)
     header["BTYPE"] = ("display brightness", "vignette/enhancement/stretch, as the PNG")
@@ -215,13 +236,13 @@ def write_brightness_fits(
     header["HV_DMAX"] = (1.0, "JHelioviewer display maximum")
     _provenance_cards(header, provenance)
     hdus: list[Any] = [fits.PrimaryHDU(_flipped(display), header)]
-    for name, frame, btype in (
+    for name, image, btype in (
         ("PB", result.polarized, "polarized brightness"),
         ("TOTAL", result.total, "total white-light brightness"),
     ):
-        ext_header = camera_wcs_header(camera, timestamp, frame.shape)
+        ext_header = camera_wcs_header(camera, timestamp, image.shape, frame=solution_frame)
         _identity_cards(ext_header, provenance, detector="WL")
         ext_header["BTYPE"] = (btype, "raw line-of-sight integral")
         ext_header["BUNIT"] = ("1", "relative brightness, arbitrary units")
-        hdus.append(fits.ImageHDU(_flipped(frame), ext_header, name=name))
+        hdus.append(fits.ImageHDU(_flipped(image), ext_header, name=name))
     fits.HDUList(hdus).writeto(path, overwrite=True)

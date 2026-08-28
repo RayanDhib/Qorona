@@ -1,8 +1,8 @@
 # White-light imaging
 
 Thomson-scattered brightness integrated over the solution's electron density. The default
-frame is pB, the polarized brightness: the linearly polarized component of the white-light
-K-corona, and the classic coronagraph observable. `--frame total` selects the total brightness
+component is pB, the polarized brightness: the linearly polarized part of the white-light
+K-corona, and the classic coronagraph observable. `--component total` selects the total brightness
 instead. This is a density product; no Q⊥ volume is built or used.
 
 The input is either a raw solution (read and resampled, as `build` would) or a built `.qor`
@@ -17,7 +17,7 @@ qorona wl data/coconut_corona.qor -o data/white-light.png \
 
 ## The flags that matter
 
-- `--frame polarized|total`: pB (the default) or the total white-light brightness.
+- `--component polarized|total`: pB (the default) or the total white-light brightness.
 - `--vignette newkirk|adaptive|wow|none`: display treatment of the frame. `newkirk` divides by
   the brightness of the smooth Newkirk background corona; `adaptive` self-calibrates the same
   curve family to the image's own falloff; `wow` whitens the raw frame's wavelet spectrum

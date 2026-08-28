@@ -95,7 +95,7 @@ def write_brightness(
 ) -> list[Path]:
     """Write the white-light / pB render's PNG and stamp it, returning the paths written.
 
-    Selects the requested frame (the polarized ``pB`` or the total white-light brightness) and
+    Selects the requested component (the polarized ``pB`` or the total white-light brightness) and
     finishes it through the display stages, in order: the vignette treatment (the ``newkirk`` /
     ``adaptive`` radial detrends, the ``wow`` wavelet whitening of the raw frame, skipped for
     ``none``) and the optional MGN local fine-structure enhancement. Writes a
@@ -131,13 +131,13 @@ def write_brightness(
     # result) is the reference for the display detrends, so the vignettes and the wow mask read it
     # from the result rather than the config, whose sentinel may still be unresolved.
     reference_radius = result.r_occult
-    image = result.total if brightness_cfg.frame == "total" else result.polarized
+    image = result.total if brightness_cfg.component == "total" else result.polarized
     valid = None
     if brightness_cfg.vignette == "newkirk":
         image = newkirk_vignette(
             image,
             result.impact,
-            frame=cast(Any, brightness_cfg.frame),
+            component=cast(Any, brightness_cfg.component),
             r_inner=result.r_inner,
             r_outer=result.r_outer,
             reference_radius=reference_radius,
@@ -148,7 +148,7 @@ def write_brightness(
         image = adaptive_vignette(
             image,
             result.impact,
-            frame=cast(Any, brightness_cfg.frame),
+            component=cast(Any, brightness_cfg.component),
             r_inner=result.r_inner,
             r_outer=result.r_outer,
             reference_radius=reference_radius,
@@ -161,7 +161,7 @@ def write_brightness(
         valid = (image > 0.0) & (result.impact >= reference_radius)
         image = wow_enhance(image)
     if brightness_cfg.mgn:
-        if brightness_cfg.frame == "total":
+        if brightness_cfg.component == "total":
             print_warning(
                 "MGN is calibrated for the polarized (pB) frame; on the total frame it still "
                 "renders but is less physically meaningful"

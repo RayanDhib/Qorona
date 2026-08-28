@@ -3,9 +3,9 @@
 Wires read → resample → Q⊥ volume → render behind config-driven stage functions
 (:func:`build_field`, :func:`build_volume`, :func:`render_volume`, :func:`run`), with the
 viewpoint-independent volume cached to a dependency-free ``.npz`` (:func:`save_volume` /
-:func:`load_volume`) so the expensive bake and the cheap render are separable. The CR/JD derivation
-and provenance assembly that feed the on-image stamp and the end-of-run summary live here too. No
-CLI or presentation logic; this layer is callable as a library.
+:func:`load_volume`) so the expensive bake and the cheap render are separable. The provenance
+assembly that feeds the on-image stamp and the end-of-run summary lives here too. No CLI or
+presentation logic; this layer is callable as a library.
 
 The category-keyed default resolvers (:func:`resolve_camera`, :func:`resolve_render`,
 :func:`resolve_brightness`, :func:`resolve_qmap`) are re-exported so the CLI can pre-resolve the
@@ -35,8 +35,6 @@ from qorona.pipeline.run import (
     build_volume,
     content_hash,
     covered_fraction,
-    derive_cr,
-    derive_jd,
     export_lines,
     export_provenance,
     fieldlines_provenance,
@@ -49,7 +47,6 @@ from qorona.pipeline.run import (
     render_volume,
     run,
     save_volume,
-    sub_earth_point,
     sub_floor_voxels,
     volume_brightness_provenance,
 )
@@ -61,8 +58,6 @@ __all__ = [
     "build_volume",
     "content_hash",
     "covered_fraction",
-    "derive_cr",
-    "derive_jd",
     "export_lines",
     "export_provenance",
     "fieldlines_provenance",
@@ -79,7 +74,6 @@ __all__ = [
     "resolve_render",
     "run",
     "save_volume",
-    "sub_earth_point",
     "sub_floor_voxels",
     "volume_brightness_provenance",
 ]

@@ -33,6 +33,11 @@ The build-time knobs, beyond `--quality`:
 - `--outer-radius`: how far out the volume extends, in solar radii (default 12.5). Match it to
   the product: 8 is comfortable for a whole-corona render at `--fov 8`, while a
   [Q-map](products/qmaps.md) wants the outer radius equal to the map radius.
+- `--timestamp`, `--frame`: the observation time (UTC ISO-8601) and the heliographic frame of
+  the solution's longitudes (`carrington` or `stonyhurst`; `heeq` is accepted for Stonyhurst).
+  Neither is in the file; both are baked into the volume and inherited by every product built
+  from it, and together they let the camera take a named observer's viewpoint (see
+  [Camera and viewpoint](camera.md)).
 - `--closed neutral|dominant`: polarity assigned to closed loops, whose two feet have
   opposite sign (`neutral`, the default, keeps them neutral; `dominant` takes the sign of
   the stronger foot). Read back by the [polarity view](products/polarity.md).

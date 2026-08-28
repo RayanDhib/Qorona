@@ -112,7 +112,7 @@ def _hydrostatic_profile(
     rho: np.ndarray,
     exponent: float,
     *,
-    frame: Literal["polarized", "total"],
+    component: Literal["polarized", "total"],
     r_inner: float,
     r_outer: float,
     u: float = LIMB_DARKENING,
@@ -143,7 +143,7 @@ def _hydrostatic_profile(
     # The r_inner floor only guards the 10**x overflow at tiny radii; those samples sit inside the
     # shell's inner boundary and are zeroed by the mask below.
     density = 10.0 ** (exponent / np.maximum(radius, r_inner))
-    if frame == "polarized":
+    if component == "polarized":
         integrand = density * c_pol * sin_sq_chi
     else:
         integrand = density * (2.0 * c_tan - c_pol * sin_sq_chi)
@@ -155,7 +155,7 @@ def _hydrostatic_profile(
 def newkirk_profile(
     rho: np.ndarray,
     *,
-    frame: Literal["polarized", "total"],
+    component: Literal["polarized", "total"],
     r_inner: float,
     r_outer: float,
     u: float = LIMB_DARKENING,
@@ -171,8 +171,8 @@ def newkirk_profile(
     ----------
     rho
         ``(n,)`` impact parameters (R☉).
-    frame
-        Which brightness the curve carries: ``"polarized"`` (pB) or ``"total"``.
+    component
+        The brightness component the curve is for: pB or total.
     r_inner, r_outer
         The radial shell (R☉) the data frame integrated over (``BrightnessResult.r_inner`` /
         ``r_outer``).
@@ -189,7 +189,7 @@ def newkirk_profile(
     return _hydrostatic_profile(
         rho,
         NEWKIRK_EXPONENT,
-        frame=frame,
+        component=component,
         r_inner=r_inner,
         r_outer=r_outer,
         u=u,
@@ -202,7 +202,7 @@ def newkirk_vignette(
     image: np.ndarray,
     impact: np.ndarray,
     *,
-    frame: Literal["polarized", "total"],
+    component: Literal["polarized", "total"],
     r_inner: float,
     r_outer: float,
     reference_radius: float,
@@ -226,8 +226,8 @@ def newkirk_vignette(
         ``(H, W)`` brightness frame (pB or total).
     impact
         ``(H, W)`` per-pixel impact parameter rho (R☉).
-    frame
-        Which brightness ``image`` carries; the model curve matches it.
+    component
+        The brightness component ``image`` carries: pB or total; the model curve matches it.
     r_inner, r_outer
         The radial shell (R☉) the frame integrated over.
     reference_radius
@@ -242,7 +242,7 @@ def newkirk_vignette(
     """
     nodes = np.linspace(0.0, float(np.max(impact)), _PROFILE_NODES)
     profile = newkirk_profile(
-        nodes, frame=frame, r_inner=r_inner, r_outer=r_outer, u=u, crossover=crossover
+        nodes, component=component, r_inner=r_inner, r_outer=r_outer, u=u, crossover=crossover
     )
     reference = float(np.interp(min(reference_radius, nodes[-1]), nodes, profile))
     if reference <= 0.0:
@@ -294,7 +294,7 @@ def adaptive_vignette(
     image: np.ndarray,
     impact: np.ndarray,
     *,
-    frame: Literal["polarized", "total"],
+    component: Literal["polarized", "total"],
     r_inner: float,
     r_outer: float,
     reference_radius: float,
@@ -328,8 +328,8 @@ def adaptive_vignette(
         ``(H, W)`` brightness frame (pB or total).
     impact
         ``(H, W)`` per-pixel impact parameter rho (R☉).
-    frame
-        Which brightness ``image`` carries; the fitted curve matches it.
+    component
+        The brightness component ``image`` carries: pB or total; the fitted curve matches it.
     r_inner, r_outer
         The radial shell (R☉) the frame integrated over.
     reference_radius
@@ -363,7 +363,7 @@ def adaptive_vignette(
             curve = _hydrostatic_profile(
                 centers[good],
                 float(a),
-                frame=frame,
+                component=component,
                 r_inner=r_inner,
                 r_outer=r_outer,
                 u=u,
@@ -379,7 +379,7 @@ def adaptive_vignette(
     envelope_curve = _hydrostatic_profile(
         centers,
         exponent - margin,
-        frame=frame,
+        component=component,
         r_inner=r_inner,
         r_outer=r_outer,
         u=u,

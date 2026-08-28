@@ -15,7 +15,9 @@ qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 31
 ## The flags that matter
 
 - `--fov`: field of view (full width) in solar radii.
-- `--longitude`, `--latitude`, `--roll`: sub-observer heliographic point and camera roll.
+- `--longitude`, `--latitude`, `--roll`: sub-observer heliographic point and camera roll; or
+  `--observer earth|stereo-a|solo|psp` to take a real observer's viewpoint at the timestamp
+  (see [Camera and viewpoint](../camera.md)).
 - `--occult`: the body treatment; see the occultation modes below.
 - `--preset`: geometric depth weighting, `large-fov` or `small-fov` for the near-limb view
   (default `large-fov`).

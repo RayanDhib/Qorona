@@ -19,13 +19,17 @@ Nothing is rendered; use it to confirm a file is understood before spending minu
 
 ```bash
 qorona build data/coconut_corona.CFmesh.xz -o data/coconut_corona.qor \
-    --timestamp 2025-10-09T18:19:52 --outer-radius 8
+    --timestamp 2025-10-09T18:19:52 --frame carrington --outer-radius 8
 ```
 
 The minutes-scale stage: trace the field, assemble Q⊥, and cache it to `coconut_corona.qor`.
 `--quality fast` gives a minute-scale preview (timings on the [GPU page](../gpu.md)); `--quality`
-and `--outer-radius` are covered on the [Q⊥ volume page](../qperp-volume.md). `--timestamp` is
-optional (it drives the on-image Carrington-rotation stamp).
+and `--outer-radius` are covered on the [Q⊥ volume page](../qperp-volume.md). `--timestamp` and
+`--frame` record what the file does not carry: the observation time and the heliographic frame of
+the solution's longitudes, `carrington` here (`stonyhurst` for a run driven by a magnetogram
+rotated to HEEQ). Both are optional and both are baked into the volume: the time drives the
+on-image Carrington-rotation stamp, and together they let a render point the camera at a real
+observer instead of typed angles (step 3).
 
 ## 3. Render
 
@@ -35,8 +39,14 @@ qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 31
 
 Seconds per viewpoint, any number of viewpoints off the one volume. `--fov` is the field of
 view (full width) in solar radii; `--longitude` and `--latitude` set the sub-observer
-heliographic point, `--roll` the camera roll. [Camera and viewpoint](../camera.md) covers the
-frame those angles are read in and how to point at Earth's viewpoint on a given date.
+heliographic point, `--roll` the camera roll. With the time and frame baked into the volume, the camera can also take a real observer's
+viewpoint on that date, no angles typed:
+
+```bash
+qorona render data/coconut_corona.qor -o data/earth.png --fov 8 --observer earth
+```
+
+[Camera and viewpoint](../camera.md) covers both ways of pointing the camera.
 
 The figure below is exactly this render:
 
@@ -53,7 +63,8 @@ later renders are instant:
 
 ```bash
 qorona run data/coconut_corona.CFmesh.xz -o data/eclipse.png \
-    --timestamp 2025-10-09T18:19:52 --fov 8 --longitude 317 --save-volume data/coconut_corona.qor
+    --timestamp 2025-10-09T18:19:52 --frame carrington \
+    --fov 8 --longitude 317 --save-volume data/coconut_corona.qor
 ```
 
 ## Next

@@ -33,12 +33,12 @@ from typing import Any
 
 import click
 
-from qorona import __version__, pipeline
+from qorona import __version__, ephemeris, pipeline
 from qorona.cli.help import QoronaGroup, option
 from qorona.config import (
     ANNOTATE_CONTENTS,
     ANNOTATE_POSITIONS,
-    BRIGHTNESS_FRAMES,
+    BRIGHTNESS_COMPONENTS,
     BRIGHTNESS_OCCULT_MODES,
     BRIGHTNESS_SCALINGS,
     BRIGHTNESS_VIGNETTES,
@@ -50,6 +50,7 @@ from qorona.config import (
     FIELDLINE_SEEDING,
     FIELDLINE_SHOW,
     FIELDLINES_EXPORT_FORMATS,
+    FRAME_ALIASES,
     OCCULT_MODES,
     POLARITY_MODES,
     PRECISION_MODES,
@@ -57,6 +58,7 @@ from qorona.config import (
     QUALITY_PRESETS,
     RENDER_EXPORT_FORMATS,
     RESAMPLERS,
+    SOLUTION_FRAMES,
     SPACING_LAWS,
     VOLUME_BUILDERS,
     WEIGHTING_PRESETS,
@@ -139,10 +141,18 @@ def _valid_timestamp(ctx: click.Context, param: click.Parameter, value: str | No
     if value is None:
         return value
     try:
-        pipeline.derive_jd(value)
+        ephemeris.derive_jd(value)
     except Exception as error:
         raise click.BadParameter(str(error)) from error
     return value
+
+
+def _canonical_frame(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
+    """Normalise a ``--frame`` spelling to its canonical name (``heeq`` is Stonyhurst)."""
+    return FRAME_ALIASES.get(value, value) if value is not None else None
+
+
+_FRAME_CHOICES = click.Choice(SOLUTION_FRAMES + tuple(FRAME_ALIASES))
 
 
 _input_options = _compose(
@@ -159,6 +169,17 @@ _input_options = _compose(
         callback=_valid_timestamp,
         section="Input",
         help="UTC ISO-8601 observation time → Carrington rotation + Julian date.",
+    ),
+    option(
+        "--frame",
+        type=_FRAME_CHOICES,
+        default=None,
+        callback=_canonical_frame,
+        section="Input",
+        help="Heliographic frame the solution's longitudes are in: carrington or stonyhurst "
+        "(heeq accepted). Establish it for your input and declare it; --observer, --export fits "
+        "and --export sunjson resolve against it and warn when it is undeclared (Carrington is "
+        "then assumed).",
     ),
     option(
         "--variables",
@@ -458,12 +479,13 @@ def _camera_options(
         ),
         option(
             "--observer",
-            type=click.Choice(("earth",)),
+            type=click.Choice(ephemeris.OBSERVERS),
             default=None,
             section="Camera",
-            help="Named observer: derive the sub-observer longitude/latitude (and the "
-            "FITS observer distance) from its ephemeris at the timestamp. Currently: earth. "
-            "Assumes the solution frame is Carrington-aligned.",
+            help="Named observer: derive the sub-observer longitude/latitude (and the FITS "
+            "observer distance) from its ephemeris at the timestamp, in the solution frame "
+            "(--frame). earth resolves offline; stereo-a, solo and psp query JPL Horizons "
+            "(network).",
         ),
     )
 
@@ -758,18 +780,18 @@ _export_options = _compose(
 )
 _brightness_options = _compose(
     option(
-        "--frame",
-        type=click.Choice(BRIGHTNESS_FRAMES),
+        "--component",
+        type=click.Choice(BRIGHTNESS_COMPONENTS),
         default=None,
         section="Brightness",
-        help="Brightness frame: polarized (pB) or total (white-light) (default polarized).",
+        help="Brightness component: polarized (pB) or total (white-light) (default polarized).",
     ),
     option(
         "--vignette",
         type=click.Choice(BRIGHTNESS_VIGNETTES),
         default=None,
         section="Brightness",
-        help="Display treatment of the selected --frame: newkirk divides by the brightness of "
+        help="Display treatment of the selected --component: newkirk divides by the brightness of "
         "the smooth Newkirk background corona; adaptive self-calibrates the same curve family "
         "to the image's own falloff and amplifies its structure; wow whitens the raw frame's "
         "wavelet spectrum (needs sunkit-image and watroo); none keeps the raw falloff "
@@ -920,6 +942,7 @@ def _input_config(kw: dict[str, Any]) -> InputConfig:
         path=kw["input_path"],
         model=kw.get("model"),
         timestamp=kw.get("timestamp"),
+        frame=kw.get("frame"),
         variables=variables,
     )
 
@@ -973,22 +996,53 @@ def _volume_config(kw: dict[str, Any], workers: int | None) -> VolumeConfig:
 
 
 def _observer_gate(kw: dict[str, Any], timestamp: str | None) -> None:
-    """Reject ``--observer earth`` calls that conflict with manual pointing or lack an epoch.
+    """Reject ``--observer`` calls that conflict with manual pointing or lack an epoch.
 
     Called by ``_camera_config`` for every command; commands whose expensive compute precedes
     camera resolution (the ``wl`` raw-solution path) also call it up front to fail fast.
     """
-    if kw.get("observer") != "earth":
+    observer = kw.get("observer")
+    if observer is None:
         return
     if kw.get("longitude") is not None or kw.get("latitude") is not None:
         raise click.UsageError(
-            "--observer earth derives the sub-observer point from the ephemeris; "
+            f"--observer {observer} derives the sub-observer point from the ephemeris; "
             "drop --longitude/--latitude, or drop --observer to point manually"
         )
     if timestamp is None:
         raise click.UsageError(
-            "--observer earth needs an epoch; pass --timestamp (or bake the volume with one)"
+            f"--observer {observer} needs an epoch; pass --timestamp (or bake the volume with one)"
         )
+
+
+def _declared_frame(flag: str | None, build_prov: dict[str, Any] | None = None) -> str | None:
+    """The declared solution frame: the command's ``--frame`` ``flag``, else the one baked into
+    the volume, else ``None`` (undeclared; every consumer takes it as Carrington)."""
+    return flag or (build_prov or {}).get("input", {}).get("frame")
+
+
+#: How the frame warning names the exports that convert between the solution frame and Carrington.
+_FRAME_EXPORTS = {"fits": "the FITS export", "sunjson": "the SunJSON export"}
+
+
+def _frame_consumers(kw: dict[str, Any], output_cfg: OutputConfig) -> list[str]:
+    """Name the requested features that depend on the solution frame: ``--observer`` and the
+    ``fits`` / ``sunjson`` exports."""
+    consumers = [f"--observer {kw['observer']}"] if kw.get("observer") else []
+    consumers += [name for fmt, name in _FRAME_EXPORTS.items() if fmt in output_cfg.export_formats]
+    return consumers
+
+
+def _frame_gate(frame: str | None, consumers: list[str]) -> None:
+    """Warn once when frame-sensitive ``consumers`` run on an undeclared frame; a declared frame,
+    or a run that requested nothing frame-sensitive, is silent."""
+    if frame is not None or not consumers:
+        return
+    print_warning(
+        f"{' and '.join(consumers)}: no --frame declared, so the solution is taken as "
+        "Carrington-aligned; declare its frame with --frame carrington or --frame stonyhurst, "
+        "or point manually with --longitude/--latitude if the frame is unknown"
+    )
 
 
 def _camera_config(
@@ -997,12 +1051,17 @@ def _camera_config(
     default_dimension: int = _DEFAULT_DIMENSION,
     default_fov: float | None = None,
     timestamp: str | None = None,
+    frame: str | None = None,
 ) -> CameraConfig:
     fields = _present(kw, "longitude", "latitude", "roll", "fov")
     _observer_gate(kw, timestamp)
-    if kw.get("observer") == "earth":
+    observer = kw.get("observer")
+    if observer is not None:
         assert timestamp is not None  # _observer_gate rejects the missing-epoch case
-        longitude, latitude, distance = pipeline.sub_earth_point(timestamp)
+        try:
+            longitude, latitude, distance = ephemeris.sub_observer_point(observer, timestamp, frame)
+        except ValueError as error:
+            raise click.ClickException(str(error)) from error
         fields["longitude"], fields["latitude"] = longitude, latitude
         fields["observer_distance"] = distance
     if default_fov is not None and "fov" not in fields:
@@ -1121,7 +1180,7 @@ def _export_config(kw: dict[str, Any], workers: int | None) -> ExportConfig:
 def _brightness_config(kw: dict[str, Any], workers: int | None) -> BrightnessConfig:
     fields = _present(
         kw,
-        "frame",
+        "component",
         "vignette",
         "crossover",
         "step",
@@ -1187,6 +1246,8 @@ def _rebuild_command(build_prov: dict[str, Any], outer_radius: float) -> str:
     flags = []
     if inp.get("timestamp"):
         flags.append(f"--timestamp {inp['timestamp']}")
+    if inp.get("frame"):
+        flags.append(f"--frame {inp['frame']}")
     flags.append(f"--outer-radius {outer_radius:g}")
     sources = (
         (field, ("inner_radius", "n_r", "n_theta", "n_phi", "spacing", "resampler")),
@@ -1350,6 +1411,16 @@ def build(
     advanced=True,
     help="Override the volume's timestamp for the stamp (re-derives CR/JD).",
 )
+@option(
+    "--frame",
+    type=_FRAME_CHOICES,
+    default=None,
+    callback=_canonical_frame,
+    section="Input",
+    advanced=True,
+    help="Declare or override the volume's solution frame: carrington or stonyhurst (heeq "
+    "accepted).",
+)
 @_camera_options()
 @_weighting_options
 @_render_options
@@ -1362,6 +1433,7 @@ def render(
     volume_path: Path,
     output_path: Path,
     timestamp: str | None,
+    frame: str | None,
     workers: int | None,
     device: str | None,
     quiet: bool,
@@ -1391,7 +1463,9 @@ def render(
             "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
             "pass --timestamp (or bake the volume with one)"
         )
-    camera_cfg = _camera_config(kw, timestamp=resolved_timestamp)
+    declared_frame = _declared_frame(frame, build_prov)
+    _frame_gate(declared_frame, _frame_consumers(kw, output_cfg))
+    camera_cfg = _camera_config(kw, timestamp=resolved_timestamp, frame=declared_frame)
     # Pre-resolve the shell-dependent sentinels at the edge so provenance and the stamp spell the
     # resolved numbers; the pipeline's own resolution then no-ops. The volume renders as built, so
     # the category is the one recorded in its provenance (old volumes default to corona).
@@ -1420,6 +1494,7 @@ def render(
         output_cfg,
         result,
         timestamp_override=timestamp,
+        frame_override=frame,
     )
     written = write_outputs(result, output_cfg, provenance)
     print_success(f"Wrote [bold]{output_path}[/bold]")
@@ -1558,15 +1633,16 @@ def run(
     input_cfg = _input_config(kw)
     grid_cfg = _grid_config(kw)
     volume_cfg = _volume_config(kw, workers)
-    camera_cfg = _camera_config(kw, timestamp=kw.get("timestamp"))
-    weighting_cfg = _weighting_config(kw)
-    render_cfg = _render_config(kw, workers)
     output_cfg = _output_config(kw, output_path)
     if "fits" in output_cfg.export_formats and kw.get("timestamp") is None:
         raise click.ClickException(
             "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
             "pass --timestamp"
         )
+    _frame_gate(input_cfg.frame, _frame_consumers(kw, output_cfg))
+    camera_cfg = _camera_config(kw, timestamp=kw.get("timestamp"), frame=input_cfg.frame)
+    weighting_cfg = _weighting_config(kw)
+    render_cfg = _render_config(kw, workers)
 
     print_step(f"Running the full pipeline on [bold]{input_path.name}[/bold]")
     stage_timings: dict[str, float] = {}
@@ -1661,9 +1737,11 @@ def info(input_path: Path, quiet: bool, **kw: Any) -> None:
     if kw.get("timestamp"):
         table.add_row(
             "Timestamp",
-            f"{kw['timestamp']} UTC → CR {pipeline.derive_cr(kw['timestamp'])} / "
-            f"JD {pipeline.derive_jd(kw['timestamp']):.3f}",
+            f"{kw['timestamp']} UTC → CR {ephemeris.derive_cr(kw['timestamp'])} / "
+            f"JD {ephemeris.derive_jd(kw['timestamp']):.3f}",
         )
+    if kw.get("frame"):
+        table.add_row("Frame", kw["frame"])
     console.print(
         Panel(table, title=f"[bold]{input_path.name}[/bold]", border_style="cyan", expand=False)
     )
@@ -1715,12 +1793,13 @@ def fieldlines(
     input_cfg = _input_config(kw)
     grid_cfg = _grid_config(kw)
     fieldlines_cfg = _fieldlines_config(kw, workers)
-    camera_cfg = _camera_config(kw, timestamp=kw.get("timestamp"))
     output_cfg = _output_config(kw, output_path)
     if "sunjson" in output_cfg.export_formats and input_cfg.timestamp is None:
         raise click.ClickException(
             "--export sunjson needs a timestamp for the JHelioviewer timeline; pass --timestamp"
         )
+    _frame_gate(input_cfg.frame, _frame_consumers(kw, output_cfg))
+    camera_cfg = _camera_config(kw, timestamp=kw.get("timestamp"), frame=input_cfg.frame)
 
     print_step(f"Tracing field lines from [bold]{input_path.name}[/bold]")
     start = time.perf_counter()
@@ -1796,6 +1875,7 @@ def export_lines(
         raise click.ClickException(
             "SunJSON needs an observation time for the JHelioviewer timeline; pass --timestamp"
         )
+    _frame_gate(input_cfg.frame, [_FRAME_EXPORTS["sunjson"]])
 
     print_step(f"Exporting field lines from [bold]{input_path.name}[/bold]")
     start = time.perf_counter()
@@ -1876,8 +1956,8 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
     INPUT is either a raw solution (read and resampled, as ``build`` would) or a built ``.qor``
     volume artifact (whose stored electron density is reused, skipping the resample). The
     Thomson-scattering brightness is integrated over the density along each line of sight: the
-    polarized brightness pB by default, or the total white-light brightness with ``--frame
-    total``. The frame is finished by two display stages: the ``--vignette`` treatment
+    polarized brightness pB by default, or the total white-light brightness with ``--component
+    total``. The component is finished by two display stages: the ``--vignette`` treatment
     (``newkirk`` by default, ``adaptive`` for inputs whose falloff departs from it, ``wow`` for
     wavelet whitening, ``none`` for the raw falloff) and optional ``--mgn`` fine-structure
     enhancement. ``--export npz`` also writes the raw frames (both pB and total) with their
@@ -1899,6 +1979,7 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
                 "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
                 "pass --timestamp"
             )
+        _frame_gate(kw.get("frame"), _frame_consumers(kw, output_cfg))
 
     print_step(f"Rendering white-light corona from [bold]{input_path.name}[/bold]")
     start = time.perf_counter()
@@ -1941,6 +2022,9 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
             "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
             "pass --timestamp (or bake the volume with one)"
         )
+    declared_frame = _declared_frame(kw.get("frame"), build_prov)
+    if from_volume:
+        _frame_gate(declared_frame, _frame_consumers(kw, output_cfg))
     # The input's model and solution category drive the edge defaults: a volume renders as built
     # (its recorded category, old volumes defaulting to corona), a raw solution goes through the
     # registry. The coronal wl frame keeps its wider constant FOV; a heliospheric one spans the
@@ -1956,6 +2040,7 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
         default_dimension=_WL_DEFAULT_DIMENSION,
         default_fov=_WL_DEFAULT_FOV if category == "corona" else None,
         timestamp=resolved_timestamp,
+        frame=declared_frame,
     )
 
     if kw.get("vignette") is None and (model == "coconut" or category == "heliosphere"):
@@ -1990,6 +2075,7 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
             output_cfg,
             result,
             timestamp_override=kw.get("timestamp"),
+            frame_override=kw.get("frame"),
         )
     else:
         provenance = pipeline.brightness_provenance(
@@ -2028,6 +2114,8 @@ def _input_line(prov: dict[str, Any]) -> str:
         if inp.get("jd") is not None:
             stamp += f" / JD {float(inp['jd']):.3f}"
         parts.append(stamp)
+    frame = inp.get("frame")
+    parts.append(f"{frame} frame" if frame else "carrington frame (assumed)")
     return " · ".join(parts)
 
 
@@ -2132,13 +2220,13 @@ def _export_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
 
 def _brightness_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
     bri = prov["brightness"]
-    frame = "pB" if bri["frame"] == "polarized" else "white-light"
+    component = "pB" if bri["component"] == "polarized" else "white-light"
     vignette = bri.get("vignette", "none")
     finish = ["raw" if vignette == "none" else str(vignette)]
     if bri.get("mgn"):
         finish.append("mgn")
     parts = [
-        f"{frame} · {'+'.join(finish)}",
+        f"{component} · {'+'.join(finish)}",
         str(bri["occult"]),
         f"median polarization {float(bri['median_polarization']):.2f}",
         f"pB spans {float(bri['pb_decades']):.1f} decades",
