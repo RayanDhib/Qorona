@@ -10,8 +10,11 @@ The CLI populates these from ``--flags``; a YAML/TOML loader or light GUI would 
 front-end that constructs the same dataclasses, leaving the pipeline and schema untouched.
 
 Defaults mirror the engine functions' own (the volume builders and ``render`` define
-``clamp`` / ``step`` / ``occult`` / ``supersample`` / ``paint_step`` / ``rtol``), so the schema only
-*names* each number, it never re-invents one.
+``clamp`` / ``occult`` / ``supersample`` / ``paint_step`` / ``rtol``), so the schema only
+*names* each number, it never re-invents one. The shell-dependent geometry fields (the grid radii,
+the camera FOV, the LOS step, the occulter radii, the Q-map shell) instead default to ``None``
+sentinels resolved by solution category in :mod:`qorona.pipeline.run`: the locked coronal constants
+for a coronal solution, or a value derived from the resolved shell for a heliospheric one.
 """
 
 from __future__ import annotations
@@ -55,6 +58,29 @@ PRECISION_MODES = ("float64", "mixed", "float32")
 #: The theoretical Q⊥ floor in log₁₀; the render's default display lower clamp (mirrors
 #: ``qorona.render.los.LOG_FLOOR``).
 _LOG_FLOOR = math.log10(2.0)
+
+#: Locked coronal values for the category-resolved defaults: the internal shell, the
+#: camera field of view (full width, R_sun), the LOS step, the occulter radii, and the
+#: Q-map shell radius. A ``None`` in the corresponding config field resolves to these for
+#: coronal solutions; heliospheric solutions derive the value from the resolved shell
+#: instead (the laws live with the resolvers in :mod:`qorona.pipeline.run`).
+CORONAL_SHELL = (1.0, 12.5)
+CORONAL_FOV = 12.5
+CORONAL_STEP = 0.02
+CORONAL_R_OCCULT = 1.0
+CORONAL_WL_R_OCCULT = 1.02
+CORONAL_QMAP_RADIUS = 3.0
+#: Category-keyed default sub-observer latitude (deg), fixed per category rather than shell-derived:
+#: the coronal edge-on view (0), the heliospheric equatorial-plane view from solar north (90).
+CORONAL_LATITUDE = 0.0
+HELIO_LATITUDE = 90.0
+#: Heliospheric derivation laws: fov = HELIO_FOV_FACTOR x outer_radius;
+#: step = fov / STEP_PER_FOV; wl occulter = WL_OCCULT_FACTOR x inner_radius;
+#: Q-map shell = HELIO_QMAP_FACTOR x inner_radius.
+HELIO_FOV_FACTOR = 2.0
+STEP_PER_FOV = 1250.0
+WL_OCCULT_FACTOR = 1.02
+HELIO_QMAP_FACTOR = 3.0
 
 
 def _require(condition: bool, message: str) -> None:
@@ -123,17 +149,18 @@ class GridConfig:
     ``knn-mls`` otherwise.
     :class:`VolumeConfig`'s ``resolution_factor`` scales these node counts to
     the finer volume grid; the spacing law and radii are shared, so the field grid and the volume
-    grid sit on the same shell at different pitch.
+    grid sit on the same shell at different pitch. ``None`` on either radius resolves by solution
+    category (corona: the locked constant; heliosphere: derived from the resolved shell).
     """
 
     n_r: int = 192
     n_theta: int = 180
     n_phi: int = 360
-    inner_radius: float = 1.0
-    outer_radius: float = 12.5
+    inner_radius: float | None = None
+    outer_radius: float | None = None
     spacing: str = "logarithmic"
     resampler: str = "auto"
-    n_neighbors: int = 30
+    n_neighbors: int = 48
 
     def __post_init__(self) -> None:
         _require(self.n_r >= 4, f"n_r must be >= 4, got {self.n_r}")
@@ -142,9 +169,16 @@ class GridConfig:
             self.n_phi >= 4 and self.n_phi % 2 == 0,
             f"n_phi must be even and >= 4 (pole reflection), got {self.n_phi}",
         )
+        for name, radius in (
+            ("inner_radius", self.inner_radius),
+            ("outer_radius", self.outer_radius),
+        ):
+            _require(radius is None or radius > 0.0, f"{name} must be > 0, got {radius}")
         _require(
-            0.0 < self.inner_radius < self.outer_radius,
-            f"need 0 < inner_radius < outer_radius, got "
+            self.inner_radius is None
+            or self.outer_radius is None
+            or self.inner_radius < self.outer_radius,
+            f"need inner_radius < outer_radius, got "
             f"({self.inner_radius}, {self.outer_radius}) R_sun",
         )
         _one_of(self.spacing, SPACING_LAWS, "spacing")
@@ -270,22 +304,26 @@ class CameraConfig:
     """The orthographic plane-of-sky viewpoint: sub-observer angles (deg), roll, FOV, and pixels.
 
     Angles are in **degrees** here (friendly at the CLI) and converted to the camera's radians/R☉
-    convention at the pipeline edge. ``pixels`` is ``(height, width)`` to match
+    convention at the pipeline edge. ``latitude`` is the sub-observer heliographic latitude;
+    ``None`` resolves by solution category (corona: 0, edge-on; heliosphere: 90, the
+    equatorial-plane view from solar north). ``fov`` is the full field-of-view width in R☉; ``None``
+    resolves by solution category (corona: the locked constant; heliosphere: derived from the
+    resolved shell). ``pixels`` is ``(height, width)`` to match
     :class:`~qorona.geometry.camera.OrthographicCamera`. ``observer_distance`` is the synthetic
     observer's heliocentric distance in AU, read only by the FITS export (the orthographic render
     is distance-free).
     """
 
     longitude: float = 0.0
-    latitude: float = 0.0
+    latitude: float | None = None
     roll: float = 0.0
-    fov: float = 25.0
+    fov: float | None = None
     pixels: tuple[int, int] = (1024, 1024)
     observer_distance: float = 1.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "pixels", (int(self.pixels[0]), int(self.pixels[1])))
-        _require(self.fov > 0.0, f"fov must be > 0 R_sun, got {self.fov}")
+        _require(self.fov is None or self.fov > 0.0, f"fov must be > 0 R_sun, got {self.fov}")
         _require(
             self.pixels[0] > 0 and self.pixels[1] > 0,
             f"pixels must be positive, got {self.pixels}",
@@ -362,18 +400,19 @@ class RenderConfig:
     (``auto`` prefers the GPU when present; ``gpu`` demands one and errors if absent; ``cpu``
     forces the CPU) and ``precision`` the CUDA kernel tier (``mixed`` samples in float32 and
     accumulates in float64; ``float64`` is the all-double reference; ``float32`` is accepted as
-    an alias of ``mixed``).
+    an alias of ``mixed``). ``None`` on ``step`` or ``r_occult`` resolves by solution category
+    (corona: the locked constant; heliosphere: derived from the resolved shell).
     """
 
     display: str = "balanced"
     occult: str = "eclipse"
-    r_occult: float = 1.0
+    r_occult: float | None = None
     occult_softness: float = 0.03
     disk_tone: float = 0.8
     disk_desat: float = 0.4
     clamp: tuple[float, float] = (_LOG_FLOOR, 7.0)
     floor: bool = True
-    step: float = 0.02
+    step: float | None = None
     percentiles: tuple[float, float] = (1.0, 99.5)
     polarity_mode: str = "none"
     workers: int | None = None
@@ -388,7 +427,10 @@ class RenderConfig:
         _one_of(self.display, DISPLAY_MODES, "display")
         _one_of(self.occult, OCCULT_MODES, "occult")
         _one_of(self.polarity_mode, POLARITY_MODES, "polarity_mode")
-        _require(self.r_occult > 0.0, f"r_occult must be > 0 R_sun, got {self.r_occult}")
+        _require(
+            self.r_occult is None or self.r_occult > 0.0,
+            f"r_occult must be > 0 R_sun, got {self.r_occult}",
+        )
         _require(
             self.occult_softness >= 0.0, f"occult_softness must be >= 0, got {self.occult_softness}"
         )
@@ -400,7 +442,7 @@ class RenderConfig:
             self.clamp[0] < self.clamp[1],
             f"clamp must be (low, high) with low < high, got {self.clamp}",
         )
-        _require(self.step > 0.0, f"step must be > 0 R_sun, got {self.step}")
+        _require(self.step is None or self.step > 0.0, f"step must be > 0 R_sun, got {self.step}")
         low, high = self.percentiles
         _require(
             0.0 <= low < high <= 100.0,
@@ -436,20 +478,24 @@ class RenderConfig:
 class QMapConfig:
     """The Q-map product: a signed-log-Q⊥ shell sliced from the cached Q⊥ volume.
 
-    ``radius`` (R☉) is the shell radius; ``n_theta``/``n_phi`` the longitude/latitude sample grid;
-    ``slog_max`` the colour ceiling (``None`` → :data:`~qorona.render.shell.DEFAULT_SLOG_MAX`);
-    ``export_formats`` lists the data sidecars written beside the figure, drawn from the Q-map's
-    own :data:`QMAP_EXPORT_FORMATS` (currently ``"npz"``, the raw shell arrays).
+    ``radius`` (R☉) is the shell radius (``None`` resolves by solution category: corona: the locked
+    constant; heliosphere: derived from the resolved shell); ``n_theta``/``n_phi`` the
+    longitude/latitude sample grid; ``slog_max`` the colour ceiling (``None`` →
+    :data:`~qorona.render.shell.DEFAULT_SLOG_MAX`); ``export_formats`` lists the data sidecars
+    written beside the figure, drawn from the Q-map's own :data:`QMAP_EXPORT_FORMATS` (currently
+    ``"npz"``, the raw shell arrays).
     """
 
-    radius: float = 3.0
+    radius: float | None = None
     n_theta: int = 720
     n_phi: int = 1440
     slog_max: float | None = None
     export_formats: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        _require(self.radius > 0.0, f"radius must be positive, got {self.radius}")
+        _require(
+            self.radius is None or self.radius > 0.0, f"radius must be positive, got {self.radius}"
+        )
         _require(
             self.n_theta > 0 and self.n_phi > 0,
             f"resolution must be positive, got {self.n_theta}x{self.n_phi}",
@@ -626,9 +672,11 @@ class BrightnessConfig:
     fine-structure enhancement (calibrated for the steep-gradient pB frame;
     on the total frame it still runs but is less physically meaningful). ``u`` and ``crossover``
     are the Thomson coefficient knobs, ``scaling`` / ``percentiles`` the display stretch; the
-    line-of-sight ``step`` and the occultation triple mirror :class:`RenderConfig`, with the
-    occulter edge just above the limb by default so the overwhelming near-limb ring does not eat
-    the stretch. ``scaling`` defaults to ``None`` and resolves to ``"log"`` only for the raw
+    line-of-sight ``step`` and the occultation triple mirror :class:`RenderConfig`. ``None`` on
+    ``step`` or ``r_occult`` resolves by solution category (corona: the locked constant, the WL
+    occulter edge sitting just above the limb so the overwhelming near-limb ring does not eat the
+    stretch; heliosphere: derived from the resolved shell). ``scaling`` defaults to ``None`` and
+    resolves to ``"log"`` only for the raw
     falloff (``vignette="none"`` without ``mgn``), else ``"linear"`` (the detrended frames are
     already flat). ``percentiles`` default to the full range (a global min/max stretch); clip them
     for inputs with pathological bright spots.
@@ -639,9 +687,9 @@ class BrightnessConfig:
     mgn: bool = False
     u: float = 0.6
     crossover: float = 10.0
-    step: float = 0.02
+    step: float | None = None
     occult: str = "eclipse"
-    r_occult: float = 1.02
+    r_occult: float | None = None
     occult_softness: float = 0.03
     scaling: str | None = None
     percentiles: tuple[float, float] = (1.0, 99.5)
@@ -661,8 +709,11 @@ class BrightnessConfig:
         _one_of(scaling, BRIGHTNESS_SCALINGS, "scaling")
         _require(0.0 <= self.u <= 1.0, f"limb darkening u must be in [0, 1], got {self.u}")
         _require(self.crossover > 0.0, f"crossover must be > 0 R_sun, got {self.crossover}")
-        _require(self.step > 0.0, f"step must be > 0 R_sun, got {self.step}")
-        _require(self.r_occult > 0.0, f"r_occult must be > 0 R_sun, got {self.r_occult}")
+        _require(self.step is None or self.step > 0.0, f"step must be > 0 R_sun, got {self.step}")
+        _require(
+            self.r_occult is None or self.r_occult > 0.0,
+            f"r_occult must be > 0 R_sun, got {self.r_occult}",
+        )
         _require(
             self.occult_softness >= 0.0, f"occult_softness must be >= 0, got {self.occult_softness}"
         )

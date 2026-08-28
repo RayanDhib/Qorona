@@ -51,6 +51,9 @@ class SampledField(Field):
     resampler_name
         Config-vocabulary name of the resampler that built this field, recorded by the
         pipeline for provenance (``None`` when constructed directly).
+    category
+        Solution category of the source (``"corona"`` or ``"heliosphere"``), recorded by
+        the pipeline for provenance and category-keyed defaults.
     """
 
     def __init__(
@@ -64,6 +67,7 @@ class SampledField(Field):
         self.grid = grid
         self.normalization = normalization
         self.resampler_name: str | None = None
+        self.category: str = "corona"
         self._b_padded = b_padded
         self._density = density
         self._reference_strength: float | None = None

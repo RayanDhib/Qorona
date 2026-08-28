@@ -11,5 +11,6 @@ COOLFluiD model).
 from __future__ import annotations
 
 from qorona.io.formats.tecplot import ParsedTecplot, parse_tecplot
+from qorona.io.formats.vtu import ParsedVtu, VtuPiece, parse_vtu
 
-__all__ = ["ParsedTecplot", "parse_tecplot"]
+__all__ = ["ParsedTecplot", "ParsedVtu", "VtuPiece", "parse_tecplot", "parse_vtu"]

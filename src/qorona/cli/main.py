@@ -81,7 +81,7 @@ from qorona.io.output import (
     write_outputs,
     write_qmap,
 )
-from qorona.io.readers import resolve_model
+from qorona.io.readers import category_of, resolve_model
 
 #: Default image dimension used only when exactly one of ``--width`` / ``--height`` is supplied; the
 #: full default ``pixels`` otherwise lives once on :class:`~qorona.config.CameraConfig`.
@@ -91,8 +91,9 @@ _DEFAULT_DIMENSION = 1024
 #: override it.
 _WL_DEFAULT_DIMENSION = 1024
 
-#: Default field of view (full width, R_sun) of the white-light product, wider than the render's
-#: 8 so the streamers keep headroom instead of touching the frame. ``--fov`` overrides it.
+#: Default field of view (full width, R_sun) of the white-light product, wider than the docs'
+#: canonical ``--fov 8`` eclipse framing so the streamers keep headroom instead of touching the
+#: frame. ``--fov`` overrides it.
 _WL_DEFAULT_FOV = 10.0
 
 
@@ -198,14 +199,16 @@ _grid_options = _compose(
         default=None,
         section="Field grid",
         advanced=True,
-        help="Inner shell radius in R_sun (default 1.0).",
+        help="Inner shell radius in R_sun (default: the category shell; corona 1.0, "
+        "heliosphere the native inner boundary).",
     ),
     option(
         "--outer-radius",
         type=float,
         default=None,
         section="Field grid",
-        help="Outer shell radius in R_sun (default 12.5).",
+        help="Outer shell radius in R_sun (default: the category shell; corona 12.5, "
+        "heliosphere the native outer boundary).",
     ),
     option(
         "--spacing",
@@ -232,8 +235,8 @@ _grid_options = _compose(
         section="Field grid",
         advanced=True,
         help=(
-            "k-NN MLS neighbour count for resampling (default 30, scales up on finer meshes; "
-            "try 48 if a solution shows resampling artefacts)."
+            "k-NN MLS neighbour count for resampling (default 48, scales up on finer meshes; "
+            "lower is sharper but noisier)."
         ),
     ),
 )
@@ -396,9 +399,14 @@ _cache_options = _compose(
 
 
 def _camera_options(
-    default_dimension: int = _DEFAULT_DIMENSION, default_fov: float = 25.0
+    default_dimension: int = _DEFAULT_DIMENSION, default_fov: float | None = None
 ) -> Callable[[Callable], Callable]:
-    """The shared camera option group; the defaults state a command's image and FOV defaults."""
+    """The shared camera option group; the defaults state a command's image and FOV defaults.
+
+    A ``None`` ``default_fov`` means the FOV is resolved by solution category (corona: the locked
+    constant; heliosphere: the full domain), stated as such in the ``--fov`` help; a concrete
+    ``default_fov`` (the ``wl`` product's wider frame) states its own number.
+    """
     return _compose(
         option(
             "--longitude",
@@ -412,7 +420,8 @@ def _camera_options(
             type=float,
             default=None,
             section="Camera",
-            help="Sub-observer heliographic latitude in degrees (default 0).",
+            help="Sub-observer heliographic latitude in degrees "
+            "(default: corona 0 (edge-on), heliosphere 90 (equatorial-plane view)).",
         ),
         option(
             "--roll",
@@ -426,7 +435,12 @@ def _camera_options(
             type=float,
             default=None,
             section="Camera",
-            help=f"Field of view (full width) in R_sun (default {default_fov:g}).",
+            help=(
+                f"Field of view (full width) in R_sun (default {default_fov:g})."
+                if default_fov is not None
+                else "Field of view (full width) in R_sun (default: corona 12.5, "
+                "heliosphere spans the domain)."
+            ),
         ),
         option(
             "--width",
@@ -494,7 +508,7 @@ _render_options = _compose(
         default=None,
         section="Render",
         advanced=True,
-        help="Body/occulter radius in R_sun (default 1.0).",
+        help="Body/occulter radius in R_sun (default: corona 1.0, heliosphere the inner shell).",
     ),
     option(
         "--occult-softness",
@@ -542,7 +556,7 @@ _render_options = _compose(
         type=float,
         default=None,
         section="Render",
-        help="Line-of-sight sample spacing in R_sun (default 0.02).",
+        help="Line-of-sight sample spacing in R_sun (default: corona 0.02, heliosphere fov/1250).",
     ),
     option(
         "--percentiles",
@@ -803,7 +817,7 @@ _brightness_options = _compose(
         type=float,
         default=None,
         section="Brightness",
-        help="Line-of-sight sample spacing in R_sun (default 0.02).",
+        help="Line-of-sight sample spacing in R_sun (default: corona 0.02, heliosphere fov/1250).",
     ),
     option(
         "--occult",
@@ -818,8 +832,9 @@ _brightness_options = _compose(
         default=None,
         section="Brightness",
         advanced=True,
-        help="Body/occulter radius in R_sun (default 1.02, just above the limb so the "
-        "overwhelming near-limb ring does not eat the display stretch).",
+        help="Body/occulter radius in R_sun (default: corona 1.02, heliosphere 1.02 x inner "
+        "shell, just above the boundary so the overwhelming near-limb ring does not eat the "
+        "display stretch).",
     ),
     option(
         "--occult-softness",
@@ -1147,6 +1162,8 @@ def _qmap_config(kw: dict[str, Any]) -> QMapConfig:
 
 
 #: Build-flag defaults; a provenance value equal to its default is left out of the rebuild command.
+#: Provenance records the *resolved* shell, so a heliospheric rebuild spells ``--inner-radius``
+#: explicitly (its resolved inner radius is the native boundary, not the coronal 1.0 default).
 _BUILD_DEFAULTS = {
     "n_r": 192,
     "n_theta": 180,
@@ -1188,7 +1205,7 @@ def _rebuild_command(build_prov: dict[str, Any], outer_radius: float) -> str:
 
 
 def _warn_qmap_outer_radius(
-    outer_radius: float, qmap_cfg: QMapConfig, build_prov: dict[str, Any]
+    inner_radius: float, outer_radius: float, qmap_cfg: QMapConfig, build_prov: dict[str, Any]
 ) -> None:
     """Warn when the volume's outer radius does not sit at the Q-map radius.
 
@@ -1196,9 +1213,11 @@ def _warn_qmap_outer_radius(
     puts the heliospheric current sheet on the Q⊥ ridges. A deeper volume slices the ``[1, outer]``
     mapping, where the current sheet can drift off the ridges; a shallower one cannot reach that
     radius, so the map is clamped to the boundary. Either way, print the build command that produces
-    it right.
+    it right. ``inner_radius``, ``outer_radius`` and ``qmap_cfg.radius`` all arrive resolved off the
+    loaded volume, so all are concrete numbers here.
     """
     radius = qmap_cfg.radius
+    assert radius is not None  # the Q-map config is resolved at the CLI edge before this call
     if radius > outer_radius * (1.0 + 1e-6):
         print_warning(
             f"r = {radius:g} R_sun is outside this volume (outer = {outer_radius:g}); the map was "
@@ -1207,7 +1226,8 @@ def _warn_qmap_outer_radius(
     elif outer_radius > radius * 1.01:
         print_warning(
             f"Q-map at r = {radius:g} R_sun sliced from an outer = {outer_radius:g} volume: the "
-            f"current sheet may sit off the Q⊥ ridges (a slice of the [1, {outer_radius:g}] "
+            f"current sheet may sit off the Q⊥ ridges (a slice of the "
+            f"[{inner_radius:g}, {outer_radius:g}] "
             "mapping). For the canonical map, rebuild with the outer radius at the map radius:"
         )
     else:
@@ -1372,9 +1392,23 @@ def render(
             "pass --timestamp (or bake the volume with one)"
         )
     camera_cfg = _camera_config(kw, timestamp=resolved_timestamp)
+    # Pre-resolve the shell-dependent sentinels at the edge so provenance and the stamp spell the
+    # resolved numbers; the pipeline's own resolution then no-ops. The volume renders as built, so
+    # the category is the one recorded in its provenance (old volumes default to corona).
+    category = build_prov.get("input", {}).get("category", "corona")
+    camera_cfg = pipeline.resolve_camera(camera_cfg, category, float(volume.grid.radii[-1]))
+    fov = camera_cfg.fov
+    assert fov is not None  # resolved above
+    render_cfg = pipeline.resolve_render(render_cfg, category, fov, float(volume.grid.radii[0]))
     start = time.perf_counter()
     result = pipeline.render_volume(
-        volume, camera_cfg, weighting_cfg, render_cfg, density=density, show_progress=show_progress
+        volume,
+        camera_cfg,
+        weighting_cfg,
+        render_cfg,
+        category=category,
+        density=density,
+        show_progress=show_progress,
     )
     render_time = time.perf_counter() - start
 
@@ -1404,7 +1438,11 @@ def render(
     help="Destination figure (.png).",
 )
 @option(
-    "--radius", type=float, default=None, section="Q-map", help="Shell radius in R_sun (default 3)."
+    "--radius",
+    type=float,
+    default=None,
+    section="Q-map",
+    help="Shell radius in R_sun (default: corona 3.0, heliosphere 3 x inner shell).",
 )
 @option(
     "--resolution",
@@ -1453,8 +1491,14 @@ def qmap(volume_path: Path, output_path: Path, quiet: bool, **kw: Any) -> None:
             f"{volume_path.name} has no radial-sign channel (built before the Q-map feature); "
             "re-run `qorona build` to add it."
         )
-    _warn_qmap_outer_radius(float(volume.grid.radii[-1]), qmap_cfg, build_prov)
-    result = pipeline.qmap_from_volume(volume, qmap_cfg)
+    # Resolve the shell radius off the loaded volume's category before the warning and the slice, so
+    # the warning, the provenance, and the stamp all read the same concrete radius.
+    category = build_prov.get("input", {}).get("category", "corona")
+    qmap_cfg = pipeline.resolve_qmap(qmap_cfg, category, float(volume.grid.radii[0]))
+    _warn_qmap_outer_radius(
+        float(volume.grid.radii[0]), float(volume.grid.radii[-1]), qmap_cfg, build_prov
+    )
+    result = pipeline.qmap_from_volume(volume, qmap_cfg, category=category)
     qmap_time = time.perf_counter() - start
 
     provenance = pipeline.qmap_provenance(qmap_cfg, output_cfg, build_prov, result)
@@ -1546,12 +1590,21 @@ def run(
         )
         print_success(f"Saved volume → [bold]{save_volume_path}[/bold]")
 
+    # Resolve the shell-dependent camera / render sentinels off the built volume's shell and the
+    # solution category, so the render and its provenance / stamp all read the resolved numbers.
+    category = build_prov.get("input", {}).get("category", "corona")
+    camera_cfg = pipeline.resolve_camera(camera_cfg, category, float(volume.grid.radii[-1]))
+    fov = camera_cfg.fov
+    assert fov is not None  # resolved above
+    render_cfg = pipeline.resolve_render(render_cfg, category, fov, float(volume.grid.radii[0]))
+
     render_start = time.perf_counter()
     result = pipeline.render_volume(
         volume,
         camera_cfg,
         weighting_cfg,
         render_cfg,
+        category=category,
         density=field.density,
         show_progress=show_progress,
     )
@@ -1593,6 +1646,7 @@ def info(input_path: Path, quiet: bool, **kw: Any) -> None:
     table.add_column(style="bold cyan", justify="right")
     table.add_column()
     table.add_row("Model", f"{meta.model} · {meta.file_format} · {meta.element_type}")
+    table.add_row("Category", meta.category)
     table.add_row("Mesh", f"{solution.n_cells:,} cells · {solution.n_nodes:,} nodes")
     table.add_row("Variables", ", ".join(solution.variable_names))
     for role in ("inner", "outer"):
@@ -1672,9 +1726,13 @@ def fieldlines(
     start = time.perf_counter()
     field = pipeline.build_field(input_cfg, grid_cfg, show_progress=show_progress)
     field_time = time.perf_counter() - start
+    # Resolve the camera FOV sentinel off the field's outer shell and category, so the render and
+    # its provenance / stamp read the same resolved FOV.
+    category = field.category
+    camera_cfg = pipeline.resolve_camera(camera_cfg, category, field.domain.outer_radius)
     render_start = time.perf_counter()
     result = pipeline.render_fieldlines(
-        field, fieldlines_cfg, camera_cfg, show_progress=show_progress
+        field, fieldlines_cfg, camera_cfg, category=category, show_progress=show_progress
     )
     render_time = time.perf_counter() - render_start
 
@@ -1883,25 +1941,43 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
             "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
             "pass --timestamp (or bake the volume with one)"
         )
+    # The input's model and solution category drive the edge defaults: a volume renders as built
+    # (its recorded category, old volumes defaulting to corona), a raw solution goes through the
+    # registry. The coronal wl frame keeps its wider constant FOV; a heliospheric one spans the
+    # full domain (default_fov None, resolved off the shell below).
+    model = _input_model(from_volume, input_path, build_prov, kw.get("model"))
+    category = (
+        (build_prov or {}).get("input", {}).get("category", "corona")
+        if from_volume
+        else category_of(model)
+    )
     camera_cfg = _camera_config(
         kw,
         default_dimension=_WL_DEFAULT_DIMENSION,
-        default_fov=_WL_DEFAULT_FOV,
+        default_fov=_WL_DEFAULT_FOV if category == "corona" else None,
         timestamp=resolved_timestamp,
     )
 
-    if (
-        kw.get("vignette") is None
-        and _input_model(from_volume, input_path, build_prov, kw.get("model")) == "coconut"
-    ):
-        # Model-aware default: the self-calibrating adaptive channel for COCONUT input; the
-        # schema's newkirk default stands for every other input.
+    if kw.get("vignette") is None and (model == "coconut" or category == "heliosphere"):
+        # Model/category-aware default: the self-calibrating adaptive channel for COCONUT input and
+        # for heliospheric inputs (whose falloff departs from the Newkirk profile); the schema's
+        # newkirk default stands for every other input.
         kw["vignette"] = "adaptive"
     brightness_cfg = _brightness_config(kw, workers)
 
+    # Pre-resolve the shell-dependent camera / brightness sentinels off the density's shell, so the
+    # render and its provenance / stamp read the resolved numbers; the pipeline's own resolution
+    # then no-ops.
+    camera_cfg = pipeline.resolve_camera(camera_cfg, category, float(density.grid.radii[-1]))
+    fov = camera_cfg.fov
+    assert fov is not None  # resolved above
+    brightness_cfg = pipeline.resolve_brightness(
+        brightness_cfg, category, fov, float(density.grid.radii[0])
+    )
+
     render_start = time.perf_counter()
     result = pipeline.render_brightness(
-        density, brightness_cfg, camera_cfg, show_progress=show_progress
+        density, brightness_cfg, camera_cfg, category=category, show_progress=show_progress
     )
     render_time = time.perf_counter() - render_start
 

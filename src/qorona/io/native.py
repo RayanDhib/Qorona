@@ -118,6 +118,7 @@ class SolutionMetadata:
     dimension: int
     n_equations: int
     element_type: str
+    category: str = "corona"
     length_unit: str = "R_sun"
     extra: dict[str, str] = field(default_factory=dict)
 

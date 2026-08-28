@@ -77,11 +77,11 @@ integrate log₁₀ Q⊥ along the line of sight on a plane-of-sky camera.
 
 ## Supported models
 
-Qorona is model-agnostic: each coronal model and file format sits behind a common reader
+Qorona is model-agnostic: each model and file format sits behind a common reader
 interface, so the whole pipeline runs on any solution once a reader exists. Currently supported:
-**COCONUT** ([COOLFluiD](https://github.com/andrealani/COOLFluiD) `.CFmesh`, Tecplot `.plt`)
-and **[MAS](https://www.predsci.com/)** (HDF4). A contributor guide for adding a reader is
-planned.
+**COCONUT** ([COOLFluiD](https://github.com/andrealani/COOLFluiD) `.CFmesh`, Tecplot `.plt`),
+**[MAS](https://www.predsci.com/)** (HDF4), and **ICARUS** (MPI-AMRVAC heliospheric `.vtu`;
+Verbeke et al. 2022). A contributor guide for adding a reader is planned.
 
 ## Citing
 

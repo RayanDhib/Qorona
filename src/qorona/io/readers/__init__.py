@@ -13,9 +13,15 @@ from pathlib import Path
 from qorona.io.native import NativeSolution
 from qorona.io.readers.base import SolutionReader
 from qorona.io.readers.coconut import CFmeshReader, CoconutTecplotReader
+from qorona.io.readers.icarus import IcarusVtuReader
 from qorona.io.readers.mas import MasHdfReader
 
-_READERS: list[type[SolutionReader]] = [CFmeshReader, CoconutTecplotReader, MasHdfReader]
+_READERS: list[type[SolutionReader]] = [
+    CFmeshReader,
+    CoconutTecplotReader,
+    MasHdfReader,
+    IcarusVtuReader,
+]
 
 
 def register_reader(reader: type[SolutionReader]) -> type[SolutionReader]:
@@ -92,6 +98,19 @@ def resolve_model(path: str | Path, *, model: str | None = None) -> str | None:
         return None
 
 
+def category_of(model: str | None) -> str:
+    """Return the solution category for ``model`` (``"corona"`` when unknown).
+
+    The registry-level companion of :func:`resolve_model` for category-keyed default
+    resolution; an unknown or unresolved model falls back to the coronal category.
+    """
+    if model is not None:
+        for reader in _READERS:
+            if reader.model == model.lower():
+                return reader.category
+    return "corona"
+
+
 def read_solution(
     path: str | Path,
     *,
@@ -99,7 +118,7 @@ def read_solution(
     show_progress: bool = True,
     **reader_kwargs: object,
 ) -> NativeSolution:
-    """Read a coronal MHD solution into a :class:`NativeSolution`.
+    """Read an MHD solution into a :class:`NativeSolution`.
 
     Parameters
     ----------
@@ -127,6 +146,7 @@ __all__ = [
     "NativeSolution",
     "SolutionReader",
     "available_models",
+    "category_of",
     "read_solution",
     "register_reader",
     "resolve_model",

@@ -43,12 +43,26 @@ from qorona.config import (
     VolumeConfig,
     WeightingConfig,
 )
+from qorona.config.schema import (
+    CORONAL_FOV,
+    CORONAL_LATITUDE,
+    CORONAL_QMAP_RADIUS,
+    CORONAL_R_OCCULT,
+    CORONAL_SHELL,
+    CORONAL_STEP,
+    CORONAL_WL_R_OCCULT,
+    HELIO_FOV_FACTOR,
+    HELIO_LATITUDE,
+    HELIO_QMAP_FACTOR,
+    STEP_PER_FOV,
+    WL_OCCULT_FACTOR,
+)
 from qorona.field.base import Field
 from qorona.field.density import DensityVolume
 from qorona.field.sampled import SampledField
 from qorona.geometry.camera import OrthographicCamera
 from qorona.io import NativeSolution, read_solution
-from qorona.io.readers import resolve_model
+from qorona.io.readers import category_of, resolve_model
 from qorona.radiation.brightness import BrightnessResult
 from qorona.radiation.brightness import render_brightness as _brightness_los
 from qorona.render.fieldlines import FieldLineImage, render_field_lines
@@ -129,8 +143,14 @@ def _spacing(name: str, inner: float, outer: float, exponent: float = 2.0) -> Ra
 
 
 def _grid_config_spacing(grid_cfg: GridConfig) -> RadialSpacing:
-    """Build the spacing law from a :class:`GridConfig` (its inner/outer radii)."""
-    return _spacing(grid_cfg.spacing, grid_cfg.inner_radius, grid_cfg.outer_radius)
+    """Build the spacing law from a :class:`GridConfig`'s **resolved** inner/outer radii.
+
+    Both grid builders run only after the shell sentinels are resolved (in :func:`build_field`,
+    and off the field's shell in :func:`build_volume`), so the radii are concrete here.
+    """
+    inner, outer = grid_cfg.inner_radius, grid_cfg.outer_radius
+    assert inner is not None and outer is not None
+    return _spacing(grid_cfg.spacing, inner, outer)
 
 
 def _field_grid(grid_cfg: GridConfig) -> SphericalGrid:
@@ -165,6 +185,82 @@ def _resolve_resampler(name: str, solution: NativeSolution) -> str:
     return "structured" if solution.structured is not None else "knn-mls"
 
 
+# --- Category-keyed default resolution ---------------------------------------------------------
+#
+# The shell-dependent geometry fields default to ``None`` sentinels in :mod:`qorona.config.schema`;
+# these resolvers turn each ``None`` into a concrete number by solution category, once at each
+# pipeline entry. Coronal solutions resolve to the locked constants (shell-independent);
+# heliospheric solutions derive from the resolved shell. Everything downstream (engine calls,
+# provenance, stamps) then reads the resolved config, so provenance always spells a number.
+
+
+def _resolve_grid(grid_cfg: GridConfig, solution: NativeSolution) -> GridConfig:
+    """Resolve ``None`` shell radii to the solution category's natural shell."""
+    inner, outer = grid_cfg.inner_radius, grid_cfg.outer_radius
+    if inner is None or outer is None:
+        if solution.metadata.category == "heliosphere":
+            native = (
+                solution.boundaries["inner"].mean_radius.to_value(u.R_sun),
+                solution.boundaries["outer"].mean_radius.to_value(u.R_sun),
+            )
+        else:
+            native = CORONAL_SHELL
+        inner = native[0] if inner is None else inner
+        outer = native[1] if outer is None else outer
+    if not 0.0 < inner < outer:
+        raise ValueError(f"resolved shell needs 0 < inner < outer, got ({inner}, {outer}) R_sun")
+    return replace(grid_cfg, inner_radius=float(inner), outer_radius=float(outer))
+
+
+def _resolve_camera(camera_cfg: CameraConfig, category: str, outer: float) -> CameraConfig:
+    """Resolve a ``None`` fov (coronal constant, or the full heliospheric domain) and a ``None``
+    latitude (corona 0, edge-on; heliosphere 90, the equatorial-plane view)."""
+    helio = category == "heliosphere"
+    if camera_cfg.fov is None:
+        fov = HELIO_FOV_FACTOR * outer if helio else CORONAL_FOV
+        camera_cfg = replace(camera_cfg, fov=float(fov))
+    if camera_cfg.latitude is None:
+        camera_cfg = replace(camera_cfg, latitude=HELIO_LATITUDE if helio else CORONAL_LATITUDE)
+    return camera_cfg
+
+
+def _resolve_render(
+    render_cfg: RenderConfig, category: str, fov: float, inner: float
+) -> RenderConfig:
+    """Resolve ``None`` step/r_occult by category (constants, or shell-derived)."""
+    helio = category == "heliosphere"
+    if render_cfg.step is None:
+        render_cfg = replace(render_cfg, step=float(fov / STEP_PER_FOV) if helio else CORONAL_STEP)
+    if render_cfg.r_occult is None:
+        render_cfg = replace(render_cfg, r_occult=float(inner) if helio else CORONAL_R_OCCULT)
+    return render_cfg
+
+
+def _resolve_brightness(
+    brightness_cfg: BrightnessConfig, category: str, fov: float, inner: float
+) -> BrightnessConfig:
+    """Resolve ``None`` step/r_occult for the brightness render, by category."""
+    helio = category == "heliosphere"
+    if brightness_cfg.step is None:
+        brightness_cfg = replace(
+            brightness_cfg, step=float(fov / STEP_PER_FOV) if helio else CORONAL_STEP
+        )
+    if brightness_cfg.r_occult is None:
+        brightness_cfg = replace(
+            brightness_cfg,
+            r_occult=float(WL_OCCULT_FACTOR * inner) if helio else CORONAL_WL_R_OCCULT,
+        )
+    return brightness_cfg
+
+
+def _resolve_qmap(qmap_cfg: QMapConfig, category: str, inner: float) -> QMapConfig:
+    """Resolve a ``None`` Q-map shell radius by category."""
+    if qmap_cfg.radius is not None:
+        return qmap_cfg
+    radius = HELIO_QMAP_FACTOR * inner if category == "heliosphere" else CORONAL_QMAP_RADIUS
+    return replace(qmap_cfg, radius=float(radius))
+
+
 def build_field(
     input_cfg: InputConfig,
     grid_cfg: GridConfig,
@@ -193,6 +289,7 @@ def build_field(
     )
     if timings is not None:
         timings["read"] = time.perf_counter() - start
+    grid_cfg = _resolve_grid(grid_cfg, solution)
     grid = _field_grid(grid_cfg)
     resampler_name = _resolve_resampler(grid_cfg.resampler, solution)
     resampler: Resampler
@@ -205,6 +302,7 @@ def build_field(
         solution, grid, resampler=resampler, show_progress=show_progress
     )
     field.resampler_name = resampler_name
+    field.category = solution.metadata.category
     if timings is not None:
         timings["resample"] = time.perf_counter() - start
     return field
@@ -225,11 +323,23 @@ def build_volume(
     selectable), passing only the knobs that builder reads. A supplied ``timings`` dict receives
     the paint builder's per-stage durations (``"boundary"`` / ``"trace"`` / ``"paint"``).
 
+    The volume grid must sit on the same shell as the field grid. For a
+    :class:`~qorona.field.sampled.SampledField`, any ``None`` shell sentinels in ``grid_cfg`` are
+    resolved off the field's grid (whose radii the field-build settled by solution category), so the
+    caller need not pre-resolve them; an analytic field carries no such grid, so its ``grid_cfg``
+    radii must be set explicitly.
+
     Returns
     -------
     QPerpVolume
         The truthful log₁₀ Q⊥ volume.
     """
+    if isinstance(field, SampledField):
+        grid_cfg = replace(
+            grid_cfg,
+            inner_radius=float(field.grid.radii[0]),
+            outer_radius=float(field.grid.radii[-1]),
+        )
     grid = _volume_grid(grid_cfg, volume_cfg.resolution_factor)
     common: dict[str, Any] = {
         "rtol": volume_cfg.rtol,
@@ -281,6 +391,7 @@ def render_volume(
     weighting_cfg: WeightingConfig,
     render_cfg: RenderConfig,
     *,
+    category: str = "corona",
     density: DensityVolume | None = None,
     show_progress: bool = True,
 ) -> RenderResult:
@@ -290,18 +401,26 @@ def render_volume(
     solar radii into the radians the camera expects, selects the geometric weighting preset, and
     renders. When ``weighting_cfg.thomson`` is set, the baked-in ``density`` is wrapped in a
     :class:`~qorona.radiation.thomson.ThomsonWeight` and composed into the render as the optional
-    radiometric factor (an error if the volume carries no density).
+    radiometric factor (an error if the volume carries no density). The ``None`` camera FOV, LOS
+    step, and occulter radius resolve by ``category`` off the volume's shell (from the input's
+    solution category).
 
     Returns
     -------
     RenderResult
         The depth-coloured image, the grayscale measurement image, coverage, and clamp provenance.
     """
+    camera_cfg = _resolve_camera(camera_cfg, category, float(volume.grid.radii[-1]))
+    fov, latitude = camera_cfg.fov, camera_cfg.latitude
+    assert fov is not None and latitude is not None  # resolved above
+    render_cfg = _resolve_render(render_cfg, category, fov, float(volume.grid.radii[0]))
+    step, r_occult = render_cfg.step, render_cfg.r_occult
+    assert step is not None and r_occult is not None
     camera = OrthographicCamera.from_sub_observer(
         longitude=camera_cfg.longitude,
-        latitude=camera_cfg.latitude,
+        latitude=latitude,
         roll=float(np.deg2rad(camera_cfg.roll)),
-        fov=camera_cfg.fov * u.R_sun,
+        fov=fov * u.R_sun,
         pixels=camera_cfg.pixels,
     )
     thomson = None
@@ -327,9 +446,9 @@ def render_volume(
         thomson=thomson,
         clamp=render_cfg.clamp,
         floor=render_cfg.floor,
-        step=render_cfg.step,
+        step=step,
         occult=cast(Any, render_cfg.occult),
-        r_occult=render_cfg.r_occult,
+        r_occult=r_occult,
         occult_softness=render_cfg.occult_softness,
         disk_tone=render_cfg.disk_tone,
         disk_desat=render_cfg.disk_desat,
@@ -343,22 +462,28 @@ def render_volume(
     )
 
 
-def qmap_from_volume(volume: QPerpVolume, qmap_cfg: QMapConfig) -> QMap:
+def qmap_from_volume(
+    volume: QPerpVolume, qmap_cfg: QMapConfig, *, category: str = "corona"
+) -> QMap:
     """Slice a Q-map from the cached Q⊥ volume at ``qmap_cfg.radius``.
 
     Samples log₁₀ Q⊥ and the local radial-field sign (both interpolated) on an ``n_theta x n_phi``
     longitude/latitude shell, a pure read of the cached volume, the viewpoint-independent sibling
-    of :func:`render_volume`. The shell radius is clamped to the outer boundary, so mapping at the
-    bake's outer radius (the ``[1, r]`` mapping domain) is supported.
+    of :func:`render_volume`. A ``None`` shell radius resolves by ``category`` off the volume's
+    inner shell. The shell radius is clamped to the outer boundary, so mapping at the bake's outer
+    radius (the ``[1, r]`` mapping domain) is supported.
     """
+    qmap_cfg = _resolve_qmap(qmap_cfg, category, float(volume.grid.radii[0]))
+    shell_radius = qmap_cfg.radius
+    assert shell_radius is not None
     n_theta, n_phi = qmap_cfg.n_theta, qmap_cfg.n_phi
-    radius = min(qmap_cfg.radius, float(volume.grid.radii[-1]) * (1.0 - 1e-9))
+    radius = min(shell_radius, float(volume.grid.radii[-1]) * (1.0 - 1e-9))
     points = lonlat_shell(radius, n_theta, n_phi)
     theta, phi = lonlat_grid(n_theta, n_phi)
     log_q_perp = volume.sample(points).reshape(n_theta, n_phi)
     radial_sign = volume.sample_radial_sign(points).reshape(n_theta, n_phi)
     return QMap(
-        radius=qmap_cfg.radius,
+        radius=shell_radius,
         theta=theta,
         phi=phi,
         log_q_perp=log_q_perp,
@@ -371,24 +496,29 @@ def render_fieldlines(
     fieldlines_cfg: FieldLinesConfig,
     camera_cfg: CameraConfig,
     *,
+    category: str = "corona",
     show_progress: bool = True,
 ) -> FieldLineImage:
     """Render the field-line view of a field from one viewpoint.
 
     Builds the orthographic camera from the sub-observer angles (the same degrees-and-solar-radii to
     radians conversion as :func:`render_volume`), then traces and draws a Fibonacci-seeded bundle of
-    field lines; the shell radii come from ``field.domain``.
+    field lines; the shell radii come from ``field.domain``. A ``None`` camera FOV resolves by
+    ``category`` off the field's outer shell.
 
     Returns
     -------
     FieldLineImage
         The drawn image and the open / closed / incomplete line tallies.
     """
+    camera_cfg = _resolve_camera(camera_cfg, category, field.domain.outer_radius)
+    fov, latitude = camera_cfg.fov, camera_cfg.latitude
+    assert fov is not None and latitude is not None  # resolved above
     camera = OrthographicCamera.from_sub_observer(
         longitude=camera_cfg.longitude,
-        latitude=camera_cfg.latitude,
+        latitude=latitude,
         roll=float(np.deg2rad(camera_cfg.roll)),
-        fov=camera_cfg.fov * u.R_sun,
+        fov=fov * u.R_sun,
         pixels=camera_cfg.pixels,
     )
     return render_field_lines(
@@ -463,6 +593,7 @@ def render_brightness(
     brightness_cfg: BrightnessConfig,
     camera_cfg: CameraConfig,
     *,
+    category: str = "corona",
     show_progress: bool = True,
 ) -> BrightnessResult:
     """Render the white-light / polarized-brightness corona of a density from one viewpoint.
@@ -471,7 +602,8 @@ def render_brightness(
     radians conversion as :func:`render_volume`), then integrates the Thomson-scattering brightness
     over the electron density along each line of sight. Independent of the Q⊥ volume (the density
     is the only field input), so the caller resolves the density from either a read-in solution
-    (``field.density``) or a baked volume artifact (:func:`load_volume`).
+    (``field.density``) or a baked volume artifact (:func:`load_volume`). The ``None`` camera FOV,
+    LOS step, and occulter radius resolve by ``category`` off the density's shell.
 
     Returns
     -------
@@ -479,11 +611,19 @@ def render_brightness(
         The polarized (``pB``) and total brightness frames and the geometry the display stages
         consume.
     """
+    camera_cfg = _resolve_camera(camera_cfg, category, float(density.grid.radii[-1]))
+    fov, latitude = camera_cfg.fov, camera_cfg.latitude
+    assert fov is not None and latitude is not None  # resolved above
+    brightness_cfg = _resolve_brightness(
+        brightness_cfg, category, fov, float(density.grid.radii[0])
+    )
+    step, r_occult = brightness_cfg.step, brightness_cfg.r_occult
+    assert step is not None and r_occult is not None
     camera = OrthographicCamera.from_sub_observer(
         longitude=camera_cfg.longitude,
-        latitude=camera_cfg.latitude,
+        latitude=latitude,
         roll=float(np.deg2rad(camera_cfg.roll)),
-        fov=camera_cfg.fov * u.R_sun,
+        fov=fov * u.R_sun,
         pixels=camera_cfg.pixels,
     )
     return _brightness_los(
@@ -491,9 +631,9 @@ def render_brightness(
         camera,
         u=brightness_cfg.u,
         crossover=brightness_cfg.crossover,
-        step=brightness_cfg.step,
+        step=step,
         occult=cast(Any, brightness_cfg.occult),
-        r_occult=brightness_cfg.r_occult,
+        r_occult=r_occult,
         occult_softness=brightness_cfg.occult_softness,
         workers=brightness_cfg.workers,
         show_progress=show_progress,
@@ -523,6 +663,7 @@ def run(cfg: RunConfig, *, show_progress: bool = True) -> RenderResult:
         cfg.camera,
         cfg.weighting,
         render_cfg,
+        category=field.category,
         density=field.density,
         show_progress=show_progress,
     )
@@ -611,10 +752,13 @@ def sub_floor_voxels(volume: QPerpVolume) -> int:
 
 def _input_provenance(input_cfg: InputConfig) -> dict[str, Any]:
     """The input block every provenance record carries: the config's fields with the model
-    resolved through the reader registry, the content hash, and the derived CR/JD."""
+    resolved through the reader registry, its solution category, the content hash, and the
+    derived CR/JD."""
+    model = resolve_model(input_cfg.path, model=input_cfg.model)
     return {
         **input_cfg.to_provenance(),
-        "model": resolve_model(input_cfg.path, model=input_cfg.model),
+        "model": model,
+        "category": category_of(model),
         "content_hash": content_hash(input_cfg.path),
         **_ephemeris(input_cfg.timestamp),
     }
@@ -622,11 +766,15 @@ def _input_provenance(input_cfg: InputConfig) -> dict[str, Any]:
 
 def _field_provenance(grid_cfg: GridConfig, field: Field | None = None) -> dict[str, Any]:
     """The field-grid block of a provenance record, with the resampler recorded *resolved*
-    (never ``auto``) when the built field carries the name."""
+    (never ``auto``) and the shell radii recorded *resolved* (never the ``None`` sentinels) from the
+    built field, whose grid carries the shell the category resolution settled on."""
     block = grid_cfg.to_provenance()
     resolved = getattr(field, "resampler_name", None)
     if resolved is not None:
         block["resampler"] = resolved
+    if isinstance(field, SampledField):
+        block["inner_radius"] = float(field.grid.radii[0])
+        block["outer_radius"] = float(field.grid.radii[-1])
     return block
 
 

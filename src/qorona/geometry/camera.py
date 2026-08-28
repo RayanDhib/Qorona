@@ -28,6 +28,11 @@ import numpy as np
 from astropy import units as u
 from astropy.units import Quantity
 
+#: Below this ``|up x look|`` the default north ``+z`` is treated as parallel to the look axis (the
+#: polar views at latitude +-90), and :meth:`OrthographicCamera.from_sub_observer` substitutes the
+#: continuous-limit image vertical rather than leaving the vertical undefined.
+_POLE_PARALLEL_TOL = 1e-8
+
 
 @dataclass(frozen=True, slots=True)
 class Rays:
@@ -106,6 +111,12 @@ class OrthographicCamera:
         (degrees), with the image up-vector the solution's north ``+z``. ``(longitude, latitude) =
         (0, 0)`` is the equatorial front view down the ``+x`` axis (solar-north up).
 
+        At the poles (``latitude = ±90``) the north ``+z`` is parallel to the look axis and no image
+        vertical is defined; the up-vector then takes the continuous limit of the image vertical as
+        ``|latitude| → 90``, the camera-longitude meridian ``∓[cos lon, sin lon, 0]`` (upper sign
+        at ``+90``, lower at ``-90``), which points across the pole and keeps the polar view's
+        orientation continuous with the nearby off-pole latitudes.
+
         Parameters
         ----------
         longitude, latitude
@@ -116,7 +127,10 @@ class OrthographicCamera:
         """
         lon, lat = np.deg2rad(longitude), np.deg2rad(latitude)
         look = np.array([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)])
-        return cls(look=look, up=np.array([0.0, 0.0, 1.0]), fov=fov, pixels=pixels, roll=roll)
+        up = np.array([0.0, 0.0, 1.0])
+        if np.linalg.norm(np.cross(up, look)) < _POLE_PARALLEL_TOL:
+            up = np.array([-np.sin(lat) * np.cos(lon), -np.sin(lat) * np.sin(lon), 0.0])
+        return cls(look=look, up=up, fov=fov, pixels=pixels, roll=roll)
 
     def _basis(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return the orthonormal ``(look, right, up)`` image basis after applying the roll."""

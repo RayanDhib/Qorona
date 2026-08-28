@@ -127,6 +127,10 @@ def write_brightness(
         wow_enhance,
     )
 
+    # The occulter edge the render integrated behind (the resolved r_occult, recorded on the
+    # result) is the reference for the display detrends, so the vignettes and the wow mask read it
+    # from the result rather than the config, whose sentinel may still be unresolved.
+    reference_radius = result.r_occult
     image = result.total if brightness_cfg.frame == "total" else result.polarized
     valid = None
     if brightness_cfg.vignette == "newkirk":
@@ -136,7 +140,7 @@ def write_brightness(
             frame=cast(Any, brightness_cfg.frame),
             r_inner=result.r_inner,
             r_outer=result.r_outer,
-            reference_radius=brightness_cfg.r_occult,
+            reference_radius=reference_radius,
             u=brightness_cfg.u,
             crossover=brightness_cfg.crossover,
         )
@@ -147,14 +151,14 @@ def write_brightness(
             frame=cast(Any, brightness_cfg.frame),
             r_inner=result.r_inner,
             r_outer=result.r_outer,
-            reference_radius=brightness_cfg.r_occult,
+            reference_radius=reference_radius,
             u=brightness_cfg.u,
             crossover=brightness_cfg.crossover,
         )
     elif brightness_cfg.vignette == "wow":
         # The same corona definition the vignettes encode by zeroing: whitened structure is
         # signed, so the non-corona pixels are masked at PNG time instead.
-        valid = (image > 0.0) & (result.impact >= brightness_cfg.r_occult)
+        valid = (image > 0.0) & (result.impact >= reference_radius)
         image = wow_enhance(image)
     if brightness_cfg.mgn:
         if brightness_cfg.frame == "total":
@@ -204,7 +208,9 @@ def write_qmap(
     written: list[Path] = [output_cfg.path]
     try:
         result.save_figure(
-            output_cfg.path, slog_max=qmap_cfg.slog_max, title=_qmap_title(qmap_cfg, provenance)
+            output_cfg.path,
+            slog_max=qmap_cfg.slog_max,
+            title=_qmap_title(result.radius, provenance),
         )
     except ImportError:
         print_warning(
@@ -220,12 +226,12 @@ def write_qmap(
     return written
 
 
-def _qmap_title(qmap_cfg: QMapConfig, provenance: dict[str, Any]) -> str:
+def _qmap_title(radius: float, provenance: dict[str, Any]) -> str:
     """Compose the figure title from radius and (if recorded) the source volume's Carrington
     rotation."""
     source = provenance.get("source_volume", {})
     inp = source.get("input", {}) if isinstance(source, dict) else {}
-    title = r"signed $\log_{10} Q_\perp$ at r = " + f"{qmap_cfg.radius:g} " + r"R$_\odot$"
+    title = r"signed $\log_{10} Q_\perp$ at r = " + f"{radius:g} " + r"R$_\odot$"
     if isinstance(inp, dict) and inp.get("cr") is not None:
         title += f"  ·  CR {inp['cr']}"
     return title

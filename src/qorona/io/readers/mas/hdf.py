@@ -21,8 +21,8 @@ from astropy import units as u
 
 from qorona.console import status
 from qorona.geometry import spherical_to_cartesian
-from qorona.io.native import Boundary, NativeSolution, SolutionMetadata, StructuredMesh
-from qorona.io.readers.base import SolutionReader
+from qorona.io.native import NativeSolution, SolutionMetadata, StructuredMesh
+from qorona.io.readers.base import SolutionReader, synthesize_shell_boundaries
 
 #: Variable-name tokens a MAS run writes; used to locate the anchor file's token.
 _MAS_VARIABLES = ("rho", "br", "bt", "bp", "vr", "vt", "vp", "t", "p")
@@ -116,7 +116,7 @@ class MasHdfReader(SolutionReader):
             connectivity=np.empty((0, 8), dtype=np.int32),
             cell_centers=nodes,
             variables=variables,
-            boundaries=_synthesize_boundaries(mesh),
+            boundaries=synthesize_shell_boundaries(float(mesh.radii[0]), float(mesh.radii[-1])),
             metadata=metadata,
             structured=mesh,
         )
@@ -212,22 +212,3 @@ def _b_to_cartesian(b_spherical: np.ndarray, spherical: np.ndarray) -> np.ndarra
         ],
         axis=-1,
     )
-
-
-def _synthesize_boundaries(mesh: StructuredMesh) -> dict[str, Boundary]:
-    """Inner/outer shells from the radial axis extremes (no tagged surfaces in MAS files; only
-    ``mean_radius`` and a descriptive ``source_name`` are consumed downstream)."""
-
-    def shell(role: str, radius: float) -> Boundary:
-        return Boundary(
-            name=role,
-            source_name=f"r={radius:.3f} shell (synthesized)",
-            faces=np.empty((0, 4), dtype=np.int32),
-            adjacent_cells=np.empty((0,), dtype=np.int32),
-            mean_radius=radius * u.R_sun,
-        )
-
-    return {
-        "inner": shell("inner", float(mesh.radii[0])),
-        "outer": shell("outer", float(mesh.radii[-1])),
-    }

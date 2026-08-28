@@ -1,4 +1,4 @@
-"""Parser correctness for the solution readers (CFmesh, Tecplot, and the MAS HDF4 quartet).
+"""Parser correctness for the solution readers (CFmesh, Tecplot, MAS HDF4, and ICARUS VTU).
 
 Both COCONUT formats are checked on the same hand-written minimal mesh (one triangle extruded
 into two stacked prisms, shells at r = 1, 2, 3) so the shared contract (state-to-cell mapping,
@@ -6,6 +6,9 @@ prism-centre averaging, the canonical variable layout, and inner/outer boundary 
 verified without large data files, alongside each format's own provenance. The MAS reader is
 checked on a synthetic staggered file set carrying an analytic dipole, covering sibling
 discovery, mesh alignment, the spherical-to-Cartesian conversion, and the structured resample.
+The ICARUS reader is checked on a hand-written two-block VTU carrying an analytic spherical
+field, covering block stitching, product-grid reconstruction, the vector rotation, and the
+AMR-rejection guard.
 """
 
 from __future__ import annotations
@@ -83,6 +86,95 @@ ZONE N=9, E=2, ZONETYPE=FEBRICK, DATAPACKING=BLOCK, VARLOCATION=([1-3]=NODAL,[4-
 """
 
 CANONICAL_VARIABLES = ["rho", "vx", "vy", "vz", "Bx", "By", "Bz", "p", "psi"]
+
+ICARUS_TH_EDGES = np.array([0.5, 0.8, 1.1])
+ICARUS_PH_EDGES = np.array([0.1, 0.4, 0.7])
+
+
+def _vtu_block(r_edges, th_edges, ph_edges):
+    """Points, hexahedral connectivity, and cell centres for one structured block."""
+    axes = (np.asarray(r_edges), np.asarray(th_edges), np.asarray(ph_edges))
+    nr, nth, nph = (len(a) - 1 for a in axes)
+    shape = tuple(len(a) for a in axes)
+    points = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
+
+    def nid(i, j, k):
+        return (i * shape[1] + j) * shape[2] + k
+
+    conn = [
+        [
+            nid(i, j, k),
+            nid(i + 1, j, k),
+            nid(i + 1, j + 1, k),
+            nid(i, j + 1, k),
+            nid(i, j, k + 1),
+            nid(i + 1, j, k + 1),
+            nid(i + 1, j + 1, k + 1),
+            nid(i, j + 1, k + 1),
+        ]
+        for i in range(nr)
+        for j in range(nth)
+        for k in range(nph)
+    ]
+    centers = np.stack(
+        np.meshgrid(*(0.5 * (a[1:] + a[:-1]) for a in axes), indexing="ij"), axis=-1
+    ).reshape(-1, 3)
+    return points, np.asarray(conn), centers
+
+
+def _write_vtu(path, blocks, values_fn):
+    """Serialize blocks into a minimal AMRVAC-style raw-appended ``.vtu``."""
+    payload = bytearray()
+
+    def append(array, dtype):
+        data = np.asarray(array, dtype=dtype).tobytes()
+        offset = len(payload)
+        payload.extend(np.uint32(len(data)).tobytes())
+        payload.extend(data)
+        return offset
+
+    pieces = []
+    for r_edges, th_edges, ph_edges in blocks:
+        points, conn, centers = _vtu_block(r_edges, th_edges, ph_edges)
+        arrays = "\n".join(
+            f'<DataArray type="Float32" Name="{name}" format="appended" '
+            f'offset="{append(values_fn(name, centers), "<f4")}"></DataArray>'
+            for name in ("rho", "b1", "b2", "b3")
+        )
+        p_off = append(points, "<f4")
+        c_off = append(conn.ravel(), "<i4")
+        o_off = append(np.arange(1, len(conn) + 1) * 8, "<i4")
+        pieces.append(
+            f'<Piece NumberOfPoints="{len(points)}" NumberOfCells="{len(conn)}">\n'
+            f"<CellData>\n{arrays}\n</CellData>\n"
+            f'<Points>\n<DataArray type="Float32" NumberOfComponents="3" '
+            f'format="appended" offset="{p_off}"/>\n</Points>\n'
+            f'<Cells>\n<DataArray type="Int32" Name="connectivity" format="appended" '
+            f'offset="{c_off}"/>\n'
+            f'<DataArray type="Int32" Name="offsets" format="appended" offset="{o_off}"/>\n'
+            f"</Cells>\n</Piece>"
+        )
+    xml = (
+        '<?xml version="1.0"?>\n'
+        '<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian">\n'
+        "<UnstructuredGrid>\n<FieldData>\n"
+        '<DataArray type="Float32" Name="TIME" NumberOfTuples="1" format="ascii">\n'
+        " 300.0\n</DataArray>\n</FieldData>\n"
+        + "\n".join(pieces)
+        + '\n</UnstructuredGrid>\n<AppendedData encoding="raw">\n_'
+    )
+    path.write_bytes(xml.encode() + bytes(payload) + b"\n</AppendedData>\n</VTKFile>\n")
+
+
+def _icarus_values(name, centers):
+    """Analytic test field: B = r^-2 e_r + r^-1 e_phi, rho = r^-2."""
+    r = centers[:, 0]
+    return {
+        "rho": r**-2.0,
+        "b1": r**-2.0,
+        "b2": np.zeros_like(r),
+        "b3": r**-1.0,
+    }[name]
 
 
 def test_readers_parse_minimal_mesh(tmp_path):
@@ -195,3 +287,73 @@ def test_mas_reader_and_structured_resample(tmp_path):
     expected = (3.0 * unit[:, 2:3] * unit - np.array([0.0, 0.0, 1.0])) / radius**3
     sampled = np.stack([resampled[name].ravel() for name in ("Bx", "By", "Bz")], axis=-1)
     np.testing.assert_allclose(sampled, expected, atol=2.0e-2)
+
+
+def test_icarus_vtu_reader(tmp_path):
+    from qorona.io.formats.vtu import parse_vtu
+
+    path = tmp_path / "mini0001.vtu"
+    blocks = [
+        (np.array([1.0, 1.1, 1.25]), ICARUS_TH_EDGES, ICARUS_PH_EDGES),
+        (np.array([1.25, 1.45, 1.7]), ICARUS_TH_EDGES, ICARUS_PH_EDGES),
+    ]
+    _write_vtu(path, blocks, _icarus_values)
+
+    parsed = parse_vtu(path, show_progress=False)
+    assert len(parsed.pieces) == 2
+    assert parsed.field_data["TIME"] == pytest.approx(300.0)
+    piece = parsed.pieces[0]
+    assert piece.points.shape == (27, 3)
+    assert piece.connectivity.shape == (8, 8)
+    assert set(piece.cell_data) == {"rho", "b1", "b2", "b3"}
+    np.testing.assert_allclose(
+        piece.cell_data["rho"],
+        _icarus_values("rho", _vtu_block(*blocks[0])[2]).astype(np.float32),
+    )
+
+    solution = read_solution(path, show_progress=False)
+    assert solution.metadata.model == "icarus"
+    assert solution.metadata.category == "heliosphere"
+    assert solution.metadata.normalization == "icarus-si"
+    assert sorted(solution.variable_names) == ["Bx", "By", "Bz", "rho"]
+    mesh = solution.structured
+    assert mesh is not None
+    assert mesh.shape == (4, 2, 2)
+    np.testing.assert_allclose(mesh.radii, [1.05, 1.175, 1.35, 1.575], rtol=1e-6)
+
+    points = solution.cell_centers.to_value(u.R_sun)
+    r = np.linalg.norm(points, axis=1)
+    theta = np.arccos(points[:, 2] / r)
+    phi = np.arctan2(points[:, 1], points[:, 0])
+    e_r = np.column_stack([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)])
+    e_phi = np.column_stack([-np.sin(phi), np.cos(phi), np.zeros_like(phi)])
+    expected = r[:, None] ** -2.0 * e_r + r[:, None] ** -1.0 * e_phi
+    np.testing.assert_allclose(solution.magnetic_field, expected, atol=1e-5)
+    np.testing.assert_allclose(solution.variables["rho"], r**-2.0, rtol=1e-5)
+
+    assert "synthesized" in solution.boundaries["inner"].source_name
+    np.testing.assert_allclose(
+        solution.boundaries["inner"].mean_radius.to_value(u.R_sun), 1.0, rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        solution.boundaries["outer"].mean_radius.to_value(u.R_sun), 1.7, rtol=1e-6
+    )
+
+    amr_path = tmp_path / "amr0001.vtu"
+    amr_block = (np.array([1.0, 1.05, 1.1]), np.array([0.5, 0.65, 0.8]), ICARUS_PH_EDGES)
+    _write_vtu(amr_path, [*blocks, amr_block], _icarus_values)
+    with pytest.raises(ValueError, match="AMR"):
+        read_solution(amr_path, show_progress=False)
+
+    # The heliosphere category resolves the None shell sentinels to the solution's native shell,
+    # so the built field grid sits on the boundaries the reader synthesised.
+    from qorona.config import GridConfig, InputConfig
+    from qorona.pipeline import build_field
+
+    field = build_field(
+        InputConfig(path=path),
+        GridConfig(n_r=8, n_theta=6, n_phi=8),
+        show_progress=False,
+    )
+    assert field.category == "heliosphere"
+    np.testing.assert_allclose([field.grid.radii[0], field.grid.radii[-1]], [1.0, 1.7], rtol=1e-6)

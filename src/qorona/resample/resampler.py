@@ -177,7 +177,7 @@ class KnnMlsResampler(Resampler):
     def __init__(
         self,
         *,
-        n_neighbors: int = 30,
+        n_neighbors: int = 48,
         reference_cell_count: int = 2_000_000,
         ridge: float = 1.0e-8,
         chunk_size: int = 500_000,
