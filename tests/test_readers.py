@@ -1,4 +1,4 @@
-"""Parser correctness for the solution readers (CFmesh, Tecplot, MAS HDF4, and ICARUS VTU).
+"""Parser correctness for the solution readers (CFmesh, Tecplot, MAS HDF4, and Icarus VTU).
 
 Both COCONUT formats are checked on the same hand-written minimal mesh (one triangle extruded
 into two stacked prisms, shells at r = 1, 2, 3) so the shared contract (state-to-cell mapping,
@@ -6,7 +6,7 @@ prism-centre averaging, the canonical variable layout, and inner/outer boundary 
 verified without large data files, alongside each format's own provenance. The MAS reader is
 checked on a synthetic staggered file set carrying an analytic dipole, covering sibling
 discovery, mesh alignment, the spherical-to-Cartesian conversion, and the structured resample.
-The ICARUS reader is checked on a hand-written two-block VTU carrying an analytic spherical
+The Icarus reader is checked on a hand-written two-block VTU carrying an analytic spherical
 field, covering block stitching, product-grid reconstruction, the vector rotation, and the
 AMR-rejection guard.
 """

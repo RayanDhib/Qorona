@@ -29,9 +29,9 @@ qorona info br002.hdf
 HDF4 reading relies on pyhdf, which ships in the default install; if it is missing, MAS input
 is unavailable and the CLI says so with an install hint.
 
-## ICARUS
+## Icarus
 
-ICARUS is an inner-heliosphere MHD model built on MPI-AMRVAC. Qorona reads its VTK `.vtu`
+Icarus is an inner-heliosphere MHD model built on MPI-AMRVAC. Qorona reads its VTK `.vtu`
 snapshots, the format the model's own tooling exports: one self-describing file per snapshot,
 with the fields and coordinates carried in the file. Point any command at the `.vtu`:
 
@@ -39,7 +39,7 @@ with the fields and coordinates carried in the file. Point any command at the `.
 qorona info data/icarus_snapshot.vtu
 ```
 
-ICARUS is Qorona's first *heliospheric* solution, and the whole run adapts to that: the internal
+Icarus is Qorona's first *heliospheric* solution, and the whole run adapts to that: the internal
 shell and the render defaults follow the solution's far-from-the-surface scale rather than the
 coronal constants. Only single-level grids (uniform or radially stretched) are read; an adaptively
 refined (AMR) file is rejected with a clear error. See

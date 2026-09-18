@@ -75,7 +75,7 @@ class SolutionReader(ABC):
 def synthesize_shell_boundaries(inner: float, outer: float) -> dict[str, Boundary]:
     """Face-less inner/outer shell boundaries for meshes whose file carries no tags.
 
-    Structured models (MAS, ICARUS) store no boundary surfaces; only a ``mean_radius`` and a
+    Structured models (MAS, Icarus) store no boundary surfaces; only a ``mean_radius`` and a
     descriptive ``source_name`` are consumed downstream, so the shells carry empty face and
     adjacency arrays.
 

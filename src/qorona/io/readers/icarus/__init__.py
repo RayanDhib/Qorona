@@ -1,4 +1,4 @@
-"""ICARUS solution readers (one reader per file format)."""
+"""Icarus solution readers (one reader per file format)."""
 
 from qorona.io.readers.icarus.vtu import IcarusVtuReader
 

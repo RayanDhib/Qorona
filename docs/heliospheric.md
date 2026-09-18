@@ -4,9 +4,9 @@ Qorona was built on coronal solutions, whose domain is rooted at the solar surfa
 heliospheric solution is different in scale, not physics: its domain starts far above the
 surface and reaches out toward 1 AU and beyond. The equations, the tracer, the Q⊥
 mathematics, and the Thomson scattering are all unchanged; only the numbers baked into the
-render defaults differ. [ICARUS](getting-started/supported-models.md#icarus), an inner-heliosphere MHD model
+render defaults differ. [Icarus](getting-started/supported-models.md#icarus), an inner-heliosphere MHD model
 built on MPI-AMRVAC, is Qorona's first heliospheric input (the model is described in Verbeke
-et al. 2022).
+et al. 2022, and its current version, Icarus 3.0, in Baratashvili et al. 2025).
 
 Every command runs flag-free on a heliospheric `.vtu`:
 
@@ -23,7 +23,7 @@ qorona qmap       icarus.qor -o hcs_map.png
 
 Each reader declares the **category** of solution it ingests, `corona` or `heliosphere`. The
 category rides the solution, is shown by `info`, and is recorded in every run's provenance.
-COCONUT and MAS are coronal; ICARUS is heliospheric. It is the category, not the model name,
+COCONUT and MAS are coronal; Icarus is heliospheric. It is the category, not the model name,
 that decides where the internal shell comes from and which set of render defaults applies, so
 any future heliospheric model inherits the same handling for free.
 

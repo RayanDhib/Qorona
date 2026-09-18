@@ -80,8 +80,9 @@ integrate log₁₀ Q⊥ along the line of sight on a plane-of-sky camera.
 Qorona is model-agnostic: each model and file format sits behind a common reader
 interface, so the whole pipeline runs on any solution once a reader exists. Currently supported:
 **COCONUT** ([COOLFluiD](https://github.com/andrealani/COOLFluiD) `.CFmesh`, Tecplot `.plt`),
-**[MAS](https://www.predsci.com/)** (HDF4), and **ICARUS** (MPI-AMRVAC heliospheric `.vtu`;
-Verbeke et al. 2022). A contributor guide for adding a reader is planned.
+**[MAS](https://www.predsci.com/)** (HDF4), and **Icarus** (MPI-AMRVAC heliospheric `.vtu`;
+Verbeke et al. 2022; Baratashvili et al. 2025). A contributor guide for adding a reader is
+planned.
 
 ## Citing
 
@@ -90,13 +91,12 @@ If you use Qorona, please cite both the software and its accompanying paper.
 **Software** (all versions), via the Zenodo concept DOI:
 [10.5281/zenodo.20630699](https://doi.org/10.5281/zenodo.20630699).
 
-**Paper** (under review at *The Astrophysical Journal*; the reference will be updated when it is
-published):
+**Paper** (*The Astrophysical Journal*):
 
 > Dhib, R., Ben Ameur, F., Baratashvili, T., Jeong, H.-J., Wang, H., Noraz, Q., Schmieder, B.,
 > Lani, A., & Poedts, S. *Qorona: Open, Model-Agnostic Line-of-Sight Rendering of the
-> Perpendicular Squashing Factor for Eclipse-like Coronal Imaging*. Submitted to The
-> Astrophysical Journal (2026).
+> Perpendicular Squashing Factor for Eclipse-like Coronal Imaging*. The Astrophysical Journal
+> (2026). [doi:10.3847/1538-4357/aea841](https://doi.org/10.3847/1538-4357/aea841)
 
 ```bibtex
 @article{dhib2026qorona,
@@ -107,7 +107,7 @@ published):
              Perpendicular Squashing Factor for Eclipse-like Coronal Imaging}},
   journal = {The Astrophysical Journal},
   year    = {2026},
-  note    = {Submitted}
+  doi     = {10.3847/1538-4357/aea841}
 }
 ```
 

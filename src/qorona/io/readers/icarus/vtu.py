@@ -1,12 +1,12 @@
-"""Reader for ICARUS solutions exported as VTK unstructured files (``.vtu``).
+"""Reader for Icarus solutions exported as VTK unstructured files (``.vtu``).
 
-ICARUS is an inner-heliosphere MHD model built on MPI-AMRVAC. Its ``.vtu`` snapshots
+Icarus is an inner-heliosphere MHD model built on MPI-AMRVAC. Its ``.vtu`` snapshots
 carry primitive variables on a spherical block grid whose point coordinates are stored
 unprojected as (x, y, z) = (r [R_sun], theta [rad], phi [rad]); cell components
 ``b1..b3`` are the spherical (B_r, B_theta, B_phi) in nT and ``rho`` is the mass density
 in kg/m^3, both kept native (they are scale-free for Qorona's products).
 
-ICARUS: Verbeke et al. (2022), A&A 662, A50.
+Icarus: Verbeke et al. (2022), A&A 662, A50; Baratashvili et al. (2025), A&A 694, A306.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ _REQUIRED = ("rho", "b1", "b2", "b3")
 
 
 class IcarusVtuReader(SolutionReader):
-    """Reader for ICARUS heliospheric ``.vtu`` snapshots."""
+    """Reader for Icarus heliospheric ``.vtu`` snapshots."""
 
     model = "icarus"
     file_format = "vtu"
@@ -39,12 +39,12 @@ class IcarusVtuReader(SolutionReader):
         Parameters
         ----------
         variables
-            Not supported: an ICARUS ``.vtu`` is self-describing (``rho`` plus the spherical
+            Not supported: an Icarus ``.vtu`` is self-describing (``rho`` plus the spherical
             field components ``b1, b2, b3``), so passing a value raises :class:`ValueError`.
         """
         if variables is not None:
             raise ValueError(
-                "The ICARUS VTU reader reads a self-describing file; "
+                "The Icarus VTU reader reads a self-describing file; "
                 "`variables` cannot be overridden."
             )
 
