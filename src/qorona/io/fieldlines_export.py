@@ -64,14 +64,14 @@ def _xyz_to_sunjson_coordinates(xyz: np.ndarray, longitude_offset: float = 0.0) 
 def _longitude_offset(metadata: dict[str, Any]) -> float:
     """Return the offset taking the declared frame's longitudes to Carrington, zero for a
     Carrington-aligned (or undeclared) frame; a Stonyhurst frame needs the timestamp."""
-    from qorona.config.schema import DEFAULT_FRAME
+    from qorona.config.schema import DEFAULT_FRAME, frame_from_provenance
     from qorona.ephemeris import carrington_offset
 
     input_metadata = metadata.get("input")
     if not isinstance(input_metadata, dict):
         return 0.0
-    frame = input_metadata.get("frame")
-    if frame in (None, DEFAULT_FRAME):
+    frame = frame_from_provenance(input_metadata)
+    if frame is None or frame == DEFAULT_FRAME:
         return 0.0
     timestamp = input_metadata.get("timestamp")
     if not isinstance(timestamp, str) or not timestamp:

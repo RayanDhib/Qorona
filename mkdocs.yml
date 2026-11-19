@@ -52,15 +52,18 @@ nav:
       - First eclipse image: getting-started/first-eclipse-image.md
       - Supported models: getting-started/supported-models.md
       - HPC clusters: getting-started/hpc.md
-  - How it runs:
-      - The Q⊥ volume: qperp-volume.md
-      - Camera and viewpoint: camera.md
-      - GPU acceleration: gpu.md
-      - Export to JHelioviewer: jhelioviewer.md
   - Products:
       - Squashing-factor render: products/squashing-factor.md
       - Polarity view: products/polarity.md
       - White-light imaging: products/white-light.md
       - Q-maps: products/qmaps.md
       - Field lines: products/fieldlines.md
-  - Heliospheric solutions: heliospheric.md
+  - How it runs:
+      - The Q⊥ volume: qperp-volume.md
+      - Camera and viewpoint: camera.md
+      - GPU acceleration: gpu.md
+      - Export to JHelioviewer: jhelioviewer.md
+  - Heliosphere and PUNCH:
+      - Heliospheric solutions: heliospheric.md
+      - Comparing with PUNCH: punch.md
+      - PUNCH comparison details: punch-details.md

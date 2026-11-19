@@ -28,6 +28,11 @@ from astropy import units as u
 from qorona.console import status
 from qorona.io.native import Boundary, NativeSolution, SolutionMetadata
 from qorona.io.readers.base import SolutionReader
+from qorona.io.readers.coconut.normalization import (
+    DENSITY_UNIT,
+    LENGTH_UNIT,
+    MEAN_MOLECULAR_WEIGHT,
+)
 from qorona.io.textio import open_solution_text
 
 
@@ -131,6 +136,9 @@ class CFmeshReader(SolutionReader):
             file_format=self.file_format,
             source_path=path,
             normalization="corona",
+            density_unit=DENSITY_UNIT,
+            length_unit=LENGTH_UNIT,
+            mean_molecular_weight=MEAN_MOLECULAR_WEIGHT,
             dimension=int(header["!NB_DIM"]),
             n_equations=n_equations,
             element_type=header.get("!ELEM_TYPES", "Prism"),

@@ -2609,8 +2609,9 @@ def _make_render_kernel(mixed: bool) -> Any:
     @cuda.jit(fastmath=_FASTMATH)
     def kernel(
         origins: np.ndarray,
-        look: np.ndarray,
+        directions: np.ndarray,
         impact: np.ndarray,
+        observer_limit: np.ndarray,
         s_grid: np.ndarray,
         vol: np.ndarray,
         vn_r: int,
@@ -2661,19 +2662,24 @@ def _make_render_kernel(mixed: bool) -> Any:
         if i >= ray_stop:
             return
 
-        # Per-ray scalars in the tier's working precision; the identity cast in the f64 tier.
+        # Per-ray scalars in the tier's working precision; the identity cast in the f64 tier. If
+        # directions / observer_limit hold a single row, that row applies to every ray (the
+        # parallel camera). Stride 0 then reads row 0.
+        stride = 1 if directions.shape[0] > 1 else 0
+        j = i * stride
         ox = to_real(origins[i, 0])
         oy = to_real(origins[i, 1])
         oz = to_real(origins[i, 2])
-        lx = to_real(look[0])
-        ly = to_real(look[1])
-        lz = to_real(look[2])
+        lx = to_real(directions[j, 0])
+        ly = to_real(directions[j, 1])
+        lz = to_real(directions[j, 2])
+        s_observer = to_real(observer_limit[j])
         rho = to_real(impact[i])
         r_in = to_real(vr_inner)
         r_out = to_real(vr_outer)
         vexp = to_real(vexponent)
         occ_r = to_real(r_occult)
-        occulting = occult_body and rho < occ_r
+        occulting = occult_body and rho < occ_r and s_observer > to_real(0.0)
         s_body = math.sqrt(occ_r * occ_r - rho * rho) if occulting else to_real(0.0)
 
         sig = to_real(sigma)
@@ -2717,6 +2723,8 @@ def _make_render_kernel(mixed: bool) -> Any:
             s = to_real(s_grid[k])
             r = math.sqrt(rho * rho + s * s)
             if r < r_in or r > r_out:
+                continue
+            if s > s_observer:
                 continue
             if occulting and s < -s_body:
                 continue
@@ -2847,8 +2855,9 @@ _render_kernel_mixed = _make_render_kernel(mixed=True)
 
 def render_batch_cuda(
     origins: np.ndarray,
-    look: np.ndarray,
+    directions: np.ndarray,
     impact: np.ndarray,
+    observer_limit: np.ndarray,
     s_grid: np.ndarray,
     vol: np.ndarray,
     vg: JitGrid,
@@ -2897,8 +2906,9 @@ def render_batch_cuda(
     n = origins.shape[0]
 
     d_origins = cuda.to_device(np.ascontiguousarray(origins, dtype=np.float64))
-    d_look = cuda.to_device(np.ascontiguousarray(look, dtype=np.float64))
+    d_directions = cuda.to_device(np.ascontiguousarray(directions, dtype=np.float64))
     d_impact = cuda.to_device(np.ascontiguousarray(impact, dtype=np.float64))
+    d_observer_limit = cuda.to_device(np.ascontiguousarray(observer_limit, dtype=np.float64))
     d_s = cuda.to_device(np.ascontiguousarray(s_grid, dtype=np.float64))
     d_vol = cuda.to_device(np.ascontiguousarray(vol, dtype=vol_dtype))
     d_density = (
@@ -2928,8 +2938,9 @@ def render_batch_cuda(
         blocks = (stop - start + _THREADS_PER_BLOCK - 1) // _THREADS_PER_BLOCK
         kernel[blocks, _THREADS_PER_BLOCK](
             d_origins,
-            d_look,
+            d_directions,
             d_impact,
+            d_observer_limit,
             d_s,
             d_vol,
             vg.n_r,

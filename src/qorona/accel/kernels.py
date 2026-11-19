@@ -1059,8 +1059,9 @@ def _thomson_intensity(
 @njit(parallel=True, cache=True)
 def render_batch_jit(
     origins: np.ndarray,
-    look: np.ndarray,
+    directions: np.ndarray,
     impact: np.ndarray,
+    observer_limit: np.ndarray,
     s_grid: np.ndarray,
     vol: np.ndarray,
     vg: JitGrid,
@@ -1087,9 +1088,12 @@ def render_batch_jit(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Render a batch of rays: the weight-normalised per-channel LOS average of clamped log₁₀ Q⊥.
 
-    One ray per ``prange`` lane. Per step on the shared ``s_grid``: form ``r = sqrt(rho² + s²)`` and
-    skip out-of-shell; when ``occult_body`` (the ``"opaque"`` body mode) skip occulted
-    samples (``rho < r_occult`` and ``s`` behind the body); build the
+    One ray per ``prange`` lane. Ray ``i`` starts at its closest-approach point ``origins[i]`` and
+    runs along ``directions[i]`` (toward the observer). If ``directions`` and ``observer_limit``
+    hold a single row, that row applies to every ray (the parallel camera). Per step on the shared
+    ``s_grid``: form ``r = sqrt(rho² + s²)`` and skip out-of-shell samples and samples behind the
+    observer (``s > observer_limit``); when ``occult_body`` (the ``"opaque"`` body mode) skip
+    occulted samples (``rho < r_occult`` and ``s`` behind the body); build the
     per-channel spatial weight (the preset factors: angular Gaussian ``sigma`` with a NaN sentinel,
     per-channel ``powers``/``scales`` under their use-flags, reproducing
     :meth:`WeightingPreset.channel_weights`); add it to the per-channel **on-path** weight budget
@@ -1138,12 +1142,21 @@ def render_batch_jit(
     phi_step = _TWO_PI / vg.n_phi
     density_theta_step = math.pi / dg.n_theta
     density_phi_step = _TWO_PI / dg.n_phi
+    # If directions / observer_limit hold a single row, that row applies to every ray (the
+    # parallel camera). Stride 0 then reads row 0. An int64 stride keeps the row index
+    # integer-typed inside the parfor body.
+    stride = np.int64(1) if directions.shape[0] > 1 else np.int64(0)
     for i in prange(n_rays):
         ox = origins[i, 0]
         oy = origins[i, 1]
         oz = origins[i, 2]
+        j = np.int64(i) * stride
+        lx = directions[j, 0]
+        ly = directions[j, 1]
+        lz = directions[j, 2]
+        s_observer = observer_limit[j]
         rho = impact[i]
-        occulting = occult_body and rho < r_occult
+        occulting = occult_body and rho < r_occult and s_observer > 0.0
         s_body = math.sqrt(r_occult * r_occult - rho * rho) if occulting else 0.0
 
         num0 = 0.0
@@ -1165,6 +1178,8 @@ def render_batch_jit(
             s = s_grid[k]
             r = math.sqrt(rho * rho + s * s)
             if r < r_inner or r > r_outer:
+                continue
+            if s > s_observer:
                 continue
             if occulting and s < -s_body:
                 continue
@@ -1190,9 +1205,9 @@ def render_batch_jit(
             pden1 += w1
             pden2 += w2
 
-            px = ox + s * look[0]
-            py = oy + s * look[1]
-            pz = oz + s * look[2]
+            px = ox + s * lx
+            py = oy + s * ly
+            pz = oz + s * lz
             r_point, theta, phi = _spherical(px, py, pz)
             # Mirror QPerpVolume.sample: the point-radius shell mask (NaN outside) and the same
             # index map.
@@ -1297,8 +1312,9 @@ def render_batch_jit(
 @njit(parallel=True, cache=True)
 def brightness_batch_jit(
     origins: np.ndarray,
-    look: np.ndarray,
+    directions: np.ndarray,
     impact: np.ndarray,
+    observer_limit: np.ndarray,
     s_grid: np.ndarray,
     density_vol: np.ndarray,
     dg: JitGrid,
@@ -1311,8 +1327,11 @@ def brightness_batch_jit(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Integrate the tangential and polarized brightness over Nₑ along a batch of rays.
 
-    One ray per ``prange`` lane, marching the shared ``s_grid``. Per in-shell step (and, with
-    ``occult_body``, not behind the body): sample ``Nₑ`` via the density grid ``dg``'s index map,
+    One ray per ``prange`` lane, marching the shared ``s_grid`` from each ray's closest-approach
+    point ``origins[i]`` along ``directions[i]``. If ``directions`` and ``observer_limit`` hold a
+    single row, that row applies to every ray (the parallel camera). Per in-shell step in front of
+    the observer (``s <= observer_limit``) and, with ``occult_body``, not behind the body: sample
+    ``Nₑ`` via the density grid ``dg``'s index map,
     read ``c_tan``/``c_pol`` from the radial table, and accumulate ``K_tan += Nₑ c_tan`` and
     ``K_pol += Nₑ c_pol sin²χ̄`` with ``sin²χ̄ = rho²/r²``. The step length is applied by the caller.
 
@@ -1328,12 +1347,21 @@ def brightness_batch_jit(
     r_outer = dg.r_outer
     theta_step = math.pi / dg.n_theta
     phi_step = _TWO_PI / dg.n_phi
+    # If directions / observer_limit hold a single row, that row applies to every ray (the
+    # parallel camera). Stride 0 then reads row 0. An int64 stride keeps the row index
+    # integer-typed inside the parfor body.
+    stride = np.int64(1) if directions.shape[0] > 1 else np.int64(0)
     for i in prange(n_rays):
         ox = origins[i, 0]
         oy = origins[i, 1]
         oz = origins[i, 2]
+        j = np.int64(i) * stride
+        lx = directions[j, 0]
+        ly = directions[j, 1]
+        lz = directions[j, 2]
+        s_observer = observer_limit[j]
         rho = impact[i]
-        occulting = occult_body and rho < r_occult
+        occulting = occult_body and rho < r_occult and s_observer > 0.0
         s_body = math.sqrt(r_occult * r_occult - rho * rho) if occulting else 0.0
 
         tan_sum = 0.0
@@ -1343,12 +1371,14 @@ def brightness_batch_jit(
             r = math.sqrt(rho * rho + s * s)
             if r < r_inner or r > r_outer:
                 continue
+            if s > s_observer:
+                continue
             if occulting and s < -s_body:
                 continue
 
-            px = ox + s * look[0]
-            py = oy + s * look[1]
-            pz = oz + s * look[2]
+            px = ox + s * lx
+            py = oy + s * ly
+            pz = oz + s * lz
             r_point, theta, phi = _spherical(px, py, pz)
             if r_point < r_inner or r_point > r_outer:
                 continue

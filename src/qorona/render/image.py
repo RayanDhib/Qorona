@@ -49,6 +49,17 @@ def occultation_mask(impact: np.ndarray, s: np.ndarray, r_occult: float) -> np.n
     return (impact[:, None] < r_occult) & (s[None, :] < -s_body)
 
 
+def occulter_impact(impact: np.ndarray, observer_limit: np.ndarray) -> np.ndarray:
+    """Return the impact parameter as the occulter sees it.
+
+    A line of sight meets the body only when its closest approach lies in front of the observer
+    (``observer_limit > 0``). A perspective ray that looks away from the Sun has its closest
+    approach behind the observer, so its occulter impact is infinite. ``observer_limit`` is per ray,
+    or one value for every ray.
+    """
+    return np.where(observer_limit > 0.0, impact, np.inf)
+
+
 def eclipse_alpha(impact: np.ndarray, r_occult: float, softness: float) -> np.ndarray:
     """Return the eclipse occulter's per-ray opacity ``alpha`` in ``[0, 1]``.
 
@@ -61,7 +72,7 @@ def eclipse_alpha(impact: np.ndarray, r_occult: float, softness: float) -> np.nd
     With ``softness <= 0`` the edge is a hard black circle (``alpha = 1`` only where the impact
     parameter is ``>= r_occult``); with ``softness > 0`` ``alpha`` follows a smoothstep across
     ``[r_occult - softness, r_occult]`` for a feathered, slightly-transparent limb. ``impact`` is
-    the per-ray impact parameter (``rays.impact``).
+    the per-ray impact parameter as the occulter sees it (:func:`occulter_impact`).
     """
     if softness <= 0.0:
         return (impact >= r_occult).astype(np.float64)

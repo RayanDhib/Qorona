@@ -24,6 +24,11 @@ from qorona.io.formats import parse_tecplot
 from qorona.io.formats.tecplot import PRISM_COLUMNS
 from qorona.io.native import Boundary, NativeSolution, SolutionMetadata
 from qorona.io.readers.base import SolutionReader
+from qorona.io.readers.coconut.normalization import (
+    DENSITY_UNIT,
+    LENGTH_UNIT,
+    MEAN_MOLECULAR_WEIGHT,
+)
 
 #: Fraction of the radial span within which a node counts as on the inner/outer shell.
 _SHELL_TOLERANCE = 1.0e-3
@@ -82,6 +87,9 @@ class CoconutTecplotReader(SolutionReader):
             file_format=self.file_format,
             source_path=path,
             normalization="corona",
+            density_unit=DENSITY_UNIT,
+            length_unit=LENGTH_UNIT,
+            mean_molecular_weight=MEAN_MOLECULAR_WEIGHT,
             dimension=3,
             n_equations=len(parsed.cell),
             element_type="Prism",

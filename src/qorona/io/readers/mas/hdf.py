@@ -8,6 +8,9 @@ variable onto the density mesh, converts the spherical field components to Carte
 emits a point-value :class:`NativeSolution` that also carries the structured axes for the
 structured resampler. MAS: Mikic et al. (1999), Phys. Plasmas 6, 2217; the thermodynamic
 corona: Lionello et al. (2009), ApJ 690, 902.
+
+MAS writes ``rho = m_p nₑ`` and ``p = 2 nₑ k T`` (``μ = 1``), and one code density unit is
+``nₑ = 10⁸ cm⁻³``. The reader declares both, so the white-light render is absolute.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from astropy import constants
 from astropy import units as u
 
 from qorona.console import status
@@ -32,6 +36,9 @@ _B_COMPONENTS = ("br", "bt", "bp")
 
 #: HDF4 dataset name each MAS file stores its variable under.
 _DATASET_NAME = "Data-Set-2"
+
+#: The physical mass density of one code density unit: ``nₑ = 10⁸ cm⁻³`` of protons.
+_DENSITY_UNIT = u.Unit((1.0e8 * u.cm**-3 * constants.m_p).to(u.kg / u.m**3))
 
 #: Friendly guidance shown when a MAS file is read without ``pyhdf`` installed.
 PYHDF_MISSING_HINT = (
@@ -100,6 +107,8 @@ class MasHdfReader(SolutionReader):
             file_format=self.file_format,
             source_path=path,
             normalization="mas-code",
+            density_unit=_DENSITY_UNIT,
+            mean_molecular_weight=1.0,
             dimension=3,
             n_equations=len(variables),
             element_type="point",

@@ -25,6 +25,7 @@ from qorona.render.los import RenderResult
 
 if TYPE_CHECKING:
     from qorona.radiation.brightness import BrightnessResult
+    from qorona.radiation.punch_l3 import PunchL3Result
     from qorona.render.fieldlines import FieldLineImage
     from qorona.render.shell import QMap
 
@@ -92,6 +93,8 @@ def write_brightness(
     brightness_cfg: BrightnessConfig,
     output_cfg: OutputConfig,
     provenance: dict[str, Any],
+    *,
+    punch: PunchL3Result | None = None,
 ) -> list[Path]:
     """Write the white-light / pB render's PNG and stamp it, returning the paths written.
 
@@ -106,6 +109,9 @@ def write_brightness(
     ``output_cfg.export_formats``, the WCS-registered white-light FITS
     (:func:`qorona.io.fits.write_brightness_fits`) is written beside the image, carrying the
     stretched display frame plus the raw ``PB``/``TOTAL`` extensions.
+
+    With ``punch`` (the PUNCH Level 3 treatment), the image is the treated component under the
+    PUNCH quicklook stretch, and the FITS carries the treated and the untreated frames.
 
     Raises
     ------
@@ -130,6 +136,8 @@ def write_brightness(
     # The occulter edge the render integrated behind (the resolved r_occult, recorded on the
     # result) is the reference for the display detrends, so the vignettes and the wow mask read it
     # from the result rather than the config, whose sentinel may still be unresolved.
+    if punch is not None:
+        result = punch.treated
     reference_radius = result.r_occult
     image = result.total if brightness_cfg.component == "total" else result.polarized
     valid = None
@@ -143,6 +151,8 @@ def write_brightness(
             reference_radius=reference_radius,
             u=brightness_cfg.u,
             crossover=brightness_cfg.crossover,
+            observer_distance=result.observer_distance,
+            observer_limit=result.observer_limit,
         )
     elif brightness_cfg.vignette == "adaptive":
         image = adaptive_vignette(
@@ -187,7 +197,7 @@ def write_brightness(
             valid=valid,
         )
         fits_path = output_cfg.export_path("fits")
-        write_brightness_fits(result, display, fits_path, provenance)
+        write_brightness_fits(result, display, fits_path, provenance, punch=punch)
         written.append(fits_path)
     return written
 
@@ -238,16 +248,24 @@ def _qmap_title(radius: float, provenance: dict[str, Any]) -> str:
 
 
 def export_brightness(
-    result: BrightnessResult, output_cfg: OutputConfig, provenance: dict[str, Any]
+    result: BrightnessResult,
+    output_cfg: OutputConfig,
+    provenance: dict[str, Any],
+    *,
+    punch: PunchL3Result | None = None,
 ) -> list[Path]:
     """Write the requested raw data sidecars for a brightness render, returning the paths.
 
-    The export carries the *raw, relative* frames (both the polarized ``pB`` and the total
-    white-light brightness) with the plane-of-sky coordinate axes (``x_rsun`` / ``y_rsun``), the
-    impact-parameter grid, and the integrated radial shell, independent of the displayed
-    frame/stages, so a downstream tool (NRGF, WOW, or a custom detrend) processes the unstyled
-    data. The dependency-free ``.npz`` is this function's format (the FITS sidecar belongs to the
-    product writers); the run provenance travels as a JSON string in ``meta``.
+    The export carries the *raw* frames (both the polarized ``pB`` and the total white-light
+    brightness) with the pixel coordinate axes, the impact-parameter grid, and the integrated radial
+    shell, independent of the displayed frame/stages, so a downstream tool (NRGF, WOW, or a custom
+    detrend) processes the unstyled data. The frames are in the result's unit, mean solar
+    brightness or relative, which the provenance in ``meta`` records. For the orthographic camera,
+    the axes are ``x_rsun`` / ``y_rsun`` in R☉. For the perspective camera, they are ``x_deg`` /
+    ``y_deg``, projection-plane offsets from Sun centre in degrees. The dependency-free ``.npz`` is
+    this function's format (the FITS sidecar belongs to the product writers); the run provenance
+    travels as a JSON string in ``meta``. With ``punch`` (the PUNCH Level 3 treatment), ``total``
+    and ``pb`` are the treated frames, with the untreated ``total_full`` and ``pb_full``.
 
     Returns
     -------
@@ -259,19 +277,25 @@ def export_brightness(
     import numpy as np
 
     written: list[Path] = []
+    suffix = "rsun" if result.axis_unit == "R_sun" else "deg"
+    arrays: dict[str, Any] = {
+        "total": result.total.astype(np.float32),
+        "pb": result.polarized.astype(np.float32),
+        f"x_{suffix}": result.x.astype(np.float32),
+        f"y_{suffix}": result.y.astype(np.float32),
+        "impact": result.impact.astype(np.float32),
+        "shell": np.array([result.r_inner, result.r_outer], dtype=np.float32),
+        "meta": np.array(json.dumps(provenance, default=str)),
+    }
+    if punch is not None:
+        arrays["total"] = punch.treated.total.astype(np.float32)
+        arrays["pb"] = punch.treated.polarized.astype(np.float32)
+        arrays["total_full"] = punch.full.total.astype(np.float32)
+        arrays["pb_full"] = punch.full.polarized.astype(np.float32)
     for fmt in output_cfg.export_formats:
         if fmt == "npz":
             path = output_cfg.export_path(fmt)
-            np.savez_compressed(
-                path,
-                total=result.total.astype(np.float32),
-                pb=result.polarized.astype(np.float32),
-                x_rsun=result.x_rsun.astype(np.float32),
-                y_rsun=result.y_rsun.astype(np.float32),
-                impact=result.impact.astype(np.float32),
-                shell=np.array([result.r_inner, result.r_outer], dtype=np.float32),
-                meta=np.array(json.dumps(provenance, default=str)),
-            )
+            np.savez_compressed(path, **arrays)
             written.append(path)
     return written
 
@@ -306,9 +330,11 @@ def _stamp_lines(provenance: dict[str, Any], content: str = "full") -> list[str]
     """Assemble the stamp's text lines from the run provenance.
 
     With ``content="full"``, the CR and date lines appear only when a ``--timestamp`` was supplied
-    (the mesh has no date); the camera angle / roll / FOV lines always stamp. ``R_sun`` is spelled
-    out so it renders without a special glyph. With ``content="date"``, the stamp is the single
-    date/time line — or nothing without a ``--timestamp``.
+    (the mesh has no date); the camera angle / roll / FOV lines always stamp. The FOV is in R☉ for
+    the orthographic camera, and in degrees with the projection code for the perspective camera
+    (``FOV 92.16° ARC``). ``R_sun`` is spelled out so it renders without a special glyph. With
+    ``content="date"``, the stamp is the single date/time line, or nothing without a
+    ``--timestamp``.
     """
     inp = provenance.get("input", {}) if isinstance(provenance.get("input"), dict) else {}
     if content == "date":
@@ -324,7 +350,11 @@ def _stamp_lines(provenance: dict[str, Any], content: str = "full") -> list[str]
             f"φ={float(camera['longitude']):+.2f}° θ={float(camera['latitude']):+.2f}° "
             f"roll={float(camera['roll']):+.2f}°"
         )
-        lines.append(f"FOV {float(camera['fov']):g} R_sun")
+        if camera.get("projection") == "perspective":
+            code = str(camera["projection_code"]).upper()
+            lines.append(f"FOV {float(camera['fov_deg']):g}° {code}")
+        else:
+            lines.append(f"FOV {float(camera['fov']):g} R_sun")
     qmap = provenance.get("qmap", {}) if isinstance(provenance.get("qmap"), dict) else {}
     if qmap:
         lines.append(f"Q-map  r = {float(qmap['radius']):g} R_sun")

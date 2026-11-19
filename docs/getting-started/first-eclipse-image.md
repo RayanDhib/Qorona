@@ -1,8 +1,7 @@
 # First eclipse image
 
-Three commands take a fresh solution to a synthetic eclipse render. They follow the pipeline's
-natural cost seam: the Q⊥ volume is expensive and viewpoint-independent, so it is built once;
-a render off that volume is cheap, so it is done for as many cameras as wanted.
+Three commands take a fresh solution to a synthetic eclipse render. The Q⊥ volume is built once;
+each render off that volume takes seconds, for as many cameras as wanted.
 
 This walkthrough uses the [example data](example-data.md), `data/coconut_corona.CFmesh.xz`.
 
@@ -37,10 +36,9 @@ observer instead of typed angles (step 3).
 qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 317 --latitude 6.2
 ```
 
-Seconds per viewpoint, any number of viewpoints off the one volume. `--fov` is the field of
-view (full width) in solar radii; `--longitude` and `--latitude` set the sub-observer
-heliographic point, `--roll` the camera roll. With the time and frame baked into the volume, the camera can also take a real observer's
-viewpoint on that date, no angles typed:
+`--fov` is the field of view (full width) in solar radii; `--longitude` and `--latitude` set the
+sub-observer heliographic point, `--roll` the camera roll. With the time and frame baked into the
+volume, the camera can also take a real observer's viewpoint on that date, no angles typed:
 
 ```bash
 qorona render data/coconut_corona.qor -o data/earth.png --fov 8 --observer earth

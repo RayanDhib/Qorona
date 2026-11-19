@@ -34,7 +34,7 @@ def test_power_law_polarization_matches_analytic() -> None:
     result = render_brightness(
         density, camera, u=0.0, step=0.01, occult="none", show_progress=False
     )
-    rho = np.abs(result.x_rsun)
+    rho = np.abs(result.x)
     polarization = result.polarization()[0]
     window = (rho > 6.0) & (rho < 10.0)
     expected = (gamma + 1.0) / (gamma + 3.0)

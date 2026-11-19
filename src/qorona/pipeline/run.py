@@ -39,10 +39,12 @@ from qorona.config import (
     QMapConfig,
     RenderConfig,
     RunConfig,
+    SolutionFrame,
     VolumeConfig,
     WeightingConfig,
 )
 from qorona.config.schema import (
+    CAMERA_INSTRUMENTS,
     CORONAL_FOV,
     CORONAL_LATITUDE,
     CORONAL_QMAP_RADIUS,
@@ -52,17 +54,20 @@ from qorona.config.schema import (
     CORONAL_WL_R_OCCULT,
     HELIO_FOV_FACTOR,
     HELIO_LATITUDE,
+    HELIO_PERSPECTIVE_LATITUDE,
     HELIO_QMAP_FACTOR,
     STEP_PER_FOV,
     WL_OCCULT_FACTOR,
 )
-from qorona.ephemeris import derive_cr, derive_jd
+from qorona.console import progress_bar
+from qorona.ephemeris import derive_cr, derive_jd, sub_observer_point, utc_time
 from qorona.field.base import Field
 from qorona.field.density import DensityVolume
 from qorona.field.sampled import SampledField
-from qorona.geometry.camera import OrthographicCamera
+from qorona.geometry.camera import Camera, OrthographicCamera, PerspectiveCamera, check_arc_reach
 from qorona.io import NativeSolution, read_solution
 from qorona.io.readers import category_of, resolve_model
+from qorona.radiation import punch_l3
 from qorona.radiation.brightness import BrightnessResult
 from qorona.radiation.brightness import render_brightness as _brightness_los
 from qorona.render.fieldlines import FieldLineImage, render_field_lines
@@ -212,39 +217,187 @@ def _resolve_grid(grid_cfg: GridConfig, solution: NativeSolution) -> GridConfig:
     return replace(grid_cfg, inner_radius=float(inner), outer_radius=float(outer))
 
 
-def _resolve_camera(camera_cfg: CameraConfig, category: str, outer: float) -> CameraConfig:
-    """Resolve a ``None`` fov (coronal constant, or the full heliospheric domain) and a ``None``
-    latitude (corona 0, edge-on; heliosphere 90, the equatorial-plane view)."""
+def _resolve_projection(camera_cfg: CameraConfig, category: str) -> CameraConfig:
+    """Resolve a ``None`` projection and check that the camera settings agree with it.
+
+    The projection resolves by category (corona: orthographic; heliosphere: perspective), and a
+    named instrument frame is always perspective. This function is independent of the solution's
+    shell, so the CLI calls it before any expensive stage to fail fast.
+
+    Raises :class:`ValueError` when a setting belongs to the other camera: ``fov`` in R☉ under the
+    perspective camera, or ``fov_deg`` or an instrument under the orthographic one. It also raises
+    for a coronal perspective view without ``fov_deg``.
+    """
     helio = category == "heliosphere"
-    if camera_cfg.fov is None:
-        fov = HELIO_FOV_FACTOR * outer if helio else CORONAL_FOV
-        camera_cfg = replace(camera_cfg, fov=float(fov))
-    if camera_cfg.latitude is None:
-        camera_cfg = replace(camera_cfg, latitude=HELIO_LATITUDE if helio else CORONAL_LATITUDE)
-    return camera_cfg
+    projection = camera_cfg.projection
+    if projection is None:
+        perspective = helio or camera_cfg.instrument is not None
+        projection = "perspective" if perspective else "orthographic"
+    if projection == "orthographic":
+        if camera_cfg.instrument is not None:
+            raise ValueError(
+                f"--instrument {camera_cfg.instrument} is a perspective frame; drop "
+                "--projection orthographic, or drop --instrument"
+            )
+        if camera_cfg.fov_deg is not None:
+            raise ValueError(
+                "--fov-deg is an angular width for the perspective camera; the orthographic "
+                "camera takes its width in R_sun with --fov"
+            )
+    else:
+        if camera_cfg.fov is not None:
+            reason = (
+                "heliospheric inputs default to the perspective camera"
+                if helio and camera_cfg.projection is None and camera_cfg.instrument is None
+                else "this view uses the perspective camera"
+            )
+            raise ValueError(
+                f"--fov is a width in R_sun for the orthographic camera; {reason}. Use --fov-deg "
+                "for an angular field of view, --instrument punch-mosaic for the PUNCH framing, "
+                "or --projection orthographic to keep --fov in R_sun"
+            )
+        if camera_cfg.fov_deg is None and not helio:
+            raise ValueError(
+                "a perspective view of a coronal solution needs its angular width: pass "
+                "--fov-deg, or an --instrument frame"
+            )
+        if camera_cfg.fov_deg is not None and camera_cfg.projection_code in (None, "arc"):
+            check_arc_reach(camera_cfg.fov_deg, camera_cfg.pixels, camera_cfg.reference_pixel)
+    return replace(camera_cfg, projection=projection)
+
+
+def _resolve_camera(
+    camera_cfg: CameraConfig,
+    category: str,
+    inner: float,
+    outer: float,
+    *,
+    coronal_fov: float = CORONAL_FOV,
+) -> CameraConfig:
+    """Resolve the camera's ``None`` fields by category, off the solution's shell.
+
+    The projection resolves first (:func:`_resolve_projection`, which also checks the settings),
+    and the rest follow the camera it picks:
+
+    - Orthographic: a ``None`` ``fov`` resolves to ``coronal_fov`` (the coronal constant by
+      default) or to the full heliospheric domain. A ``None`` latitude resolves to 0 (corona,
+      edge-on) or 90 (the heliospheric equatorial-plane overview).
+    - Perspective: a ``None`` ``fov_deg`` resolves to the PUNCH mosaic width (heliosphere only).
+      A ``None`` latitude resolves to 0, and a ``None`` ``projection_code`` to ``arc``. Raises
+      :class:`ValueError` when the observer sits inside the inner boundary ``inner`` (R☉).
+    """
+    camera_cfg = _resolve_projection(camera_cfg, category)
+    helio = category == "heliosphere"
+    if camera_cfg.projection == "orthographic":
+        fov = camera_cfg.fov
+        if fov is None:
+            fov = float(HELIO_FOV_FACTOR * outer if helio else coronal_fov)
+        latitude = camera_cfg.latitude
+        if latitude is None:
+            latitude = HELIO_LATITUDE if helio else CORONAL_LATITUDE
+        return replace(camera_cfg, fov=fov, latitude=latitude)
+
+    distance = float((camera_cfg.observer_distance * u.AU).to_value(u.R_sun))
+    if distance <= inner:
+        raise ValueError(
+            f"the observer at {camera_cfg.observer_distance:.3g} AU ({distance:.1f} R_sun) is "
+            f"inside the solution's inner boundary at {inner:g} R_sun; choose a more distant "
+            "observer"
+        )
+    fov_deg = camera_cfg.fov_deg
+    if fov_deg is None:
+        fov_deg = CAMERA_INSTRUMENTS["punch-mosaic"].fov_deg
+    latitude = camera_cfg.latitude
+    if latitude is None:
+        latitude = HELIO_PERSPECTIVE_LATITUDE if helio else CORONAL_LATITUDE
+    if camera_cfg.projection_code in (None, "arc"):
+        check_arc_reach(fov_deg, camera_cfg.pixels, camera_cfg.reference_pixel)
+    return replace(
+        camera_cfg,
+        fov_deg=fov_deg,
+        latitude=latitude,
+        projection_code=camera_cfg.projection_code or "arc",
+    )
+
+
+def _camera(camera_cfg: CameraConfig) -> Camera:
+    """Build the rendering camera of a resolved ``camera_cfg``.
+
+    Converts the config's degrees, solar radii and astronomical units into the radians and
+    quantities the cameras take.
+    """
+    latitude = camera_cfg.latitude
+    assert latitude is not None  # resolved by _resolve_camera
+    roll = float(np.deg2rad(camera_cfg.roll))
+    if camera_cfg.projection == "perspective":
+        fov_deg = camera_cfg.fov_deg
+        assert fov_deg is not None  # resolved by _resolve_camera
+        return PerspectiveCamera.from_sub_observer(
+            longitude=camera_cfg.longitude,
+            latitude=latitude,
+            observer_distance=camera_cfg.observer_distance * u.AU,
+            fov=fov_deg * u.deg,
+            pixels=camera_cfg.pixels,
+            roll=roll,
+            projection_code=cast(Any, camera_cfg.projection_code or "arc"),
+            reference_pixel=camera_cfg.reference_pixel,
+        )
+    fov = camera_cfg.fov
+    assert fov is not None  # resolved by _resolve_camera
+    return OrthographicCamera.from_sub_observer(
+        longitude=camera_cfg.longitude,
+        latitude=latitude,
+        roll=roll,
+        fov=fov * u.R_sun,
+        pixels=camera_cfg.pixels,
+    )
+
+
+def _default_step(category: str, camera_cfg: CameraConfig, outer: float) -> float:
+    """The category-keyed line-of-sight step (R☉) for a resolved ``camera_cfg``.
+
+    Corona: the locked constant. Heliosphere: the orthographic width over
+    :data:`STEP_PER_FOV`. The perspective camera has an angular width, so it uses the default
+    orthographic width, the shell diameter, instead.
+    """
+    if category != "heliosphere":
+        return CORONAL_STEP
+    if camera_cfg.projection == "perspective":
+        return float(HELIO_FOV_FACTOR * outer / STEP_PER_FOV)
+    fov = camera_cfg.fov
+    assert fov is not None  # resolved by _resolve_camera
+    return float(fov / STEP_PER_FOV)
 
 
 def _resolve_render(
-    render_cfg: RenderConfig, category: str, fov: float, inner: float
+    render_cfg: RenderConfig,
+    category: str,
+    camera_cfg: CameraConfig,
+    inner: float,
+    outer: float,
 ) -> RenderConfig:
-    """Resolve ``None`` step/r_occult by category (constants, or shell-derived)."""
+    """Resolve ``None`` step/r_occult by category (constants, or shell-derived) for a resolved
+    ``camera_cfg``."""
     helio = category == "heliosphere"
     if render_cfg.step is None:
-        render_cfg = replace(render_cfg, step=float(fov / STEP_PER_FOV) if helio else CORONAL_STEP)
+        render_cfg = replace(render_cfg, step=_default_step(category, camera_cfg, outer))
     if render_cfg.r_occult is None:
         render_cfg = replace(render_cfg, r_occult=float(inner) if helio else CORONAL_R_OCCULT)
     return render_cfg
 
 
 def _resolve_brightness(
-    brightness_cfg: BrightnessConfig, category: str, fov: float, inner: float
+    brightness_cfg: BrightnessConfig,
+    category: str,
+    camera_cfg: CameraConfig,
+    inner: float,
+    outer: float,
 ) -> BrightnessConfig:
-    """Resolve ``None`` step/r_occult for the brightness render, by category."""
+    """Resolve ``None`` step/r_occult for the brightness render, by category, for a resolved
+    ``camera_cfg``."""
     helio = category == "heliosphere"
     if brightness_cfg.step is None:
-        brightness_cfg = replace(
-            brightness_cfg, step=float(fov / STEP_PER_FOV) if helio else CORONAL_STEP
-        )
+        brightness_cfg = replace(brightness_cfg, step=_default_step(category, camera_cfg, outer))
     if brightness_cfg.r_occult is None:
         brightness_cfg = replace(
             brightness_cfg,
@@ -271,7 +424,8 @@ def build_field(
     """Read a solution and resample it onto the internal field grid.
 
     Reads the solution (model inferred from the extension unless ``input_cfg.model`` is set), builds
-    the field grid from ``grid_cfg``, and resamples B onto it with the named resampler. When a
+    the field grid from ``grid_cfg``, and resamples B onto it with the named resampler. A set
+    ``input_cfg.mean_molecular_weight`` replaces the μ that the reader declares. When a
     ``timings`` dict is supplied, the ``"read"`` and ``"resample"`` stage durations (seconds) are
     recorded into it for the end-of-run summary.
 
@@ -289,6 +443,8 @@ def build_field(
     )
     if timings is not None:
         timings["read"] = time.perf_counter() - start
+    if input_cfg.mean_molecular_weight is not None:
+        solution.metadata.mean_molecular_weight = input_cfg.mean_molecular_weight
     grid_cfg = _resolve_grid(grid_cfg, solution)
     grid = _field_grid(grid_cfg)
     resampler_name = _resolve_resampler(grid_cfg.resampler, solution)
@@ -397,32 +553,24 @@ def render_volume(
 ) -> RenderResult:
     """Integrate a baked volume for one viewpoint into an eclipse-like image.
 
-    Builds the orthographic camera from the sub-observer angles, converting the config's degrees and
-    solar radii into the radians the camera expects, selects the geometric weighting preset, and
-    renders. When ``weighting_cfg.thomson`` is set, the baked-in ``density`` is wrapped in a
-    :class:`~qorona.radiation.thomson.ThomsonWeight` and composed into the render as the optional
-    radiometric factor (an error if the volume carries no density). The ``None`` camera FOV, LOS
-    step, and occulter radius resolve by ``category`` off the volume's shell (from the input's
-    solution category).
+    Builds the camera the resolved config selects (:func:`_camera`), selects the geometric
+    weighting preset, and renders. When ``weighting_cfg.thomson`` is set, the baked-in ``density``
+    is wrapped in a :class:`~qorona.radiation.thomson.ThomsonWeight` and composed into the render
+    as the optional radiometric factor (an error if the volume carries no density). The ``None``
+    camera fields, LOS step, and occulter radius resolve by ``category`` off the volume's shell
+    (from the input's solution category).
 
     Returns
     -------
     RenderResult
         The depth-coloured image, the grayscale measurement image, coverage, and clamp provenance.
     """
-    camera_cfg = _resolve_camera(camera_cfg, category, float(volume.grid.radii[-1]))
-    fov, latitude = camera_cfg.fov, camera_cfg.latitude
-    assert fov is not None and latitude is not None  # resolved above
-    render_cfg = _resolve_render(render_cfg, category, fov, float(volume.grid.radii[0]))
+    inner, outer = float(volume.grid.radii[0]), float(volume.grid.radii[-1])
+    camera_cfg = _resolve_camera(camera_cfg, category, inner, outer)
+    render_cfg = _resolve_render(render_cfg, category, camera_cfg, inner, outer)
     step, r_occult = render_cfg.step, render_cfg.r_occult
     assert step is not None and r_occult is not None
-    camera = OrthographicCamera.from_sub_observer(
-        longitude=camera_cfg.longitude,
-        latitude=latitude,
-        roll=float(np.deg2rad(camera_cfg.roll)),
-        fov=fov * u.R_sun,
-        pixels=camera_cfg.pixels,
-    )
+    camera = _camera(camera_cfg)
     thomson = None
     if weighting_cfg.thomson is not None:
         if density is None:
@@ -501,29 +649,21 @@ def render_fieldlines(
 ) -> FieldLineImage:
     """Render the field-line view of a field from one viewpoint.
 
-    Builds the orthographic camera from the sub-observer angles (the same degrees-and-solar-radii to
-    radians conversion as :func:`render_volume`), then traces and draws a Fibonacci-seeded bundle of
-    field lines; the shell radii come from ``field.domain``. A ``None`` camera FOV resolves by
-    ``category`` off the field's outer shell.
+    Builds the camera the resolved config selects (:func:`_camera`, as in :func:`render_volume`),
+    then traces and draws a Fibonacci-seeded bundle of field lines. The shell radii come from
+    ``field.domain``. The ``None`` camera fields resolve by ``category`` off the field's shell.
 
     Returns
     -------
     FieldLineImage
         The drawn image and the open / closed / incomplete line tallies.
     """
-    camera_cfg = _resolve_camera(camera_cfg, category, field.domain.outer_radius)
-    fov, latitude = camera_cfg.fov, camera_cfg.latitude
-    assert fov is not None and latitude is not None  # resolved above
-    camera = OrthographicCamera.from_sub_observer(
-        longitude=camera_cfg.longitude,
-        latitude=latitude,
-        roll=float(np.deg2rad(camera_cfg.roll)),
-        fov=fov * u.R_sun,
-        pixels=camera_cfg.pixels,
+    camera_cfg = _resolve_camera(
+        camera_cfg, category, field.domain.inner_radius, field.domain.outer_radius
     )
     return render_field_lines(
         field,
-        camera,
+        _camera(camera_cfg),
         seeding=fieldlines_cfg.seeding,
         n_seeds=fieldlines_cfg.n_seeds,
         limb_seeds=fieldlines_cfg.limb_seeds,
@@ -598,9 +738,9 @@ def render_brightness(
 ) -> BrightnessResult:
     """Render the white-light / polarized-brightness corona of a density from one viewpoint.
 
-    Builds the orthographic camera from the sub-observer angles (the same degrees-and-solar-radii to
-    radians conversion as :func:`render_volume`), then integrates the Thomson-scattering brightness
-    over the electron density along each line of sight. Independent of the Q⊥ volume (the density
+    Builds the camera the resolved config selects (:func:`_camera`, as in :func:`render_volume`),
+    then integrates the Thomson-scattering brightness over the electron density along each line of
+    sight. Independent of the Q⊥ volume (the density
     is the only field input), so the caller resolves the density from either a read-in solution
     (``field.density``) or a baked volume artifact (:func:`load_volume`). The ``None`` camera FOV,
     LOS step, and occulter radius resolve by ``category`` off the density's shell.
@@ -611,32 +751,104 @@ def render_brightness(
         The polarized (``pB``) and total brightness frames and the geometry the display stages
         consume.
     """
-    camera_cfg = _resolve_camera(camera_cfg, category, float(density.grid.radii[-1]))
-    fov, latitude = camera_cfg.fov, camera_cfg.latitude
-    assert fov is not None and latitude is not None  # resolved above
-    brightness_cfg = _resolve_brightness(
-        brightness_cfg, category, fov, float(density.grid.radii[0])
-    )
+    inner, outer = float(density.grid.radii[0]), float(density.grid.radii[-1])
+    camera_cfg = _resolve_camera(camera_cfg, category, inner, outer)
+    brightness_cfg = _resolve_brightness(brightness_cfg, category, camera_cfg, inner, outer)
     step, r_occult = brightness_cfg.step, brightness_cfg.r_occult
     assert step is not None and r_occult is not None
-    camera = OrthographicCamera.from_sub_observer(
-        longitude=camera_cfg.longitude,
-        latitude=latitude,
-        roll=float(np.deg2rad(camera_cfg.roll)),
-        fov=fov * u.R_sun,
-        pixels=camera_cfg.pixels,
-    )
     return _brightness_los(
         density,
-        camera,
+        _camera(camera_cfg),
         u=brightness_cfg.u,
         crossover=brightness_cfg.crossover,
         step=step,
         occult=cast(Any, brightness_cfg.occult),
         r_occult=r_occult,
         occult_softness=brightness_cfg.occult_softness,
+        scale=cast(Any, brightness_cfg.brightness_scale),
         workers=brightness_cfg.workers,
         show_progress=show_progress,
+    )
+
+
+def render_punch_l3(
+    density: DensityVolume,
+    brightness_cfg: BrightnessConfig,
+    camera_cfg: CameraConfig,
+    *,
+    timestamp: str,
+    frame: SolutionFrame,
+    category: str = "corona",
+    show_progress: bool = True,
+) -> punch_l3.PunchL3Result:
+    """Render a frame from Earth and apply the PUNCH Level 3 background treatment.
+
+    ``camera_cfg`` must place the observer at Earth at ``timestamp``. The background frames view
+    the same density from Earth at the times of :func:`punch_l3.window_offsets`, with the sub-Earth
+    point in the solution ``frame`` (a Stonyhurst solution holds at ``timestamp`` and turns with
+    the Sun). They are rendered at :data:`punch_l3.BACKGROUND_SIZE` and interpolated to the frame.
+    A background frame counts at a pixel only where it shows corona there. Pixels with no corona in
+    the untreated frame stay zero, and so do pixels within two background pixels of an occulter
+    edge, where the interpolated background is not reliable.
+    """
+    inner, outer = float(density.grid.radii[0]), float(density.grid.radii[-1])
+    camera_cfg = _resolve_camera(camera_cfg, category, inner, outer)
+    brightness_cfg = _resolve_brightness(brightness_cfg, category, camera_cfg, inner, outer)
+    full = render_brightness(
+        density, brightness_cfg, camera_cfg, category=category, show_progress=show_progress
+    )
+
+    height, width = camera_cfg.pixels
+    scale = min(1.0, punch_l3.BACKGROUND_SIZE / max(height, width))
+    small = (max(1, round(height * scale)), max(1, round(width * scale)))
+    reference = camera_cfg.reference_pixel
+    if reference is not None:
+        reference = (
+            (reference[0] + 0.5) * small[1] / width - 0.5,
+            (reference[1] + 0.5) * small[0] / height - 0.5,
+        )
+    small_cfg = replace(camera_cfg, pixels=small, reference_pixel=reference)
+
+    offsets = punch_l3.window_offsets()
+    start = utc_time(timestamp)
+    stack = np.empty((offsets.size, 3, *small), dtype=np.float32)
+    alpha_small: np.ndarray | None = None
+    with progress_bar("Background frames", offsets.size, enabled=show_progress) as tick:
+        for index, hours in enumerate(offsets):
+            when = start + hours * u.hour
+            when.precision = 0
+            longitude, latitude, distance = sub_observer_point(
+                "earth", str(when.isot), frame, epoch=timestamp
+            )
+            view = replace(
+                small_cfg, longitude=longitude, latitude=latitude, observer_distance=distance
+            )
+            result = render_brightness(
+                density, brightness_cfg, view, category=category, show_progress=False
+            )
+            if alpha_small is None:
+                alpha_small = punch_l3.radial_angle(result.x, result.y)
+            channels = punch_l3.to_channels(result.total, result.polarized, alpha_small)
+            stack[index] = np.where(result.total > 0.0, channels, np.nan)
+            tick(index + 1)
+
+    small_usual = punch_l3.background(stack)
+    usual, complete = punch_l3.upsample(small_usual, np.isfinite(small_usual[0]), (height, width))
+    alpha = punch_l3.radial_angle(full.x, full.y)
+    channels = punch_l3.to_channels(full.total, full.polarized, alpha) - usual
+    total, polarized = punch_l3.from_channels(channels, alpha)
+    corona = (full.total > 0.0) & complete
+    treated = replace(
+        full,
+        total=np.where(corona, total, 0.0),
+        polarized=np.where(corona, polarized, 0.0),
+    )
+    return punch_l3.PunchL3Result(
+        treated=treated,
+        full=full,
+        valid=corona,
+        frames=int(offsets.size),
+        background_pixels=small,
     )
 
 
@@ -907,7 +1119,11 @@ def _brightness_metrics(result: BrightnessResult) -> dict[str, Any]:
         if bool(np.any(positive_total))
         else 0.0
     )
-    return {"median_polarization": median_polarization, "pb_decades": decades}
+    return {
+        "median_polarization": median_polarization,
+        "pb_decades": decades,
+        "unit": result.unit,
+    }
 
 
 def brightness_provenance(
@@ -1030,7 +1246,8 @@ def save_volume(
 
     When a ``density`` is supplied (the Thomson / brightness branch) its padded payload and grid
     ride the same archive, so a separate ``render`` has ``Nₑ`` for the optional pB weighting; an
-    artifact baked without it loads back with no density.
+    artifact baked without it loads back with no density. If the reader declared the density's
+    physical units, the archive stores them too, so ``wl`` can report absolute brightness.
 
     Parameters
     ----------
@@ -1068,6 +1285,12 @@ def save_volume(
     if density is not None:
         arrays["density"] = density.density.astype(cast)
         meta["density_grid"] = _grid_spec(density.grid)
+        # The physical units, as plain numbers: Nₑ of one stored value (m⁻³) and the mean molecular
+        # weight it uses (both absent when unknown), and the model length unit (m).
+        if density.unit is not None:
+            meta["density_unit_m3"] = float(density.unit.to(u.m**-3))
+            meta["mean_molecular_weight"] = density.mean_molecular_weight
+        meta["length_unit_m"] = float(density.length_unit.to(u.m))
     # Select compressed vs plain savez.
     saver: Any = np.savez_compressed if compress else np.savez
     with open(path, "wb") as handle:
@@ -1081,9 +1304,10 @@ def load_volume(
 
     The stored arrays (``float32`` or ``float64``) are restored to the ``float64`` the render kernel
     consumes; the grids are reconstructed from their specs, so the loaded volume renders identically
-    to the one that was baked. ``density`` is ``None`` for an artifact baked without it; the
-    polarity and radial-sign channels (int8 on disk) are restored to ``float32``, or ``None`` when
-    absent.
+    to the one that was baked. ``density`` is ``None`` for an artifact baked without it; it carries
+    the recorded density unit, length unit and μ, and an artifact without the unit record loads as
+    a relative density. The polarity and radial-sign channels (int8 on disk) are restored to
+    ``float32``, or ``None`` when absent.
 
     Returns
     -------
@@ -1128,9 +1352,14 @@ def load_volume(
             radial_sign = np.ascontiguousarray(archive["radial_sign"], dtype=np.float32)
         density = None
         if "density" in archive.files and "density_grid" in meta:
+            # Artifacts without the unit records load as relative densities in R☉ coordinates.
+            per_value = meta.get("density_unit_m3")
             density = DensityVolume(
                 grid=_grid_from_spec(meta["density_grid"]),
                 density=np.ascontiguousarray(archive["density"], dtype=np.float64),
+                unit=u.Unit(per_value * u.m**-3) if per_value is not None else None,
+                length_unit=u.Unit(meta.get("length_unit_m", u.R_sun.to(u.m)) * u.m),
+                mean_molecular_weight=meta.get("mean_molecular_weight"),
             )
     grid = _grid_from_spec(meta["grid"])
     radial_sign_grid = (

@@ -20,7 +20,7 @@ import numpy as np
 
 from qorona.console import progress_bar
 
-__all__ = ["ParsedVtu", "VtuPiece", "parse_vtu"]
+__all__ = ["ParsedVtu", "VtuPiece", "parse_vtu", "read_field_data"]
 
 _DTYPES: dict[bytes, np.dtype[Any]] = {
     b"Float32": np.dtype("<f4"),
@@ -144,11 +144,7 @@ def parse_vtu(
         nbytes = int(np.frombuffer(raw, prefix, 1, offset)[0])
         return np.frombuffer(raw, dtype, nbytes // dtype.itemsize, offset + prefix.itemsize)
 
-    field_data: dict[str, float] = {}
-    field_block = _FIELD_DATA.search(header)
-    if field_block is not None:
-        for name, value in _ASCII_SCALAR.findall(field_block.group(1)):
-            field_data[name.decode()] = float(value)
+    field_data = _field_data(header)
 
     piece_matches = list(_PIECE.finditer(header))
     if not piece_matches:
@@ -185,3 +181,22 @@ def parse_vtu(
             )
             tick(count)
     return ParsedVtu(pieces=pieces, field_data=field_data)
+
+
+def read_field_data(path: object, head_bytes: int = 1 << 16) -> dict[str, float]:
+    """Return the scalar ``FieldData`` values of a ``.vtu`` from the start of the file only.
+
+    ``FieldData`` comes before the pieces, so the first ``head_bytes`` hold it. Reads no payload.
+    """
+    with open(str(path), "rb") as stream:
+        return _field_data(stream.read(head_bytes))
+
+
+def _field_data(header: bytes) -> dict[str, float]:
+    """``name -> value`` for the single-tuple ASCII ``FieldData`` scalars in ``header``."""
+    field_data: dict[str, float] = {}
+    field_block = _FIELD_DATA.search(header)
+    if field_block is not None:
+        for name, value in _ASCII_SCALAR.findall(field_block.group(1)):
+            field_data[name.decode()] = float(value)
+    return field_data

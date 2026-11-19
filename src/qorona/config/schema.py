@@ -45,12 +45,18 @@ FIELDLINE_COLOUR = ("rainbow", "polarity")
 BRIGHTNESS_COMPONENTS = ("polarized", "total")
 BRIGHTNESS_VIGNETTES = ("adaptive", "newkirk", "none", "wow")
 BRIGHTNESS_SCALINGS = ("linear", "log")
+#: The brightness units. ``auto`` gives absolute units (mean solar brightness) when the density
+#: unit is known, and relative units otherwise. ``relative`` always gives relative units.
+BRIGHTNESS_SCALES = ("auto", "relative")
 #: Heliographic frames a solution's longitudes may be in; both share the solar rotation axis.
 SOLUTION_FRAMES = ("carrington", "stonyhurst")
 #: Accepted spellings beyond the canonical names (HEEQ is Stonyhurst in Cartesian form).
 FRAME_ALIASES = {"heeq": "stonyhurst"}
 #: The frame every consumer assumes when none was declared.
 DEFAULT_FRAME = "carrington"
+#: The frame of an Icarus snapshot. The CLI sets it for Icarus input, and the user cannot. It turns
+#: with the Sun at a sidereal period of 24.47 days, and an :class:`IcarusRunConfig` anchors it.
+ICARUS_FRAME = "icarus"
 EXPORT_FORMATS = ("npz", "fits", "sunjson")
 RENDER_EXPORT_FORMATS = ("fits",)
 QMAP_EXPORT_FORMATS = ("npz",)
@@ -76,10 +82,20 @@ CORONAL_STEP = 0.02
 CORONAL_R_OCCULT = 1.0
 CORONAL_WL_R_OCCULT = 1.02
 CORONAL_QMAP_RADIUS = 3.0
-#: Category-keyed default sub-observer latitude (deg), fixed per category rather than shell-derived:
-#: the coronal edge-on view (0), the heliospheric equatorial-plane view from solar north (90).
+#: Category-keyed default sub-observer latitude (deg), fixed per category rather than shell-derived.
+#: The coronal view is edge-on (0). The heliospheric orthographic overview looks at the equatorial
+#: plane from solar north (90). The heliospheric perspective view lies in the solar equatorial
+#: plane (0).
 CORONAL_LATITUDE = 0.0
 HELIO_LATITUDE = 90.0
+HELIO_PERSPECTIVE_LATITUDE = 0.0
+#: The camera projections. The orthographic camera has parallel lines of sight from an observer at
+#: infinity (the coronal default). The perspective camera has lines of sight that fan out from an
+#: observer at a finite distance (the heliospheric default).
+CAMERA_PROJECTIONS = ("orthographic", "perspective")
+#: The zenithal projections of the perspective camera, by FITS projection code (mirrors
+#: ``qorona.geometry.camera.PROJECTION_CODES``).
+PROJECTION_CODES = ("arc", "tan")
 #: Heliospheric derivation laws: fov = HELIO_FOV_FACTOR x outer_radius;
 #: step = fov / STEP_PER_FOV; wl occulter = WL_OCCULT_FACTOR x inner_radius;
 #: Q-map shell = HELIO_QMAP_FACTOR x inner_radius.
@@ -118,6 +134,76 @@ def _validate_turn_guard(
 
 
 @dataclass(frozen=True)
+class IcarusRunConfig:
+    """The Icarus run settings that set the epoch and the frame of a snapshot.
+
+    Icarus counts ``TIME`` in hours from the start of the simulation. The magnetogram time sits at
+    ``TIME = 24 (relaxation + cme_insertion)``. At that time, Earth is at ``phi = delta_phi`` in
+    the Icarus frame. The four values come from the ``&icarus_list`` group of the run's ``.par``
+    file.
+
+    Attributes
+    ----------
+    magnetogram_time
+        UTC ISO-8601 time of the magnetogram.
+    relaxation
+        Relaxation period before the magnetogram time, in days.
+    cme_insertion
+        Extra delay before the magnetogram time, in days.
+    delta_phi
+        Earth's longitude in the Icarus frame at the magnetogram time, in degrees.
+    """
+
+    magnetogram_time: str
+    relaxation: float
+    cme_insertion: float = 0.0
+    delta_phi: float = 0.0
+
+    def __post_init__(self) -> None:
+        _require(self.relaxation >= 0.0, f"relaxation must be >= 0 days, got {self.relaxation}")
+        _require(
+            self.cme_insertion >= 0.0, f"cme_insertion must be >= 0 days, got {self.cme_insertion}"
+        )
+
+    @property
+    def magnetogram_hours(self) -> float:
+        """The ``TIME`` value, in hours, of the magnetogram time."""
+        return 24.0 * (self.relaxation + self.cme_insertion)
+
+    def to_provenance(self) -> dict[str, object]:
+        return {
+            "magnetogram_time": self.magnetogram_time,
+            "relaxation": self.relaxation,
+            "cme_insertion": self.cme_insertion,
+            "delta_phi": self.delta_phi,
+        }
+
+    @classmethod
+    def from_provenance(cls, block: dict[str, object]) -> IcarusRunConfig:
+        """Rebuild the settings from their :meth:`to_provenance` mapping."""
+        return cls(
+            magnetogram_time=str(block["magnetogram_time"]),
+            relaxation=float(block["relaxation"]),  # type: ignore[arg-type]
+            cme_insertion=float(block.get("cme_insertion", 0.0)),  # type: ignore[arg-type]
+            delta_phi=float(block.get("delta_phi", 0.0)),  # type: ignore[arg-type]
+        )
+
+
+#: A solution frame as the frame-sensitive consumers take it. It is a frame name, the settings of
+#: an Icarus run (that frame needs them), or ``None`` when no frame was declared.
+SolutionFrame = str | IcarusRunConfig | None
+
+
+def frame_from_provenance(input_block: dict[str, object]) -> SolutionFrame:
+    """Return the solution frame recorded in a provenance ``input`` block."""
+    frame = input_block.get("frame")
+    run = input_block.get("icarus_run")
+    if frame == ICARUS_FRAME and isinstance(run, dict):
+        return IcarusRunConfig.from_provenance(run)
+    return frame if isinstance(frame, str) else None
+
+
+@dataclass(frozen=True)
 class InputConfig:
     """The solution to read, the optional UTC timestamp from which CR/JD are derived, and the
     optional declaration of the heliographic frame its longitudes are in.
@@ -128,6 +214,12 @@ class InputConfig:
     or Stonyhurst: ``frame`` records the user's declaration (``"carrington"`` or
     ``"stonyhurst"``, with ``"heeq"`` accepted for the latter) and stays ``None`` when nothing
     was declared, which every frame-sensitive consumer takes as Carrington while saying so.
+
+    An Icarus snapshot is in its own frame. With ``icarus_run`` set, ``frame`` is
+    :data:`ICARUS_FRAME`, and the CLI derives ``timestamp`` from the run settings and ``TIME``.
+
+    ``mean_molecular_weight`` overrides the ``μ`` that the reader declares for the model's equation
+    of state. ``None`` keeps the reader's value.
     """
 
     path: Path
@@ -135,24 +227,48 @@ class InputConfig:
     timestamp: str | None = None
     frame: str | None = None
     variables: tuple[str, ...] | None = None
+    icarus_run: IcarusRunConfig | None = None
+    mean_molecular_weight: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "path", Path(self.path))
-        if self.frame is not None:
+        if self.mean_molecular_weight is not None:
+            _require(
+                self.mean_molecular_weight > 0.0,
+                f"mean_molecular_weight must be > 0, got {self.mean_molecular_weight}",
+            )
+        if self.icarus_run is not None:
+            _require(
+                self.frame in (None, ICARUS_FRAME),
+                f"an Icarus run is in the {ICARUS_FRAME} frame, got frame {self.frame!r}",
+            )
+            object.__setattr__(self, "frame", ICARUS_FRAME)
+        elif self.frame is not None:
+            # ICARUS_FRAME without run settings marks an Icarus input whose frame is unresolved.
             frame = FRAME_ALIASES.get(self.frame.lower(), self.frame.lower())
-            _one_of(frame, SOLUTION_FRAMES, "frame")
+            _one_of(frame, (*SOLUTION_FRAMES, ICARUS_FRAME), "frame")
             object.__setattr__(self, "frame", frame)
         if self.variables is not None:
             object.__setattr__(self, "variables", tuple(self.variables))
 
+    @property
+    def solution_frame(self) -> SolutionFrame:
+        """The frame as the frame-sensitive consumers take it (see :data:`SolutionFrame`)."""
+        return self.icarus_run if self.icarus_run is not None else self.frame
+
     def to_provenance(self) -> dict[str, object]:
-        return {
+        block: dict[str, object] = {
             "path": str(self.path),
             "model": self.model,
             "timestamp": self.timestamp,
             "frame": self.frame,
             "variables": list(self.variables) if self.variables is not None else None,
         }
+        if self.icarus_run is not None:
+            block["icarus_run"] = self.icarus_run.to_provenance()
+        if self.mean_molecular_weight is not None:
+            block["mean_molecular_weight"] = self.mean_molecular_weight
+        return block
 
 
 @dataclass(frozen=True)
@@ -317,17 +433,33 @@ QUALITY_PRESETS: dict[str, tuple[int, int]] = {
 
 @dataclass(frozen=True)
 class CameraConfig:
-    """The orthographic plane-of-sky viewpoint: sub-observer angles (deg), roll, FOV, and pixels.
+    """The viewpoint: projection, sub-observer angles (deg), roll, field of view, and pixels.
 
     Angles are in **degrees** here (friendly at the CLI) and converted to the camera's radians/R☉
-    convention at the pipeline edge. ``latitude`` is the sub-observer heliographic latitude;
-    ``None`` resolves by solution category (corona: 0, edge-on; heliosphere: 90, the
-    equatorial-plane view from solar north). ``fov`` is the full field-of-view width in R☉; ``None``
-    resolves by solution category (corona: the locked constant; heliosphere: derived from the
-    resolved shell). ``pixels`` is ``(height, width)`` to match
-    :class:`~qorona.geometry.camera.OrthographicCamera`. ``observer_distance`` is the synthetic
-    observer's heliocentric distance in AU, read only by the FITS export (the orthographic render
-    is distance-free).
+    convention at the pipeline edge. ``projection`` picks the orthographic or the perspective
+    camera. ``None`` resolves by solution category (corona: orthographic; heliosphere:
+    perspective), and a named ``instrument`` frame is always perspective. ``latitude`` is the
+    sub-observer heliographic latitude. ``None`` resolves by category and projection (corona: 0,
+    edge-on; heliosphere: 0 in perspective, 90 for the orthographic equatorial-plane overview).
+
+    ``pixels`` is ``(height, width)`` to match the cameras. ``observer_distance`` is the synthetic
+    observer's heliocentric distance in AU. It sets the perspective camera's position and the FITS
+    observer distance for both cameras (the orthographic render is distance-free).
+
+    The field of view has one setting per camera, each with its own unit:
+
+    - ``fov``: the orthographic full width in R☉. ``None`` resolves by category (corona: the
+      locked constant; heliosphere: derived from the resolved shell).
+    - ``fov_deg``: the perspective full width in degrees, below 180: the plate scale times the
+      width in pixels (the angle spanned under ARC). ``None`` resolves to
+      the PUNCH (Polarimeter to Unify the Corona and Heliosphere) mosaic width for heliospheric
+      solutions. A coronal perspective view must set it.
+
+    ``projection_code`` is the perspective camera's zenithal projection (``arc`` or ``tan``,
+    ``None`` resolving to ``arc``). ``reference_pixel`` is its 0-based ``(col, row)`` of Sun
+    centre, row 0 at the top (``None``: the image centre). ``instrument`` names the
+    :data:`CAMERA_INSTRUMENTS` frame that the CLI filled these fields from. It is kept for the
+    provenance record.
     """
 
     longitude: float = 0.0
@@ -336,10 +468,22 @@ class CameraConfig:
     fov: float | None = None
     pixels: tuple[int, int] = (1024, 1024)
     observer_distance: float = 1.0
+    projection: str | None = None
+    fov_deg: float | None = None
+    projection_code: str | None = None
+    reference_pixel: tuple[float, float] | None = None
+    instrument: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "pixels", (int(self.pixels[0]), int(self.pixels[1])))
+        if self.reference_pixel is not None:
+            col, row = self.reference_pixel
+            object.__setattr__(self, "reference_pixel", (float(col), float(row)))
         _require(self.fov is None or self.fov > 0.0, f"fov must be > 0 R_sun, got {self.fov}")
+        _require(
+            self.fov_deg is None or 0.0 < self.fov_deg < 180.0,
+            f"fov_deg must be between 0 and 180 degrees, got {self.fov_deg}",
+        )
         _require(
             self.pixels[0] > 0 and self.pixels[1] > 0,
             f"pixels must be positive, got {self.pixels}",
@@ -348,16 +492,73 @@ class CameraConfig:
             self.observer_distance > 0.0,
             f"observer_distance must be > 0 AU, got {self.observer_distance}",
         )
+        if self.projection is not None:
+            _one_of(self.projection, CAMERA_PROJECTIONS, "projection")
+        if self.projection_code is not None:
+            _one_of(self.projection_code, PROJECTION_CODES, "projection_code")
+        if self.instrument is not None:
+            _one_of(self.instrument, tuple(CAMERA_INSTRUMENTS), "instrument")
 
     def to_provenance(self) -> dict[str, object]:
         return {
+            "projection": self.projection,
             "longitude": self.longitude,
             "latitude": self.latitude,
             "roll": self.roll,
             "fov": self.fov,
+            "fov_deg": self.fov_deg,
+            "projection_code": self.projection_code,
+            "reference_pixel": (
+                list(self.reference_pixel) if self.reference_pixel is not None else None
+            ),
+            "instrument": self.instrument,
             "pixels": list(self.pixels),
             "observer_distance": self.observer_distance,
         }
+
+
+@dataclass(frozen=True)
+class CameraInstrument:
+    """A named perspective frame: the geometry of one instrument's image product.
+
+    Attributes
+    ----------
+    fov_deg
+        Full angular width in degrees (the plate scale times the image width).
+    pixels
+        ``(height, width)`` in pixels.
+    projection_code
+        The zenithal projection, ``arc`` or ``tan``.
+    reference_pixel
+        0-based ``(col, row)`` of Sun centre, row 0 at the top.
+    """
+
+    fov_deg: float
+    pixels: tuple[int, int]
+    projection_code: str
+    reference_pixel: tuple[float, float]
+
+
+#: The instrument frames behind the CLI's ``--instrument``, from PUNCH Level 3 FITS headers. The
+#: mosaics of the Wide Field Imagers and the Narrow Field Imager (NFI) use ``HPLN-ARC``, 0.0225 deg
+#: per pixel, 4096 x 4096, and ``CRPIX`` 2048.0. The NFI images use ``HPLN-AZP`` with
+#: ``PV2_1 = 0`` (which is TAN), 30 arcsec per pixel, 2048 x 2048, and ``CRPIX`` 1024.5. FITS
+#: counts ``CRPIX`` from 1 with rows from the bottom, so the 0-based top-down reference pixel is
+#: ``(CRPIX1 - 1, height - CRPIX2)``.
+CAMERA_INSTRUMENTS: dict[str, CameraInstrument] = {
+    "punch-mosaic": CameraInstrument(
+        fov_deg=4096 * 0.0225,
+        pixels=(4096, 4096),
+        projection_code="arc",
+        reference_pixel=(2047.0, 2048.0),
+    ),
+    "punch-nfi": CameraInstrument(
+        fov_deg=2048 * 30.0 / 3600.0,
+        pixels=(2048, 2048),
+        projection_code="tan",
+        reference_pixel=(1023.5, 1023.5),
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -694,8 +895,16 @@ class BrightnessConfig:
     stretch; heliosphere: derived from the resolved shell). ``scaling`` defaults to ``None`` and
     resolves to ``"log"`` only for the raw
     falloff (``vignette="none"`` without ``mgn``), else ``"linear"`` (the detrended frames are
-    already flat). ``percentiles`` default to the full range (a global min/max stretch); clip them
-    for inputs with pathological bright spots.
+    already flat). ``percentiles`` default to ``(1, 99.5)``, which clips isolated bright spots;
+    ``(0, 100)`` gives the full range (a global min/max stretch).
+
+    ``brightness_scale`` picks the frames' units. ``"auto"`` gives absolute frames in mean solar
+    brightness when the reader knows the density's physical unit, and relative frames otherwise.
+    ``"relative"`` always gives relative frames.
+
+    ``punch_l3`` applies the PUNCH Level 3 background treatment (:mod:`qorona.radiation.punch_l3`).
+    The display is then the PUNCH quicklook stretch (``scaling="gamma"``), with no vignette and no
+    MGN.
     """
 
     component: str = "polarized"
@@ -709,20 +918,35 @@ class BrightnessConfig:
     occult_softness: float = 0.03
     scaling: str | None = None
     percentiles: tuple[float, float] = (1.0, 99.5)
+    brightness_scale: str = "auto"
     workers: int | None = None
+    punch_l3: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self, "percentiles", (float(self.percentiles[0]), float(self.percentiles[1]))
         )
+        if self.punch_l3:
+            _require(
+                self.vignette == "none" and not self.mgn,
+                "the PUNCH Level 3 treatment uses the PUNCH quicklook display; set vignette "
+                "'none' and mgn off",
+            )
+            _require(
+                self.scaling in (None, "gamma"),
+                f"the PUNCH Level 3 treatment uses the gamma stretch, got scaling {self.scaling!r}",
+            )
+            object.__setattr__(self, "scaling", "gamma")
         _one_of(self.component, BRIGHTNESS_COMPONENTS, "component")
+        _one_of(self.brightness_scale, BRIGHTNESS_SCALES, "brightness_scale")
         _one_of(self.vignette, BRIGHTNESS_VIGNETTES, "vignette")
         _one_of(self.occult, BRIGHTNESS_OCCULT_MODES, "occult")
         scaling = self.scaling
         if scaling is None:
             scaling = "log" if (self.vignette == "none" and not self.mgn) else "linear"
             object.__setattr__(self, "scaling", scaling)
-        _one_of(scaling, BRIGHTNESS_SCALINGS, "scaling")
+        if not self.punch_l3:
+            _one_of(scaling, BRIGHTNESS_SCALINGS, "scaling")
         _require(0.0 <= self.u <= 1.0, f"limb darkening u must be in [0, 1], got {self.u}")
         _require(self.crossover > 0.0, f"crossover must be > 0 R_sun, got {self.crossover}")
         _require(self.step is None or self.step > 0.0, f"step must be > 0 R_sun, got {self.step}")
@@ -756,7 +980,9 @@ class BrightnessConfig:
             "occult_softness": self.occult_softness,
             "scaling": self.scaling,
             "percentiles": list(self.percentiles),
+            "brightness_scale": self.brightness_scale,
             "workers": self.workers,
+            "punch_l3": self.punch_l3,
         }
 
 
@@ -768,9 +994,10 @@ class OutputConfig:
     provenance stamp is on by default and bypassed with ``annotate=False``; ``annotate_content``
     selects what it says: the ``"full"`` provenance block or just the ``"date"`` (observation date
     and time). ``export_formats`` lists the data sidecars to write beside the image: the
-    dependency-free ``"npz"`` (the brightness products write the raw frames + plane-of-sky
-    coordinates there), the WCS-registered ``"fits"``, and the field-line view's ``"sunjson"``
-    (the drawn bundle for JHelioviewer, written as a ``.json``).
+    dependency-free ``"npz"`` (the brightness products write the raw frames + image coordinates
+    there, in R☉ or, for the perspective camera, in degrees), the WCS-registered ``"fits"``, and
+    the field-line view's ``"sunjson"`` (the drawn bundle for JHelioviewer, written as a
+    ``.json``).
     """
 
     path: Path

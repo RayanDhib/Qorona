@@ -19,6 +19,7 @@ import click
 #: the config dataclasses and the end-of-run summary panel.
 SECTION_ORDER = (
     "Input",
+    "Icarus input",
     "Field grid",
     "Volume",
     "Cache",

@@ -40,8 +40,11 @@ from qorona.config import (
     ANNOTATE_POSITIONS,
     BRIGHTNESS_COMPONENTS,
     BRIGHTNESS_OCCULT_MODES,
+    BRIGHTNESS_SCALES,
     BRIGHTNESS_SCALINGS,
     BRIGHTNESS_VIGNETTES,
+    CAMERA_INSTRUMENTS,
+    CAMERA_PROJECTIONS,
     CLOSED_TREATMENTS,
     DEVICE_MODES,
     DISPLAY_MODES,
@@ -51,6 +54,7 @@ from qorona.config import (
     FIELDLINE_SHOW,
     FIELDLINES_EXPORT_FORMATS,
     FRAME_ALIASES,
+    ICARUS_FRAME,
     OCCULT_MODES,
     POLARITY_MODES,
     PRECISION_MODES,
@@ -67,12 +71,15 @@ from qorona.config import (
     ExportConfig,
     FieldLinesConfig,
     GridConfig,
+    IcarusRunConfig,
     InputConfig,
     OutputConfig,
     QMapConfig,
     RenderConfig,
+    SolutionFrame,
     VolumeConfig,
     WeightingConfig,
+    frame_from_provenance,
 )
 from qorona.console import console, print_step, print_success, print_warning
 from qorona.io.fieldlines_export import write_fieldlines_json
@@ -84,6 +91,8 @@ from qorona.io.output import (
     write_qmap,
 )
 from qorona.io.readers import category_of, resolve_model
+from qorona.io.readers.icarus import read_icarus_par, snapshot_time
+from qorona.radiation.punch_l3 import PunchL3Result
 
 #: Default image dimension used only when exactly one of ``--width`` / ``--height`` is supplied; the
 #: full default ``pixels`` otherwise lives once on :class:`~qorona.config.CameraConfig`.
@@ -187,6 +196,46 @@ _input_options = _compose(
         section="Input",
         advanced=True,
         help="Comma-separated state-variable names (reader override).",
+    ),
+)
+_composition_option = option(
+    "--mean-molecular-weight",
+    type=click.FloatRange(min=0.0, min_open=True),
+    default=None,
+    section="Input",
+    advanced=True,
+    help="Mean molecular weight μ of the model, in p = 2 rho k T/(μ m_H); the electron density is "
+    "rho/(μ m_p) (default: the model's own, COCONUT 1.27, MAS 1, Icarus 1).",
+)
+#: The run settings of an Icarus input. Icarus snapshots are in a frame that turns with the Sun;
+#: these settings anchor it, so the observer and the FITS export can be placed.
+_icarus_options = _compose(
+    option(
+        "--magnetogram-time",
+        default=None,
+        callback=_valid_timestamp,
+        section="Icarus input",
+        advanced=True,
+        help="UTC ISO-8601 time of the run's magnetogram. With --relaxation, it sets the snapshot "
+        "time and the Icarus frame. Without --par, the CME insertion delay and delta_phi are 0.",
+    ),
+    option(
+        "--relaxation",
+        type=float,
+        default=None,
+        section="Icarus input",
+        advanced=True,
+        help="Relaxation period before the magnetogram time, in days (0 if the run starts at the "
+        "magnetogram time). No default.",
+    ),
+    option(
+        "--par",
+        type=click.Path(exists=True, dir_okay=False, path_type=Path),
+        default=None,
+        section="Icarus input",
+        advanced=True,
+        help="The run's .par file, read for the magnetogram time, relaxation, CME insertion and "
+        "delta_phi. --magnetogram-time and --relaxation override it.",
     ),
 )
 _grid_options = _compose(
@@ -424,11 +473,31 @@ def _camera_options(
 ) -> Callable[[Callable], Callable]:
     """The shared camera option group; the defaults state a command's image and FOV defaults.
 
-    A ``None`` ``default_fov`` means the FOV is resolved by solution category (corona: the locked
-    constant; heliosphere: the full domain), stated as such in the ``--fov`` help; a concrete
-    ``default_fov`` (the ``wl`` product's wider frame) states its own number.
+    A ``None`` ``default_fov`` means the coronal orthographic FOV is the locked constant, stated as
+    such in the ``--fov`` help. A concrete ``default_fov`` (the ``wl`` product's wider frame)
+    states its own number.
     """
+    coronal_fov = f"{default_fov:g}" if default_fov is not None else "12.5"
     return _compose(
+        option(
+            "--projection",
+            type=click.Choice(CAMERA_PROJECTIONS),
+            default=None,
+            section="Camera",
+            help="Camera: orthographic (parallel lines of sight, field of view in R_sun) or "
+            "perspective (an observer at a finite distance, field of view in degrees) "
+            "(default: corona orthographic, heliosphere perspective).",
+        ),
+        option(
+            "--instrument",
+            type=click.Choice(tuple(CAMERA_INSTRUMENTS)),
+            default=None,
+            section="Camera",
+            help="Instrument frame of the perspective camera, as in the PUNCH Level 3 headers: "
+            'punch-mosaic (ARC, 0.0225°/px, 4096x4096) or punch-nfi (TAN, 30"/px, 2048x2048). '
+            "Selects the perspective camera on any input; --fov-deg, --width and --height "
+            "override the frame.",
+        ),
         option(
             "--longitude",
             type=float,
@@ -441,8 +510,8 @@ def _camera_options(
             type=float,
             default=None,
             section="Camera",
-            help="Sub-observer heliographic latitude in degrees "
-            "(default: corona 0 (edge-on), heliosphere 90 (equatorial-plane view)).",
+            help="Sub-observer heliographic latitude in degrees (default: corona 0 (edge-on); "
+            "heliosphere 0 in perspective, 90 for the orthographic equatorial-plane overview).",
         ),
         option(
             "--roll",
@@ -456,12 +525,17 @@ def _camera_options(
             type=float,
             default=None,
             section="Camera",
-            help=(
-                f"Field of view (full width) in R_sun (default {default_fov:g})."
-                if default_fov is not None
-                else "Field of view (full width) in R_sun (default: corona 12.5, "
-                "heliosphere spans the domain)."
-            ),
+            help="Orthographic field of view (full width) in R_sun (default: corona "
+            f"{coronal_fov}, heliosphere spans the domain). Rejected under the perspective camera.",
+        ),
+        option(
+            "--fov-deg",
+            type=float,
+            default=None,
+            section="Camera",
+            help="Perspective field of view (full width) in degrees, below 180: the angle for ARC, "
+            "the plate scale times the width for TAN (default: heliosphere 92.16, the PUNCH "
+            "mosaic width; a coronal perspective view needs it).",
         ),
         option(
             "--width",
@@ -482,10 +556,17 @@ def _camera_options(
             type=click.Choice(ephemeris.OBSERVERS),
             default=None,
             section="Camera",
-            help="Named observer: derive the sub-observer longitude/latitude (and the FITS "
-            "observer distance) from its ephemeris at the timestamp, in the solution frame "
-            "(--frame). earth resolves offline; stereo-a, solo and psp query JPL Horizons "
-            "(network).",
+            help="Named observer: derive the sub-observer longitude/latitude and the observer "
+            "distance from its ephemeris at the timestamp, in the solution frame (--frame). "
+            "earth resolves offline; stereo-a, solo and psp query JPL Horizons (network).",
+        ),
+        option(
+            "--observer-distance",
+            type=float,
+            default=None,
+            section="Camera",
+            help="Observer distance from Sun centre in AU: the perspective camera's position and "
+            "the FITS observer distance (default 1; --observer derives it).",
         ),
     )
 
@@ -578,7 +659,8 @@ _render_options = _compose(
         type=float,
         default=None,
         section="Render",
-        help="Line-of-sight sample spacing in R_sun (default: corona 0.02, heliosphere fov/1250).",
+        help="Line-of-sight sample spacing in R_sun (default: corona 0.02, heliosphere 2 x outer "
+        "radius/1250, or fov/1250 with --projection orthographic).",
     ),
     option(
         "--percentiles",
@@ -787,6 +869,16 @@ _brightness_options = _compose(
         help="Brightness component: polarized (pB) or total (white-light) (default polarized).",
     ),
     option(
+        "--brightness-scale",
+        type=click.Choice(BRIGHTNESS_SCALES),
+        default=None,
+        section="Brightness",
+        help="Units of the raw frames (npz and the FITS PB/TOTAL extensions): auto gives "
+        "absolute mean solar brightness (MSB, as PUNCH) when the reader knows the density's "
+        "physical unit (COCONUT, MAS, Icarus), else relative; relative always gives relative "
+        "frames (default auto).",
+    ),
+    option(
         "--vignette",
         type=click.Choice(BRIGHTNESS_VIGNETTES),
         default=None,
@@ -795,7 +887,7 @@ _brightness_options = _compose(
         "the smooth Newkirk background corona; adaptive self-calibrates the same curve family "
         "to the image's own falloff and amplifies its structure; wow whitens the raw frame's "
         "wavelet spectrum (needs sunkit-image and watroo); none keeps the raw falloff "
-        "(default newkirk; adaptive for inputs whose falloff departs from it).",
+        "(default newkirk; adaptive for COCONUT input).",
     ),
     option(
         "--mgn",
@@ -813,9 +905,9 @@ _brightness_options = _compose(
         multiple=True,
         section="Output",
         advanced=True,
-        help="Also write raw data beside the PNG; repeatable. npz: both raw frames + "
-        "plane-of-sky coordinates. fits: the display frame + raw frames, WCS-registered "
-        "(needs a timestamp).",
+        help="Also write raw data beside the PNG; repeatable. npz: both raw frames + image "
+        "coordinates (R_sun, or degrees for the perspective camera). fits: the display frame + "
+        "raw frames, WCS-registered (needs a timestamp).",
     ),
     option(
         "--limb-darkening",
@@ -839,7 +931,8 @@ _brightness_options = _compose(
         type=float,
         default=None,
         section="Brightness",
-        help="Line-of-sight sample spacing in R_sun (default: corona 0.02, heliosphere fov/1250).",
+        help="Line-of-sight sample spacing in R_sun (default: corona 0.02, heliosphere 2 x outer "
+        "radius/1250, or fov/1250 with --projection orthographic).",
     ),
     option(
         "--occult",
@@ -884,6 +977,16 @@ _brightness_options = _compose(
         advanced=True,
         help="Per-image stretch percentiles 'LOW HIGH' (default 1 99.5; use 0 100 for the "
         "full untrimmed range).",
+    ),
+    option(
+        "--punch-l3",
+        is_flag=True,
+        default=False,
+        section="Brightness",
+        help="Apply the PUNCH Level 3 background treatment: for each pixel, subtract its usual "
+        "brightness over 16 days before and after, as PUNCH does, so the pixel values compare "
+        "with PUNCH Level 3 images. Needs --instrument and the solution time; the observer is "
+        "Earth.",
     ),
 )
 _workers_option = option(
@@ -944,7 +1047,79 @@ def _input_config(kw: dict[str, Any]) -> InputConfig:
         timestamp=kw.get("timestamp"),
         frame=kw.get("frame"),
         variables=variables,
+        icarus_run=kw.get("icarus_run"),
+        mean_molecular_weight=kw.get("mean_molecular_weight"),
     )
+
+
+#: The flags that carry the run settings of an Icarus input.
+_ICARUS_RUN_KEYS = ("magnetogram_time", "relaxation", "par")
+
+
+def _apply_icarus_run(kw: dict[str, Any]) -> None:
+    """Resolve the Icarus run settings of a raw input into its timestamp and its frame.
+
+    An Icarus snapshot is in the Icarus frame, so ``--frame`` is refused for it. With the run
+    settings, the snapshot time follows from ``TIME``, so ``--timestamp`` is refused too. Without
+    them, the frame stays unresolved, and :func:`_frame_gate` stops every frame-sensitive feature.
+    Other inputs must not carry the Icarus flags.
+    """
+    given = ["--" + key.replace("_", "-") for key in _ICARUS_RUN_KEYS if kw.get(key) is not None]
+    if resolve_model(kw["input_path"], model=kw.get("model")) != "icarus":
+        if given:
+            raise click.ClickException(f"{', '.join(given)}: these flags apply to Icarus input")
+        return
+    if kw.get("frame") is not None:
+        raise click.ClickException(
+            "--frame: an Icarus snapshot is in the Icarus frame; drop --frame and pass "
+            "--magnetogram-time and --relaxation (or --par)"
+        )
+    kw["frame"] = ICARUS_FRAME
+    if not given:
+        return
+    try:
+        base = read_icarus_par(kw["par"]) if kw.get("par") is not None else None
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+    magnetogram_time = kw.get("magnetogram_time") or (base.magnetogram_time if base else None)
+    relaxation = kw["relaxation"] if kw.get("relaxation") is not None else None
+    if relaxation is None and base is not None:
+        relaxation = base.relaxation
+    if magnetogram_time is None:
+        raise click.ClickException("Icarus input: pass --magnetogram-time (or --par)")
+    if relaxation is None:
+        raise click.ClickException(
+            "Icarus input: pass --relaxation in days (0 if the run starts at the magnetogram "
+            "time), or --par"
+        )
+    try:
+        run = IcarusRunConfig(
+            magnetogram_time=magnetogram_time,
+            relaxation=relaxation,
+            cme_insertion=base.cme_insertion if base else 0.0,
+            delta_phi=base.delta_phi if base else 0.0,
+        )
+        ephemeris.icarus_epoch(run, 0.0)
+    except ValueError as error:
+        raise click.ClickException(f"Icarus run settings: {error}") from error
+    time_hours = snapshot_time(kw["input_path"])
+    if time_hours is None:
+        raise click.ClickException(
+            f"{Path(kw['input_path']).name} has no TIME field value; its snapshot time is unknown"
+        )
+    if kw.get("timestamp") is not None:
+        raise click.ClickException(
+            "--timestamp: the snapshot time comes from the Icarus run settings and TIME; drop "
+            "--timestamp"
+        )
+    kw["timestamp"] = ephemeris.icarus_epoch(run, time_hours)
+    kw["icarus_run"] = run
+
+
+def _solution_frame(kw: dict[str, Any]) -> SolutionFrame:
+    """The solution frame of a raw input, as the frame-sensitive consumers take it."""
+    run: IcarusRunConfig | None = kw.get("icarus_run")
+    return run if run is not None else kw.get("frame")
 
 
 def _grid_config(kw: dict[str, Any]) -> GridConfig:
@@ -1009,16 +1184,45 @@ def _observer_gate(kw: dict[str, Any], timestamp: str | None) -> None:
             f"--observer {observer} derives the sub-observer point from the ephemeris; "
             "drop --longitude/--latitude, or drop --observer to point manually"
         )
+    if kw.get("observer_distance") is not None:
+        raise click.UsageError(
+            f"--observer {observer} derives the observer distance from the ephemeris; "
+            "drop --observer-distance, or drop --observer to place the observer manually"
+        )
+    if timestamp is None and kw.get("frame") == ICARUS_FRAME:
+        raise click.UsageError(
+            f"--observer {observer}: an Icarus snapshot is in the Icarus frame, which needs the "
+            "run settings; pass --magnetogram-time and --relaxation (or --par)"
+        )
     if timestamp is None:
         raise click.UsageError(
             f"--observer {observer} needs an epoch; pass --timestamp (or bake the volume with one)"
         )
 
 
-def _declared_frame(flag: str | None, build_prov: dict[str, Any] | None = None) -> str | None:
+def _declared_frame(
+    flag: str | None, build_prov: dict[str, Any] | None = None, timestamp: str | None = None
+) -> SolutionFrame:
     """The declared solution frame: the command's ``--frame`` ``flag``, else the one baked into
-    the volume, else ``None`` (undeclared; every consumer takes it as Carrington)."""
-    return flag or (build_prov or {}).get("input", {}).get("frame")
+    the volume, else ``None`` (undeclared; every consumer takes it as Carrington).
+
+    A volume built from Icarus input keeps its frame and its snapshot time, so a ``flag`` or a
+    ``timestamp`` override is refused for it.
+    """
+    recorded = (build_prov or {}).get("input", {})
+    baked = frame_from_provenance(recorded)
+    if isinstance(baked, IcarusRunConfig) or baked == ICARUS_FRAME:
+        if flag is not None:
+            raise click.ClickException(
+                "--frame: this volume was built from Icarus input, which is in the Icarus frame"
+            )
+        if timestamp is not None and isinstance(baked, IcarusRunConfig):
+            raise click.ClickException(
+                "--timestamp: this volume was built from Icarus input with its run settings, "
+                "which set the snapshot time"
+            )
+        return baked
+    return flag or baked
 
 
 #: How the frame warning names the exports that convert between the solution frame and Carrington.
@@ -1033,9 +1237,16 @@ def _frame_consumers(kw: dict[str, Any], output_cfg: OutputConfig) -> list[str]:
     return consumers
 
 
-def _frame_gate(frame: str | None, consumers: list[str]) -> None:
+def _frame_gate(frame: SolutionFrame, consumers: list[str]) -> None:
     """Warn once when frame-sensitive ``consumers`` run on an undeclared frame; a declared frame,
-    or a run that requested nothing frame-sensitive, is silent."""
+    or a run that requested nothing frame-sensitive, is silent. An Icarus frame without its run
+    settings stops the run, because no consumer can resolve it."""
+    if frame == ICARUS_FRAME and consumers:
+        raise click.ClickException(
+            f"{' and '.join(consumers)}: an Icarus snapshot is in the Icarus frame, which needs "
+            "the run settings; pass --magnetogram-time and --relaxation (or --par) with the "
+            "snapshot, and rebuild a .qor volume with them"
+        )
     if frame is not None or not consumers:
         return
     print_warning(
@@ -1045,15 +1256,68 @@ def _frame_gate(frame: str | None, consumers: list[str]) -> None:
     )
 
 
+def _camera_fields(kw: dict[str, Any], default_dimension: int) -> dict[str, Any]:
+    """Return the :class:`CameraConfig` fields the camera flags set, the instrument frame applied.
+
+    A named ``--instrument`` fills the perspective frame (angular width, pixels, projection code,
+    reference pixel). Explicit ``--fov-deg``, ``--width`` and ``--height`` win over it. The
+    instrument's reference pixel is kept only while the image keeps the instrument's shape.
+    """
+    fields = _present(
+        kw,
+        "projection",
+        "instrument",
+        "longitude",
+        "latitude",
+        "roll",
+        "fov",
+        "fov_deg",
+        "observer_distance",
+    )
+    height, width = kw.get("height"), kw.get("width")
+    instrument = kw.get("instrument")
+    if instrument is not None:
+        frame_preset = CAMERA_INSTRUMENTS[instrument]
+        fields.setdefault("fov_deg", frame_preset.fov_deg)
+        fields["projection_code"] = frame_preset.projection_code
+        fields["pixels"] = (
+            height if height is not None else frame_preset.pixels[0],
+            width if width is not None else frame_preset.pixels[1],
+        )
+        if fields["pixels"] == frame_preset.pixels:
+            fields["reference_pixel"] = frame_preset.reference_pixel
+    elif height is not None or width is not None or default_dimension != _DEFAULT_DIMENSION:
+        fields["pixels"] = (
+            height if height is not None else default_dimension,
+            width if width is not None else default_dimension,
+        )
+    return fields
+
+
+def _projection_gate(fields: dict[str, Any], category: str) -> CameraConfig:
+    """Build the camera config from ``fields`` with its projection resolved by ``category``.
+    Raise a usage error when the camera flags contradict each other."""
+    try:
+        return pipeline.resolve_projection(CameraConfig(**fields), category)
+    except ValueError as error:
+        raise click.UsageError(str(error)) from error
+
+
 def _camera_config(
     kw: dict[str, Any],
     *,
+    category: str,
     default_dimension: int = _DEFAULT_DIMENSION,
-    default_fov: float | None = None,
     timestamp: str | None = None,
-    frame: str | None = None,
+    frame: SolutionFrame = None,
 ) -> CameraConfig:
-    fields = _present(kw, "longitude", "latitude", "roll", "fov")
+    """Build the camera config from the camera flags, with its projection resolved.
+
+    A named ``--observer`` sets the sub-observer point and the observer distance from its
+    ephemeris. The projection resolves by ``category`` here, so contradicting flags fail before
+    any expensive stage.
+    """
+    fields = _camera_fields(kw, default_dimension)
     _observer_gate(kw, timestamp)
     observer = kw.get("observer")
     if observer is not None:
@@ -1064,15 +1328,64 @@ def _camera_config(
             raise click.ClickException(str(error)) from error
         fields["longitude"], fields["latitude"] = longitude, latitude
         fields["observer_distance"] = distance
-    if default_fov is not None and "fov" not in fields:
-        fields["fov"] = default_fov
-    height, width = kw.get("height"), kw.get("width")
-    if height is not None or width is not None or default_dimension != _DEFAULT_DIMENSION:
-        fields["pixels"] = (
-            height if height is not None else default_dimension,
-            width if width is not None else default_dimension,
-        )
-    return CameraConfig(**fields)
+    return _projection_gate(fields, category)
+
+
+def _resolved_camera(
+    camera_cfg: CameraConfig,
+    category: str,
+    inner: float,
+    outer: float,
+    *,
+    coronal_fov: float | None = None,
+) -> CameraConfig:
+    """Resolve the camera's shell-dependent defaults at the CLI edge, with a friendly error on
+    failure. ``coronal_fov`` overrides the coronal orthographic width (the ``wl`` frame)."""
+    extra = {} if coronal_fov is None else {"coronal_fov": coronal_fov}
+    try:
+        resolved = pipeline.resolve_camera(camera_cfg, category, inner, outer, **extra)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+    _warn_frame_past_shell(resolved, outer)
+    return resolved
+
+
+def _warn_frame_past_shell(camera_cfg: CameraConfig, outer: float) -> None:
+    """Warn when the image frame reaches past the outer radius of the solution shell.
+
+    The frame reach is measured along the image axes from Sun centre. Lines of sight past the shell
+    carry no corona, and lines of sight near the shell edge are cut short. A perspective observer
+    inside the shell sees the shell on every line of sight, so that case is silent.
+    """
+    import math
+
+    from astropy import units as u
+
+    if camera_cfg.projection == "perspective":
+        assert camera_cfg.fov_deg is not None  # resolved by pipeline.resolve_camera
+        distance = float((camera_cfg.observer_distance * u.AU).to_value(u.R_sun))
+        if distance <= outer:
+            return
+        half = 0.5 * camera_cfg.fov_deg
+        if camera_cfg.projection_code == "tan":
+            half = math.degrees(math.atan(math.radians(half)))
+        edge = math.degrees(math.asin(outer / distance))
+        if half <= edge:
+            return
+        reach = f"{half:.1f} degrees from Sun centre"
+        shell = f"{outer:g} R_sun ({edge:.1f} degrees from the observer)"
+    else:
+        assert camera_cfg.fov is not None  # resolved by pipeline.resolve_camera
+        half = 0.5 * camera_cfg.fov
+        if half <= outer:
+            return
+        reach = f"{half:g} R_sun from Sun centre"
+        shell = f"{outer:g} R_sun"
+    print_warning(
+        f"The frame reaches {reach}, but the solution shell ends at {shell}. Lines of sight past "
+        "the shell are empty. To fill the frame, raise --outer-radius up to the solution's own "
+        "outer boundary (for a .qor volume, rebuild it with that radius)."
+    )
 
 
 def _weighting_config(kw: dict[str, Any]) -> WeightingConfig:
@@ -1188,6 +1501,7 @@ def _brightness_config(kw: dict[str, Any], workers: int | None) -> BrightnessCon
         "r_occult",
         "occult_softness",
         "scaling",
+        "brightness_scale",
     )
     if kw.get("mgn"):
         fields["mgn"] = True
@@ -1197,7 +1511,45 @@ def _brightness_config(kw: dict[str, Any], workers: int | None) -> BrightnessCon
         fields["percentiles"] = tuple(kw["percentiles"])
     if workers is not None:
         fields["workers"] = workers
+    if kw.get("punch_l3"):
+        fields["punch_l3"] = True
     return BrightnessConfig(**fields)
+
+
+def _punch_l3_gate(kw: dict[str, Any]) -> None:
+    """Check the flags of the PUNCH Level 3 treatment and set its fixed choices.
+
+    The treatment needs a PUNCH instrument frame, views from Earth, and uses the PUNCH quicklook
+    display, so other observers, manual pointing and the display flags are refused.
+    """
+    if not kw.get("punch_l3"):
+        return
+    if kw.get("instrument") is None:
+        raise click.UsageError(
+            "--punch-l3 makes a PUNCH Level 3 frame; pass --instrument punch-mosaic or "
+            "--instrument punch-nfi"
+        )
+    observer = kw.get("observer")
+    if observer not in (None, "earth"):
+        raise click.UsageError(f"--punch-l3: PUNCH observes from Earth; drop --observer {observer}")
+    pointing = [
+        "--" + key.replace("_", "-")
+        for key in ("longitude", "latitude", "observer_distance")
+        if kw.get(key) is not None
+    ]
+    if pointing:
+        raise click.UsageError(
+            f"{', '.join(pointing)}: --punch-l3 places the observer at Earth; drop these flags"
+        )
+    display = [
+        "--" + key for key in ("vignette", "scaling", "percentiles") if kw.get(key) is not None
+    ] + (["--mgn"] if kw.get("mgn") else [])
+    if display:
+        raise click.UsageError(
+            f"{', '.join(display)}: --punch-l3 uses the PUNCH quicklook display; drop these flags"
+        )
+    kw["observer"] = "earth"
+    kw["vignette"] = "none"
 
 
 def _parse_resolution(text: str) -> tuple[int, int]:
@@ -1244,10 +1596,15 @@ def _rebuild_command(build_prov: dict[str, Any], outer_radius: float) -> str:
     field = build_prov.get("field", {})
     volume = build_prov.get("volume", {})
     flags = []
-    if inp.get("timestamp"):
-        flags.append(f"--timestamp {inp['timestamp']}")
-    if inp.get("frame"):
-        flags.append(f"--frame {inp['frame']}")
+    # An Icarus volume takes its time and frame from the run settings, which --timestamp and
+    # --frame cannot carry; the Q-map needs neither.
+    if inp.get("frame") != ICARUS_FRAME:
+        if inp.get("timestamp"):
+            flags.append(f"--timestamp {inp['timestamp']}")
+        if inp.get("frame"):
+            flags.append(f"--frame {inp['frame']}")
+    if inp.get("mean_molecular_weight") is not None:
+        flags.append(f"--mean-molecular-weight {inp['mean_molecular_weight']:g}")
     flags.append(f"--outer-radius {outer_radius:g}")
     sources = (
         (field, ("inner_radius", "n_r", "n_theta", "n_phi", "spacing", "resampler")),
@@ -1337,6 +1694,8 @@ def main() -> None:
 )
 @_quality_option
 @_input_options
+@_icarus_options
+@_composition_option
 @_grid_options
 @_volume_options
 @_cache_options
@@ -1358,6 +1717,7 @@ def build(
     of cheap `render`s can reuse it.
     """
     kw["input_path"] = input_path
+    _apply_icarus_run(kw)
     kw["device"] = device
     show_progress = not quiet
     input_cfg = _input_config(kw)
@@ -1463,17 +1823,19 @@ def render(
             "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
             "pass --timestamp (or bake the volume with one)"
         )
-    declared_frame = _declared_frame(frame, build_prov)
+    declared_frame = _declared_frame(frame, build_prov, timestamp)
     _frame_gate(declared_frame, _frame_consumers(kw, output_cfg))
-    camera_cfg = _camera_config(kw, timestamp=resolved_timestamp, frame=declared_frame)
-    # Pre-resolve the shell-dependent sentinels at the edge so provenance and the stamp spell the
-    # resolved numbers; the pipeline's own resolution then no-ops. The volume renders as built, so
-    # the category is the one recorded in its provenance (old volumes default to corona).
+    # The volume renders as built, so the category is the one recorded in its provenance (old
+    # volumes default to corona).
     category = build_prov.get("input", {}).get("category", "corona")
-    camera_cfg = pipeline.resolve_camera(camera_cfg, category, float(volume.grid.radii[-1]))
-    fov = camera_cfg.fov
-    assert fov is not None  # resolved above
-    render_cfg = pipeline.resolve_render(render_cfg, category, fov, float(volume.grid.radii[0]))
+    camera_cfg = _camera_config(
+        kw, category=category, timestamp=resolved_timestamp, frame=declared_frame
+    )
+    # Pre-resolve the shell-dependent sentinels at the edge so provenance and the stamp spell the
+    # resolved numbers; the pipeline's own resolution then no-ops.
+    inner, outer = float(volume.grid.radii[0]), float(volume.grid.radii[-1])
+    camera_cfg = _resolved_camera(camera_cfg, category, inner, outer)
+    render_cfg = pipeline.resolve_render(render_cfg, category, camera_cfg, inner, outer)
     start = time.perf_counter()
     result = pipeline.render_volume(
         volume,
@@ -1603,6 +1965,8 @@ def qmap(volume_path: Path, output_path: Path, quiet: bool, **kw: Any) -> None:
     help="Also persist the built volume to this .qor/.npz.",
 )
 @_input_options
+@_icarus_options
+@_composition_option
 @_grid_options
 @_volume_options
 @_cache_options
@@ -1628,6 +1992,7 @@ def run(
     intermediate so subsequent `render`s are instant.
     """
     kw["input_path"] = input_path
+    _apply_icarus_run(kw)
     kw["device"] = device
     show_progress = not quiet
     input_cfg = _input_config(kw)
@@ -1639,8 +2004,13 @@ def run(
             "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
             "pass --timestamp"
         )
-    _frame_gate(input_cfg.frame, _frame_consumers(kw, output_cfg))
-    camera_cfg = _camera_config(kw, timestamp=kw.get("timestamp"), frame=input_cfg.frame)
+    _frame_gate(input_cfg.solution_frame, _frame_consumers(kw, output_cfg))
+    camera_cfg = _camera_config(
+        kw,
+        category=_solution_category(input_path, kw),
+        timestamp=kw.get("timestamp"),
+        frame=input_cfg.solution_frame,
+    )
     weighting_cfg = _weighting_config(kw)
     render_cfg = _render_config(kw, workers)
 
@@ -1669,10 +2039,9 @@ def run(
     # Resolve the shell-dependent camera / render sentinels off the built volume's shell and the
     # solution category, so the render and its provenance / stamp all read the resolved numbers.
     category = build_prov.get("input", {}).get("category", "corona")
-    camera_cfg = pipeline.resolve_camera(camera_cfg, category, float(volume.grid.radii[-1]))
-    fov = camera_cfg.fov
-    assert fov is not None  # resolved above
-    render_cfg = pipeline.resolve_render(render_cfg, category, fov, float(volume.grid.radii[0]))
+    inner, outer = float(volume.grid.radii[0]), float(volume.grid.radii[-1])
+    camera_cfg = _resolved_camera(camera_cfg, category, inner, outer)
+    render_cfg = pipeline.resolve_render(render_cfg, category, camera_cfg, inner, outer)
 
     render_start = time.perf_counter()
     result = pipeline.render_volume(
@@ -1759,6 +2128,7 @@ def info(input_path: Path, quiet: bool, **kw: Any) -> None:
     help="Destination image (.png).",
 )
 @_input_options
+@_icarus_options
 @_grid_options
 @_fieldlines_options
 @_camera_options()
@@ -1789,6 +2159,7 @@ def fieldlines(
     volume.
     """
     kw["input_path"] = input_path
+    _apply_icarus_run(kw)
     show_progress = not quiet
     input_cfg = _input_config(kw)
     grid_cfg = _grid_config(kw)
@@ -1798,17 +2169,24 @@ def fieldlines(
         raise click.ClickException(
             "--export sunjson needs a timestamp for the JHelioviewer timeline; pass --timestamp"
         )
-    _frame_gate(input_cfg.frame, _frame_consumers(kw, output_cfg))
-    camera_cfg = _camera_config(kw, timestamp=kw.get("timestamp"), frame=input_cfg.frame)
+    _frame_gate(input_cfg.solution_frame, _frame_consumers(kw, output_cfg))
+    camera_cfg = _camera_config(
+        kw,
+        category=_solution_category(input_path, kw),
+        timestamp=kw.get("timestamp"),
+        frame=input_cfg.solution_frame,
+    )
 
     print_step(f"Tracing field lines from [bold]{input_path.name}[/bold]")
     start = time.perf_counter()
     field = pipeline.build_field(input_cfg, grid_cfg, show_progress=show_progress)
     field_time = time.perf_counter() - start
-    # Resolve the camera FOV sentinel off the field's outer shell and category, so the render and
-    # its provenance / stamp read the same resolved FOV.
+    # Resolve the camera sentinels off the field's shell and category, so the render and its
+    # provenance / stamp read the same resolved camera.
     category = field.category
-    camera_cfg = pipeline.resolve_camera(camera_cfg, category, field.domain.outer_radius)
+    camera_cfg = _resolved_camera(
+        camera_cfg, category, field.domain.inner_radius, field.domain.outer_radius
+    )
     render_start = time.perf_counter()
     result = pipeline.render_fieldlines(
         field, fieldlines_cfg, camera_cfg, category=category, show_progress=show_progress
@@ -1850,6 +2228,7 @@ def fieldlines(
     help="Destination SunJSON file (.json).",
 )
 @_input_options
+@_icarus_options
 @_grid_options
 @_export_options
 @_workers_option
@@ -1867,6 +2246,7 @@ def export_lines(
     volume. The file schema is documented in ``qorona/io/fieldlines_export.py``.
     """
     kw["input_path"] = input_path
+    _apply_icarus_run(kw)
     show_progress = not quiet
     input_cfg = _input_config(kw)
     grid_cfg = _grid_config(kw)
@@ -1875,7 +2255,7 @@ def export_lines(
         raise click.ClickException(
             "SunJSON needs an observation time for the JHelioviewer timeline; pass --timestamp"
         )
-    _frame_gate(input_cfg.frame, [_FRAME_EXPORTS["sunjson"]])
+    _frame_gate(input_cfg.solution_frame, [_FRAME_EXPORTS["sunjson"]])
 
     print_step(f"Exporting field lines from [bold]{input_path.name}[/bold]")
     start = time.perf_counter()
@@ -1916,6 +2296,12 @@ def _input_model(
     return resolve_model(input_path, model=model_flag)
 
 
+def _solution_category(input_path: Path, kw: dict[str, Any]) -> str:
+    """Return the solution category of a raw ``input_path`` from the reader registry, without
+    reading the file (``--model`` short-circuits the lookup)."""
+    return category_of(resolve_model(input_path, model=kw.get("model")))
+
+
 #: Flags that configure the re-ingest of a raw solution; meaningless with a built volume artifact,
 #: which carries its own field grid and metadata, so they are rejected there instead of ignored.
 _INGEST_ONLY_KEYS = (
@@ -1929,10 +2315,12 @@ _INGEST_ONLY_KEYS = (
     "spacing",
     "resampler",
     "n_neighbors",
+    "mean_molecular_weight",
+    *_ICARUS_RUN_KEYS,
 )
 
 
-@main.command(hidden=True)
+@main.command()
 @click.argument("input_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "-o",
@@ -1944,6 +2332,8 @@ _INGEST_ONLY_KEYS = (
     help="Destination image (.png).",
 )
 @_input_options
+@_icarus_options
+@_composition_option
 @_grid_options
 @_brightness_options
 @_camera_options(_WL_DEFAULT_DIMENSION, _WL_DEFAULT_FOV)
@@ -1958,28 +2348,37 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
     Thomson-scattering brightness is integrated over the density along each line of sight: the
     polarized brightness pB by default, or the total white-light brightness with ``--component
     total``. The component is finished by two display stages: the ``--vignette`` treatment
-    (``newkirk`` by default, ``adaptive`` for inputs whose falloff departs from it, ``wow`` for
+    (``newkirk`` by default, ``adaptive`` by default for COCONUT input, ``wow`` for
     wavelet whitening, ``none`` for the raw falloff) and optional ``--mgn`` fine-structure
     enhancement. ``--export npz`` also writes the raw frames (both pB and total) with their
-    plane-of-sky coordinates. ``--export fits`` writes the display frame plus the raw frames as
+    image coordinates. ``--export fits`` writes the display frame plus the raw frames as
     a WCS-registered FITS and needs a timestamp. Needs only the density; it neither builds nor
     uses the Q⊥ payload.
+
+    ``--punch-l3`` applies the PUNCH Level 3 background treatment to a PUNCH instrument frame
+    seen from Earth, and shows it with the PUNCH quicklook display.
     """
     kw["input_path"] = input_path
     show_progress = not quiet
     from_volume = zipfile.is_zipfile(input_path)
+    if not from_volume:
+        _apply_icarus_run(kw)
+    _punch_l3_gate(kw)
     output_cfg = _output_config(kw, output_path)
     # For a raw solution the --observer and FITS timestamp gates fire here, before the expensive
     # resample; a volume artifact may carry the epoch itself, so its gates wait for the fast
     # load below.
     if not from_volume:
         _observer_gate(kw, kw.get("timestamp"))
+        _projection_gate(
+            _camera_fields(kw, _WL_DEFAULT_DIMENSION), _solution_category(input_path, kw)
+        )
         if "fits" in output_cfg.export_formats and kw.get("timestamp") is None:
             raise click.ClickException(
                 "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
                 "pass --timestamp"
             )
-        _frame_gate(kw.get("frame"), _frame_consumers(kw, output_cfg))
+        _frame_gate(_solution_frame(kw), _frame_consumers(kw, output_cfg))
 
     print_step(f"Rendering white-light corona from [bold]{input_path.name}[/bold]")
     start = time.perf_counter()
@@ -2022,13 +2421,16 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
             "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
             "pass --timestamp (or bake the volume with one)"
         )
-    declared_frame = _declared_frame(kw.get("frame"), build_prov)
+    declared_frame = (
+        _declared_frame(kw.get("frame"), build_prov, kw.get("timestamp"))
+        if from_volume
+        else _solution_frame(kw)
+    )
     if from_volume:
         _frame_gate(declared_frame, _frame_consumers(kw, output_cfg))
     # The input's model and solution category drive the edge defaults: a volume renders as built
     # (its recorded category, old volumes defaulting to corona), a raw solution goes through the
-    # registry. The coronal wl frame keeps its wider constant FOV; a heliospheric one spans the
-    # full domain (default_fov None, resolved off the shell below).
+    # registry. The coronal orthographic wl frame keeps its wider constant FOV (resolved below).
     model = _input_model(from_volume, input_path, build_prov, kw.get("model"))
     category = (
         (build_prov or {}).get("input", {}).get("category", "corona")
@@ -2037,33 +2439,43 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
     )
     camera_cfg = _camera_config(
         kw,
+        category=category,
         default_dimension=_WL_DEFAULT_DIMENSION,
-        default_fov=_WL_DEFAULT_FOV if category == "corona" else None,
         timestamp=resolved_timestamp,
         frame=declared_frame,
     )
 
-    if kw.get("vignette") is None and (model == "coconut" or category == "heliosphere"):
-        # Model/category-aware default: the self-calibrating adaptive channel for COCONUT input and
-        # for heliospheric inputs (whose falloff departs from the Newkirk profile); the schema's
-        # newkirk default stands for every other input.
+    if kw.get("vignette") is None and model == "coconut":
+        # Model-aware default: the self-calibrating adaptive channel for COCONUT input. The
+        # schema's newkirk default stands for every other input, heliospheric ones included.
         kw["vignette"] = "adaptive"
     brightness_cfg = _brightness_config(kw, workers)
 
     # Pre-resolve the shell-dependent camera / brightness sentinels off the density's shell, so the
     # render and its provenance / stamp read the resolved numbers; the pipeline's own resolution
     # then no-ops.
-    camera_cfg = pipeline.resolve_camera(camera_cfg, category, float(density.grid.radii[-1]))
-    fov = camera_cfg.fov
-    assert fov is not None  # resolved above
-    brightness_cfg = pipeline.resolve_brightness(
-        brightness_cfg, category, fov, float(density.grid.radii[0])
-    )
+    inner, outer = float(density.grid.radii[0]), float(density.grid.radii[-1])
+    camera_cfg = _resolved_camera(camera_cfg, category, inner, outer, coronal_fov=_WL_DEFAULT_FOV)
+    brightness_cfg = pipeline.resolve_brightness(brightness_cfg, category, camera_cfg, inner, outer)
 
     render_start = time.perf_counter()
-    result = pipeline.render_brightness(
-        density, brightness_cfg, camera_cfg, category=category, show_progress=show_progress
-    )
+    punch: PunchL3Result | None = None
+    if brightness_cfg.punch_l3:
+        assert resolved_timestamp is not None  # the Earth observer gate needs the epoch
+        punch = pipeline.render_punch_l3(
+            density,
+            brightness_cfg,
+            camera_cfg,
+            timestamp=resolved_timestamp,
+            frame=declared_frame,
+            category=category,
+            show_progress=show_progress,
+        )
+        result = punch.full
+    else:
+        result = pipeline.render_brightness(
+            density, brightness_cfg, camera_cfg, category=category, show_progress=show_progress
+        )
     render_time = time.perf_counter() - render_start
 
     if from_volume:
@@ -2081,11 +2493,15 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
         provenance = pipeline.brightness_provenance(
             input_cfg, grid_cfg, brightness_cfg, camera_cfg, output_cfg, result, field=field
         )
+    if result.unit == "MSB":
+        provenance["brightness"]["mean_molecular_weight"] = density.mean_molecular_weight
+    if punch is not None:
+        provenance["punch_l3"] = punch.to_provenance()
     try:
-        written = write_brightness(result, brightness_cfg, output_cfg, provenance)
+        written = write_brightness(result, brightness_cfg, output_cfg, provenance, punch=punch)
     except ImportError as error:
         raise click.ClickException(str(error)) from error
-    written += export_brightness(result, output_cfg, provenance)
+    written += export_brightness(result, output_cfg, provenance, punch=punch)
     print_success(f"Wrote [bold]{output_path}[/bold]")
     _print_summary(
         provenance,
@@ -2114,9 +2530,22 @@ def _input_line(prov: dict[str, Any]) -> str:
         if inp.get("jd") is not None:
             stamp += f" / JD {float(inp['jd']):.3f}"
         parts.append(stamp)
-    frame = inp.get("frame")
-    parts.append(f"{frame} frame" if frame else "carrington frame (assumed)")
+    frame = frame_from_provenance(inp)
+    if isinstance(frame, IcarusRunConfig):
+        parts.append(_icarus_frame_text(frame))
+    else:
+        parts.append(f"{frame} frame" if frame else "carrington frame (assumed)")
     return " · ".join(parts)
+
+
+def _icarus_frame_text(run: IcarusRunConfig) -> str:
+    """One line on the Icarus frame and the run settings that anchor it."""
+    text = f"icarus frame (magnetogram {run.magnetogram_time}, relaxation {run.relaxation:g} d"
+    if run.cme_insertion:
+        text += f", CME insertion {run.cme_insertion:g} d"
+    if run.delta_phi:
+        text += f", delta_phi {run.delta_phi:.2f}°"
+    return text + ")"
 
 
 def _field_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
@@ -2160,13 +2589,31 @@ def _volume_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
 
 
 def _camera_line(prov: dict[str, Any]) -> str:
+    """The summary's camera row: the projection, the pointing, the field of view in its own unit,
+    and the frame. A perspective row also names the observer distance and the instrument frame,
+    noting when explicit flags changed it."""
     cam = prov["camera"]
     pixels = cam["pixels"]
-    return (
+    pointing = (
         f"sub-observer ({float(cam['longitude']):+.0f}°, {float(cam['latitude']):+.0f}°) · "
-        f"roll {float(cam['roll']):+.0f}° · FOV {float(cam['fov']):.0f} R☉ · "
-        f"{int(pixels[1])}x{int(pixels[0])}"
+        f"roll {float(cam['roll']):+.0f}°"
     )
+    frame = f"{int(pixels[1])}x{int(pixels[0])}"
+    if cam.get("projection") != "perspective":
+        return f"orthographic · {pointing} · FOV {float(cam['fov']):.0f} R☉ · {frame}"
+    line = (
+        f"perspective · {pointing} · {float(cam['observer_distance']):.3g} AU · "
+        f"FOV {float(cam['fov_deg']):g}° {str(cam['projection_code']).upper()} · {frame}"
+    )
+    instrument = cam.get("instrument")
+    if instrument:
+        preset = CAMERA_INSTRUMENTS[instrument]
+        matches = (
+            float(cam["fov_deg"]) == preset.fov_deg
+            and tuple(int(n) for n in pixels) == preset.pixels
+        )
+        line += f" · {instrument}" + ("" if matches else " (frame changed by flags)")
+    return line
 
 
 def _render_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
@@ -2225,8 +2672,20 @@ def _brightness_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
     finish = ["raw" if vignette == "none" else str(vignette)]
     if bri.get("mgn"):
         finish.append("mgn")
+    punch = prov.get("punch_l3")
+    if punch:
+        height, width = punch["background_pixels"]
+        finish = [
+            f"PUNCH L3 treatment ({punch['frames']} frames, ±{punch['window_days']:g} d, "
+            f"{width}x{height} background)"
+        ]
+    unit = "relative"
+    if bri.get("unit") == "MSB":
+        mu = bri.get("mean_molecular_weight")
+        unit = "MSB" if mu is None else f"MSB · μ {mu:g}"
     parts = [
         f"{component} · {'+'.join(finish)}",
+        unit,
         str(bri["occult"]),
         f"median polarization {float(bri['median_polarization']):.2f}",
         f"pB spans {float(bri['pb_decades']):.1f} decades",

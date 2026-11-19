@@ -6,6 +6,10 @@ of HEEQ), share the solar rotation axis and differ only by the longitude of the 
 meridian, L0(t) (Thompson 2006, A&A 449, 791). Every frame conversion here is therefore one
 time-dependent longitude offset, with latitudes common to both frames. Earth's position comes
 from sunpy's built-in ephemeris (offline); a spacecraft's from JPL Horizons over the network.
+
+An Icarus snapshot is in a third frame. It shares the rotation axis, and it turns with a sidereal
+period of 24.47 days. Earth is at ``phi = delta_phi`` at the magnetogram time and then drifts at a
+constant rate, so the offset to Carrington is again one time-dependent longitude.
 """
 
 from __future__ import annotations
@@ -13,12 +17,22 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from qorona.config.schema import DEFAULT_FRAME, SOLUTION_FRAMES
+from qorona.config.schema import (
+    DEFAULT_FRAME,
+    ICARUS_FRAME,
+    SOLUTION_FRAMES,
+    IcarusRunConfig,
+    SolutionFrame,
+)
 
 #: Named observers accepted by ``--observer``: Earth resolves offline, the spacecraft query JPL
 #: Horizons by body id.
 OBSERVERS = ("earth", "stereo-a", "solo", "psp")
 _HORIZONS_IDS = {"stereo-a": "-234", "solo": "-144", "psp": "-96"}
+
+#: Earth's drift through the Icarus frame, in degrees per hour. The frame turns with a sidereal
+#: period of 24.47 days, and Icarus moves Earth at the mean rate of a 365.24-day year.
+ICARUS_EARTH_DRIFT = 15.0 * (1.0 / 24.47 - 1.0 / 365.24)
 
 
 def utc_time(timestamp: str) -> Any:
@@ -50,36 +64,54 @@ def derive_jd(timestamp: str) -> float:
     return float(utc_time(timestamp).jd)
 
 
-def carrington_offset(frame: str | None, timestamp: str) -> float:
+def icarus_epoch(run: IcarusRunConfig, time_hours: float) -> str:
+    """Return the UTC ISO-8601 time of the Icarus snapshot whose ``TIME`` is ``time_hours``."""
+    import astropy.units as u
+
+    epoch = utc_time(run.magnetogram_time) + (time_hours - run.magnetogram_hours) * u.hour
+    epoch.precision = 0
+    return str(epoch.isot)
+
+
+def carrington_offset(frame: SolutionFrame, timestamp: str, epoch: str | None = None) -> float:
     """Return the Carrington longitude (deg) of ``frame``'s zero meridian at ``timestamp``.
 
-    Zero for a Carrington-aligned solution; L0(t), the sub-Earth Carrington longitude, for a
-    Stonyhurst one. Adding it takes a solution-frame longitude to Carrington, subtracting it takes
-    a Carrington longitude into the solution frame. ``None`` (undeclared) counts as Carrington.
+    Zero for a Carrington-aligned solution; L0, the sub-Earth Carrington longitude, for a
+    Stonyhurst one. For an Icarus run, ``L0 - delta_phi`` plus Earth's drift since the magnetogram
+    time. Adding it takes a solution-frame longitude to Carrington, subtracting it takes a
+    Carrington longitude into the solution frame. ``None`` (undeclared) counts as Carrington.
+
+    A Stonyhurst solution holds at one time. ``epoch`` is that time when it is not ``timestamp``:
+    the offset is then ``L0(epoch)``, and the solution turns with the Sun at the Carrington rate.
     """
-    if _resolved_frame(frame) == DEFAULT_FRAME:
+    resolved = _resolved_frame(frame)
+    if resolved == DEFAULT_FRAME:
         return 0.0
 
     from sunpy.coordinates.sun import L0
 
-    return float(L0(utc_time(timestamp)).deg)
+    if isinstance(frame, IcarusRunConfig):
+        time = utc_time(timestamp)
+        hours = float((time - utc_time(frame.magnetogram_time)).to_value("hour"))
+        return (float(L0(time).deg) - frame.delta_phi + ICARUS_EARTH_DRIFT * hours) % 360.0
+    return float(L0(utc_time(epoch or timestamp)).deg)
 
 
 def sub_observer_point(
-    observer: str, timestamp: str, frame: str | None
+    observer: str, timestamp: str, frame: SolutionFrame, epoch: str | None = None
 ) -> tuple[float, float, float]:
     """Return ``observer``'s sub-observer ``(longitude, latitude)`` in degrees, expressed in the
     solution ``frame``, and its heliocentric distance in AU at ``timestamp``.
 
     Earth comes from sunpy's built-in ephemeris (no network); a spacecraft from JPL Horizons, whose
     Stonyhurst longitude is taken to Carrington by adding L0. The Carrington longitude then drops
-    into the solution frame by subtracting the frame's offset, so Earth in a Stonyhurst frame sits
-    at exactly zero.
+    into the solution frame by subtracting the frame's offset (:func:`carrington_offset`, with
+    ``epoch``), so Earth in a Stonyhurst frame sits at exactly zero.
     """
     import astropy.units as u
     from sunpy.coordinates.sun import B0, L0, earth_distance
 
-    resolved_frame = _resolved_frame(frame)
+    _resolved_frame(frame)  # validate before any network query
     time = utc_time(timestamp)
     sub_earth_longitude = float(L0(time).deg)
     if observer == "earth":
@@ -93,10 +125,7 @@ def sub_observer_point(
         distance = float(position.radius.to_value(u.au))
     else:
         raise ValueError(f"unknown observer {observer!r}; choose from {', '.join(OBSERVERS)}")
-    # The frame's offset, :func:`carrington_offset`'s value taken off the L0 already in hand:
-    # zero for a Carrington-aligned solution, L0 itself for a Stonyhurst one.
-    offset = 0.0 if resolved_frame == DEFAULT_FRAME else sub_earth_longitude
-    longitude = (carrington_longitude - offset) % 360.0
+    longitude = (carrington_longitude - carrington_offset(frame, timestamp, epoch)) % 360.0
     return longitude, latitude, distance
 
 
@@ -122,8 +151,15 @@ def _horizons_position(observer: str, time: Any) -> Any:
         log.setLevel(level)
 
 
-def _resolved_frame(frame: str | None) -> str:
+def _resolved_frame(frame: SolutionFrame) -> str:
     """Validate a solution ``frame``, mapping ``None`` (undeclared) to the default."""
+    if isinstance(frame, IcarusRunConfig):
+        return ICARUS_FRAME
+    if frame == ICARUS_FRAME:
+        raise ValueError(
+            "the Icarus frame needs the run settings; pass --magnetogram-time and --relaxation "
+            "(or --par)"
+        )
     resolved = DEFAULT_FRAME if frame is None else frame
     if resolved not in SOLUTION_FRAMES:
         raise ValueError(f"frame must be one of {SOLUTION_FRAMES}, got {frame!r}")

@@ -3,8 +3,10 @@
 Icarus is an inner-heliosphere MHD model built on MPI-AMRVAC. Its ``.vtu`` snapshots
 carry primitive variables on a spherical block grid whose point coordinates are stored
 unprojected as (x, y, z) = (r [R_sun], theta [rad], phi [rad]); cell components
-``b1..b3`` are the spherical (B_r, B_theta, B_phi) in nT and ``rho`` is the mass density
-in kg/m^3, both kept native (they are scale-free for Qorona's products).
+``b1..b3`` are the spherical (B_r, B_theta, B_phi) in nT, kept native. ``rho`` is the mass
+density in kg/m^3. The reader declares that unit and the pure-hydrogen composition of Icarus
+(``μ = 1``), so the white-light frames are absolute. The ``TIME`` field
+value counts hours from the start of the simulation.
 
 Icarus: Verbeke et al. (2022), A&A 662, A50; Baratashvili et al. (2025), A&A 694, A306.
 """
@@ -17,12 +19,20 @@ import numpy as np
 from astropy import units as u
 
 from qorona.geometry.coordinates import spherical_to_cartesian, spherical_to_cartesian_vectors
-from qorona.io.formats.vtu import ParsedVtu, parse_vtu
+from qorona.io.formats.vtu import ParsedVtu, parse_vtu, read_field_data
 from qorona.io.native import NativeSolution, SolutionMetadata, StructuredMesh
 from qorona.io.readers.base import SolutionReader, synthesize_shell_boundaries
 from qorona.io.readers.mas.hdf import spherical_mesh_points
 
 _REQUIRED = ("rho", "b1", "b2", "b3")
+
+
+def snapshot_time(path: str | Path) -> float | None:
+    """Return the ``TIME`` of an Icarus ``.vtu`` snapshot, in hours, or ``None`` if it has none.
+
+    Reads the start of the file only, so it is cheap before a full read.
+    """
+    return read_field_data(path).get("TIME")
 
 
 class IcarusVtuReader(SolutionReader):
@@ -82,6 +92,8 @@ class IcarusVtuReader(SolutionReader):
             file_format=self.file_format,
             source_path=path,
             normalization="icarus-si",
+            density_unit=u.Unit(u.kg / u.m**3),
+            mean_molecular_weight=1.0,
             dimension=3,
             n_equations=len(variables),
             element_type="point",

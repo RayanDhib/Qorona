@@ -1,8 +1,8 @@
 """The standalone white-light / polarized-brightness (pB) render: the secondary white-light product.
 
-A Thomson-scattering line-of-sight integral over the electron density, on the *same* orthographic
-camera and ``s``-march as the Q⊥ render but a different integrand: along each ray it accumulates
-the tangential and polarized brightness
+A Thomson-scattering line-of-sight integral over the electron density, on the *same* camera and
+``s``-march as the Q⊥ render but a different integrand: along each ray it accumulates the
+tangential and polarized brightness
 
     K_tan(rho) = ∫ Nₑ · c_tan(r) ds,    K_pol(rho) = ∫ Nₑ · c_pol(r) · sin²χ̄ ds,
 
@@ -11,11 +11,13 @@ and the polarized brightness ``pB = K_pol``, the reference target finished by th
 in :mod:`.display`. The radius-only coefficients ``c_tan``, ``c_pol`` come from :mod:`.thomson`; the
 electron density is the only field input, and being dense the image is NaN-free.
 
-The product is *relative*: the single-electron prefactor and the absolute electron-density
-calibration are dropped (pB is conventionally shown in relative / log units), so pixel-to-pixel
-structure and the polarization ratio ``P = pB / K_tot`` are exact while the overall scale is
-arbitrary. The quadrature runs on a numba ``prange``-over-rays kernel when installed, with a
-NumPy path as the fallback and reference implementation.
+The sums carry no single-electron prefactor, so by themselves the frames are *relative*.
+Pixel-to-pixel structure and the polarization ratio ``P = pB / K_tot`` are exact while the overall
+scale is arbitrary. When the density volume carries its physical unit, the render restores the
+prefactor and the density calibration at the end. It then returns the frames in units of the mean
+solar brightness (MSB), the unit of PUNCH Level 3 images. The quadrature runs on a numba
+``prange``-over-rays kernel when installed, with a NumPy path as the fallback and reference
+implementation.
 
 Implemented from Inhester (2015), "Thomson Scattering in the Solar Corona", arXiv:1512.00651
 (Eqs. 4.3, the line-of-sight brightness integrals).
@@ -23,23 +25,24 @@ Implemented from Inhester (2015), "Thomson Scattering in the Solar Corona", arXi
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import numpy as np
-from astropy.units import R_sun
+from astropy import units
 
 from qorona.accel import HAVE_NUMBA, apply_workers
 from qorona.console import print_success, progress_bar
 from qorona.field.density import DensityVolume
-from qorona.geometry.camera import OrthographicCamera
+from qorona.geometry.camera import Camera, PerspectiveCamera
 from qorona.radiation.thomson import (
     ASYMPTOTIC_CROSSOVER,
     LIMB_DARKENING,
     RadialCoefficients,
     build_coefficient_table,
+    msb_prefactor,
 )
-from qorona.render.image import eclipse_alpha
+from qorona.render.image import eclipse_alpha, occulter_impact
 
 __all__ = ["BrightnessResult", "render_brightness"]
 
@@ -55,17 +58,22 @@ class BrightnessResult:
     Attributes
     ----------
     polarized
-        ``(H, W)`` polarized brightness ``pB = K_pol`` (relative units): the reference target for
+        ``(H, W)`` polarized brightness ``pB = K_pol`` in :attr:`unit`: the reference target for
         the display treatments.
     total
-        ``(H, W)`` total / white-light brightness ``K_tot = 2 K_tan - K_pol`` (relative units).
+        ``(H, W)`` total / white-light brightness ``K_tot = 2 K_tan - K_pol`` in :attr:`unit`.
     impact
         ``(H, W)`` per-pixel impact parameter rho (R☉): the radius the display treatments
         and the eclipse vignette use.
-    x_rsun, y_rsun
-        ``(W,)`` and ``(H,)`` plane-of-sky pixel-centre coordinates (R☉): ``x`` increases to
-        image-right, ``y`` to image-up with row 0 at the top, so ``rho = hypot(x, y)``. Carried so
-        a data export is self-describing without re-deriving the camera geometry.
+    x, y
+        ``(W,)`` and ``(H,)`` pixel-centre coordinates in :attr:`axis_unit`: ``x`` increases to
+        image-right, ``y`` to image-up with row 0 at the top. Carried so a data export is
+        self-describing without re-deriving the camera geometry.
+    axis_unit
+        ``"R_sun"`` for the orthographic camera (plane-of-sky lengths, so ``rho = hypot(x, y)``)
+        or ``"deg"`` for the perspective camera (projection-plane angular offsets from Sun
+        centre). Away from the image axes, these offsets are not helioprojective longitude and
+        latitude; use the FITS WCS for those.
     r_inner, r_outer
         The radial shell (R☉) the integral covered; the display vignette integrates its reference
         model over the same shell.
@@ -76,19 +84,34 @@ class BrightnessResult:
         ``"none"``); recorded for provenance.
     r_occult, occult_softness
         The occulter radius and eclipse-edge feather (R☉) used; recorded for provenance.
+    observer_distance
+        The perspective observer's distance from Sun centre (R☉), or ``None`` for the
+        orthographic camera.
+    observer_limit
+        ``(H, W)`` the observer's position ``s`` on each line of sight, or ``None`` for the
+        orthographic camera. The integral stops there, and the newkirk vignette stops its model
+        curve at the same place. ``s`` is in R☉, measured from the ray's closest approach to Sun
+        centre, positive toward the observer.
+    unit
+        ``"MSB"`` when the frames are absolute, in units of the mean solar brightness ``B☉``
+        (the density's physical unit was known). ``"relative"`` otherwise.
     """
 
     polarized: np.ndarray
     total: np.ndarray
     impact: np.ndarray
-    x_rsun: np.ndarray
-    y_rsun: np.ndarray
+    x: np.ndarray
+    y: np.ndarray
+    axis_unit: str
     r_inner: float
     r_outer: float
     u: float
     occult: str
     r_occult: float
     occult_softness: float
+    observer_distance: float | None
+    observer_limit: np.ndarray | None
+    unit: str = "relative"
 
     def polarization(self) -> np.ndarray:
         """Return the ``(H, W)`` polarization ``P = pB / K_tot`` (``0`` where ``K_tot ≤ 0``)."""
@@ -105,28 +128,23 @@ class BrightnessResult:
         return f"median polarization {median_p:.2f} · pB spans {decades:.1f} decades"
 
 
-def _ray_geometry(
-    camera: OrthographicCamera, density: DensityVolume, step: float
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
-    """Return the flattened ``(origins, impact, look, s_grid, ds)`` shared by both render paths."""
-    rays = camera.rays()
-    origins = np.ascontiguousarray(rays.origins.reshape(-1, 3))
-    impact = np.ascontiguousarray(rays.impact.reshape(-1))
-    look = np.ascontiguousarray(rays.look, dtype=np.float64)
+def _s_grid(density: DensityVolume, step: float) -> tuple[np.ndarray, float]:
+    """Return the shared line-of-sight grid ``s_grid`` and its spacing ``ds`` across the shell."""
     outer_radius = float(density.grid.radii[-1])
     n_steps = int(np.ceil(2.0 * outer_radius / step)) + 1
     s_grid = np.linspace(-outer_radius, outer_radius, n_steps)
     ds = float(s_grid[1] - s_grid[0])
-    return origins, impact, look, s_grid, ds
+    return s_grid, ds
 
 
 def _finalize_brightness(
     k_tan: np.ndarray,
     k_pol: np.ndarray,
     impact: np.ndarray,
+    observer_limit: np.ndarray,
     ds: float,
     *,
-    camera: OrthographicCamera,
+    camera: Camera,
     density: DensityVolume,
     u: float,
     occult: str,
@@ -140,33 +158,40 @@ def _finalize_brightness(
     are darkened image-side (the observable eclipse product: a dark disk, off-limb corona only) by
     the eclipse vignette, the same darkening the Q⊥ render applies, but baked into the frame here so
     the display treatments and the saved image all see the occulted pB. ``"none"`` leaves the
-    frames as integrated. The plane-of-sky pixel axes are derived from the camera (the same layout
-    as :meth:`OrthographicCamera.rays`) and carried on the result so a data export is
-    self-describing.
+    frames as integrated. The pixel axes come from the camera and are carried on the result, so a
+    data export is self-describing. A perspective camera also leaves its observer distance and the
+    per-ray ``observer_limit`` on the result for the display treatments.
     """
     height, width = camera.pixels
-    pixel_scale = camera.fov.to_value(R_sun) / width
-    x_rsun = (np.arange(width) - 0.5 * (width - 1)) * pixel_scale
-    y_rsun = (0.5 * (height - 1) - np.arange(height)) * pixel_scale
+    observer_distance: float | None = None
+    observer_grid: np.ndarray | None = None
+    if isinstance(camera, PerspectiveCamera):
+        observer_distance = float(camera.observer_distance.to_value(units.R_sun))
+        observer_grid = observer_limit.reshape(height, width)
+    x, y = camera.pixel_axes()
     impact_grid = impact.reshape(height, width)
     polarized = (k_pol * ds).reshape(height, width)
     total = ((2.0 * k_tan - k_pol) * ds).reshape(height, width)
     if occult == "eclipse":
-        alpha = eclipse_alpha(impact_grid, r_occult, occult_softness)
+        occulter = occulter_impact(impact, observer_limit).reshape(height, width)
+        alpha = eclipse_alpha(occulter, r_occult, occult_softness)
         polarized = polarized * alpha
         total = total * alpha
     result = BrightnessResult(
         polarized=polarized,
         total=total,
         impact=impact_grid,
-        x_rsun=x_rsun,
-        y_rsun=y_rsun,
+        x=x,
+        y=y,
+        axis_unit=camera.axis_unit,
         r_inner=float(density.grid.radii[0]),
         r_outer=float(density.grid.radii[-1]),
         u=u,
         occult=occult,
         r_occult=r_occult,
         occult_softness=occult_softness,
+        observer_distance=observer_distance,
+        observer_limit=observer_grid,
     )
     if show_progress:
         print_success(f"Rendered {width}x{height} brightness image: {result.summary()}")
@@ -175,7 +200,7 @@ def _finalize_brightness(
 
 def _brightness_numpy(
     density: DensityVolume,
-    camera: OrthographicCamera,
+    camera: Camera,
     table: RadialCoefficients,
     *,
     step: float,
@@ -187,9 +212,12 @@ def _brightness_numpy(
     show_progress: bool,
 ) -> BrightnessResult:
     """Single-threaded NumPy brightness render: the no-numba fallback and the kernel's reference."""
-    origins, impact, look, s_grid, ds = _ray_geometry(camera, density, step)
+    s_grid, ds = _s_grid(density, step)
     n_steps = s_grid.shape[0]
-    n_rays = origins.shape[0]
+    height, width = camera.pixels
+    n_rays = height * width
+    impact = np.empty(n_rays)
+    limit = np.full(n_rays, np.inf)
     inner_radius = float(density.grid.radii[0])
     outer_radius = float(density.grid.radii[-1])
 
@@ -199,11 +227,19 @@ def _brightness_numpy(
     with progress_bar("Rendering brightness (pB)", n_rays, enabled=show_progress) as progress:
         for start in range(0, n_rays, rays_per_chunk):
             stop = min(start + rays_per_chunk, n_rays)
-            batch_impact = impact[start:stop]
-            points = origins[start:stop, None, :] + s_grid[None, :, None] * look
+            rays = camera.ray_batch(start, stop)
+            origins, directions, batch_impact, observer_limit = rays.packed()
+            impact[start:stop] = batch_impact
+            if not rays.parallel:
+                limit[start:stop] = observer_limit
+            points = origins[:, None, :] + s_grid[None, :, None] * directions[:, None, :]
             radius = np.sqrt(batch_impact[:, None] ** 2 + s_grid[None, :] ** 2)
 
-            on_path = (radius >= inner_radius) & (radius <= outer_radius)
+            on_path = (
+                (radius >= inner_radius)
+                & (radius <= outer_radius)
+                & (s_grid[None, :] <= observer_limit[:, None])
+            )
             density_sample = density.sample(points.reshape(-1, 3)).reshape(radius.shape)
             with np.errstate(invalid="ignore", divide="ignore"):
                 c_tan, c_pol = table.evaluate(radius)
@@ -219,6 +255,7 @@ def _brightness_numpy(
         k_tan,
         k_pol,
         impact,
+        limit,
         ds,
         camera=camera,
         density=density,
@@ -232,7 +269,7 @@ def _brightness_numpy(
 
 def _brightness_numba(
     density: DensityVolume,
-    camera: OrthographicCamera,
+    camera: Camera,
     table: RadialCoefficients,
     *,
     step: float,
@@ -248,8 +285,11 @@ def _brightness_numba(
     from qorona.accel.kernels import brightness_batch_jit
 
     apply_workers(workers)
-    origins, impact, look, s_grid, ds = _ray_geometry(camera, density, step)
-    n_rays = origins.shape[0]
+    s_grid, ds = _s_grid(density, step)
+    height, width = camera.pixels
+    n_rays = height * width
+    impact = np.empty(n_rays)
+    limit = np.full(n_rays, np.inf)
     density_vol = np.ascontiguousarray(density.density)
     density_grid = density.grid._jit_grid()
     c_tan_table = np.ascontiguousarray(table.c_tan)
@@ -261,10 +301,16 @@ def _brightness_numba(
     with progress_bar("Rendering pB (numba)", n_rays, enabled=show_progress) as progress:
         for start in range(0, n_rays, rays_per_chunk):
             stop = min(start + rays_per_chunk, n_rays)
+            rays = camera.ray_batch(start, stop)
+            origins, directions, chunk_impact, observer_limit = rays.packed()
+            impact[start:stop] = chunk_impact
+            if not rays.parallel:
+                limit[start:stop] = observer_limit
             chunk_tan, chunk_pol = brightness_batch_jit(
-                origins[start:stop],
-                look,
-                impact[start:stop],
+                origins,
+                directions,
+                chunk_impact,
+                observer_limit,
                 s_grid,
                 density_vol,
                 density_grid,
@@ -283,6 +329,7 @@ def _brightness_numba(
         k_tan,
         k_pol,
         impact,
+        limit,
         ds,
         camera=camera,
         density=density,
@@ -296,7 +343,7 @@ def _brightness_numba(
 
 def render_brightness(
     density: DensityVolume,
-    camera: OrthographicCamera,
+    camera: Camera,
     *,
     u: float = LIMB_DARKENING,
     crossover: float = ASYMPTOTIC_CROSSOVER,
@@ -304,16 +351,18 @@ def render_brightness(
     occult: Literal["eclipse", "none"] = "eclipse",
     r_occult: float = 1.0,
     occult_softness: float = 0.03,
+    scale: Literal["auto", "relative"] = "auto",
     chunk_size: int = 500_000,
     workers: int | None = None,
     show_progress: bool = True,
 ) -> BrightnessResult:
     """Render the polarized and total Thomson brightness over an electron-density volume.
 
-    Integrates ``K_tan`` and ``K_pol`` along each orthographic line of sight and returns the
-    polarized brightness ``pB = K_pol`` and the total ``K_tot = 2 K_tan - K_pol`` (relative units;
-    the absolute calibration is dropped). Dispatches to a numba kernel when available, else the
-    NumPy path (the reference implementation); the two agree to floating-point noise.
+    Integrates ``K_tan`` and ``K_pol`` along each line of sight and returns the
+    polarized brightness ``pB = K_pol`` and the total ``K_tot = 2 K_tan - K_pol``. The frames are
+    in mean solar brightness when the density carries its physical unit (see ``scale``), and in
+    relative units otherwise. Dispatches to a numba kernel when available, else the NumPy path (the
+    reference implementation); the two agree to floating-point noise.
 
     Parameters
     ----------
@@ -321,7 +370,8 @@ def render_brightness(
         The electron-density volume to integrate (the only field input; dense, so the image is
         NaN-free).
     camera
-        The orthographic plane-of-sky camera (shared with the Q⊥ render).
+        The camera, shared with the Q⊥ render: orthographic (parallel rays) or perspective (a
+        finite observer, whose lines of sight stop at the observer).
     u
         Limb-darkening coefficient (default :data:`~qorona.radiation.thomson.LIMB_DARKENING`).
     crossover
@@ -334,6 +384,10 @@ def render_brightness(
         integrate the same full-line geometry as the display vignettes' model curves.
     r_occult, occult_softness
         Occulter radius and eclipse-edge feather in R☉ (carried into the result for the display).
+    scale
+        ``"auto"`` returns absolute frames in mean solar brightness (MSB) when the density carries
+        a physical unit, and relative frames otherwise. ``"relative"`` always returns relative
+        frames.
     chunk_size
         Rays x steps processed per batch on the NumPy path (bounds its peak memory; unused by the
         kernel, which chunks only for progress).
@@ -354,7 +408,7 @@ def render_brightness(
         float(density.grid.radii[0]), float(density.grid.radii[-1]), u=u, crossover=crossover
     )
     if HAVE_NUMBA and density.grid._jit_grid() is not None:
-        return _brightness_numba(
+        result = _brightness_numba(
             density,
             camera,
             table,
@@ -366,15 +420,35 @@ def render_brightness(
             workers=workers,
             show_progress=show_progress,
         )
-    return _brightness_numpy(
-        density,
-        camera,
-        table,
-        step=step,
-        occult=occult,
-        r_occult=r_occult,
-        occult_softness=occult_softness,
-        u=u,
-        chunk_size=chunk_size,
-        show_progress=show_progress,
+    else:
+        result = _brightness_numpy(
+            density,
+            camera,
+            table,
+            step=step,
+            occult=occult,
+            r_occult=r_occult,
+            occult_softness=occult_softness,
+            u=u,
+            chunk_size=chunk_size,
+            show_progress=show_progress,
+        )
+    if scale == "auto" and density.unit is not None:
+        return _absolute(result, density, u)
+    return result
+
+
+def _absolute(result: BrightnessResult, density: DensityVolume, u: float) -> BrightnessResult:
+    """Return ``result`` in units of the mean solar brightness.
+
+    The frames are sums of ``Nₑ c ds``, with ``Nₑ`` in stored density values and ``ds`` in model
+    length units. The density's unit and length unit turn them into an electron column (m⁻²). The
+    single-electron prefactor (:func:`~qorona.radiation.thomson.msb_prefactor`) then turns the
+    column into ``B☉``.
+    """
+    assert density.unit is not None  # checked by the caller
+    column = float(density.unit.to(units.m**-3)) * float(density.length_unit.to(units.m))
+    factor = msb_prefactor(u) * column
+    return replace(
+        result, polarized=result.polarized * factor, total=result.total * factor, unit="MSB"
     )

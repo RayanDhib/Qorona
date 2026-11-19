@@ -1,5 +1,7 @@
 # HPC clusters
 
+## Install
+
 **With pip**, the released version into a plain virtual environment:
 
 ```bash
@@ -17,6 +19,8 @@ cd Qorona
 conda env create -f environment.yml
 conda activate qorona
 ```
+
+## Batch jobs
 
 Two flags are made for batch jobs: `--workers` pins the kernel threads to your allocation
 (numba otherwise takes every core it sees), and `--quiet` keeps job logs readable.

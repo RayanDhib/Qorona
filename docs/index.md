@@ -45,3 +45,6 @@ command that produced its figure.
 [camera and viewpoint](camera.md), [GPU acceleration](gpu.md),
 [export to JHelioviewer](jhelioviewer.md), and, on clusters, the
 [HPC guide](getting-started/hpc.md).
+
+**Heliosphere and PUNCH**: [heliospheric solutions](heliospheric.md) and
+[comparing with PUNCH](punch.md).

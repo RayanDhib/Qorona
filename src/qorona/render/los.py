@@ -1,9 +1,10 @@
 """Line-of-sight render of the weighted log₁₀ Q⊥ volume into eclipse-like imagery.
 
 Each pixel integrates spatially-weighted log₁₀ Q⊥ along its line of sight through the
-:class:`~qorona.squashing.QPerpVolume`, on the orthographic plane-of-sky
-:class:`~qorona.geometry.camera.OrthographicCamera`. Three colour channels carry the *same*
-log₁₀ Q⊥ under three different *spatial* weightings, faking depth.
+:class:`~qorona.squashing.QPerpVolume`. The render runs on either camera of
+:mod:`qorona.geometry.camera`: the orthographic plane-of-sky view or the perspective view from a
+finite observer. Three colour channels carry the *same* log₁₀ Q⊥ under three different *spatial*
+weightings, faking depth.
 
 These details are load-bearing:
 
@@ -64,8 +65,14 @@ from astropy import units as u
 
 from qorona.accel import HAVE_NUMBA, JitGrid, apply_workers
 from qorona.console import print_success, progress_bar
-from qorona.geometry.camera import OrthographicCamera
-from qorona.render.image import eclipse_alpha, occultation_mask, scale_intensity, write_png
+from qorona.geometry.camera import Camera
+from qorona.render.image import (
+    eclipse_alpha,
+    occultation_mask,
+    occulter_impact,
+    scale_intensity,
+    write_png,
+)
 from qorona.squashing.volume import QPerpVolume
 
 if TYPE_CHECKING:
@@ -158,7 +165,8 @@ class WeightingPreset:
         Parameters
         ----------
         s
-            Signed line-of-sight distance from the plane of sky, broadcastable to ``r``.
+            Signed line-of-sight distance from the ray's closest approach to Sun centre (the plane
+            of sky for parallel rays), broadcastable to ``r``.
         r
             Heliocentric radius of each sample.
         """
@@ -563,7 +571,7 @@ def _finalize(
 
 def _render_numpy(
     volume: QPerpVolume,
-    camera: OrthographicCamera,
+    camera: Camera,
     *,
     preset: WeightingPreset,
     thomson: ThomsonWeight | None,
@@ -595,11 +603,9 @@ def _render_numpy(
     log_floor, log_max = clamp
     occult_body = occult == "opaque"
     thomson_table = thomson.coefficient_table() if thomson is not None else None
-    rays = camera.rays()
     height, width = camera.pixels
-    origins = rays.origins.reshape(-1, 3)
-    impact = rays.impact.reshape(-1)
-    n_rays = origins.shape[0]
+    n_rays = height * width
+    impact = np.empty(n_rays)
 
     outer_radius = float(volume.grid.radii[-1])
     inner_radius = float(volume.grid.radii[0])
@@ -619,17 +625,21 @@ def _render_numpy(
     with progress_bar("Rendering line-of-sight Q⊥", n_rays, enabled=show_progress) as progress:
         for start in range(0, n_rays, rays_per_chunk):
             stop = min(start + rays_per_chunk, n_rays)
-            batch_origins = origins[start:stop]
-            batch_impact = impact[start:stop]
+            batch_origins, batch_directions, batch_impact, batch_limit = camera.ray_batch(
+                start, stop
+            ).packed()
+            impact[start:stop] = occulter_impact(batch_impact, batch_limit)
 
-            points = batch_origins[:, None, :] + s[None, :, None] * rays.look
+            points = batch_origins[:, None, :] + s[None, :, None] * batch_directions[:, None, :]
             radius = np.sqrt(batch_impact[:, None] ** 2 + s[None, :] ** 2)
             log_q = volume.sample(points.reshape(-1, 3)).reshape(batch_origins.shape[0], n_steps)
 
             in_shell = (radius >= inner_radius) & (radius <= outer_radius)
-            on_path = in_shell
+            on_path = in_shell & (s[None, :] <= batch_limit[:, None])
             if occult_body:
-                on_path = on_path & ~occultation_mask(batch_impact, s, r_occult)
+                on_path = on_path & ~occultation_mask(
+                    occulter_impact(batch_impact, batch_limit), s, r_occult
+                )
             valid = on_path & np.isfinite(log_q)
 
             lower_clamped += int(np.count_nonzero(valid & (log_q < log_floor)))
@@ -697,7 +707,7 @@ def _render_numpy(
 
 def _render_numba(
     volume: QPerpVolume,
-    camera: OrthographicCamera,
+    camera: Camera,
     *,
     preset: WeightingPreset,
     thomson: ThomsonWeight | None,
@@ -732,12 +742,9 @@ def _render_numba(
     log_floor, log_max = clamp
     clamp_lower = floor
     occult_body = occult == "opaque"
-    rays = camera.rays()
     height, width = camera.pixels
-    origins = np.ascontiguousarray(rays.origins.reshape(-1, 3))
-    impact = np.ascontiguousarray(rays.impact.reshape(-1))
-    look = np.ascontiguousarray(rays.look, dtype=np.float64)
-    n_rays = origins.shape[0]
+    n_rays = height * width
+    impact = np.empty(n_rays)
 
     outer_radius = float(volume.grid.radii[-1])
     n_steps = int(np.ceil(2.0 * outer_radius / step)) + 1
@@ -778,6 +785,10 @@ def _render_numba(
     ) as progress:
         for start in range(0, n_rays, rays_per_chunk):
             stop = min(start + rays_per_chunk, n_rays)
+            origins, directions, chunk_impact, observer_limit = camera.ray_batch(
+                start, stop
+            ).packed()
+            impact[start:stop] = occulter_impact(chunk_impact, observer_limit)
             (
                 chunk_signal,
                 chunk_coverage,
@@ -786,9 +797,10 @@ def _render_numba(
                 chunk_onpath,
                 chunk_polarity,
             ) = render_batch_jit(
-                origins[start:stop],
-                look,
-                impact[start:stop],
+                origins,
+                directions,
+                chunk_impact,
+                observer_limit,
                 s,
                 log_q_perp,
                 jit_grid,
@@ -849,7 +861,7 @@ def _render_numba(
 
 def _render_cuda(
     volume: QPerpVolume,
-    camera: OrthographicCamera,
+    camera: Camera,
     *,
     preset: WeightingPreset,
     thomson: ThomsonWeight | None,
@@ -879,11 +891,8 @@ def _render_cuda(
     log_floor, log_max = clamp
     clamp_lower = floor
     occult_body = occult == "opaque"
-    rays = camera.rays()
     height, width = camera.pixels
-    origins = np.ascontiguousarray(rays.origins.reshape(-1, 3))
-    impact = np.ascontiguousarray(rays.impact.reshape(-1))
-    look = np.ascontiguousarray(rays.look, dtype=np.float64)
+    origins, directions, impact, observer_limit = camera.rays().packed()
     n_rays = origins.shape[0]
 
     outer_radius = float(volume.grid.radii[-1])
@@ -916,8 +925,9 @@ def _render_cuda(
     ) as progress:
         signal, coverage, counts, den, onpath, polarity_out = render_batch_cuda(
             origins,
-            look,
+            directions,
             impact,
+            observer_limit,
             s,
             log_q_perp,
             jit_grid,
@@ -957,7 +967,7 @@ def _render_cuda(
         int(counts[:, 2].sum()),
         preset=preset,
         percentiles=percentiles,
-        impact=impact,
+        impact=occulter_impact(impact, observer_limit),
         display=display,
         polarity=polarity,
         polarity_mode=polarity_mode,
@@ -972,7 +982,7 @@ def _render_cuda(
 
 def render(
     volume: QPerpVolume,
-    camera: OrthographicCamera,
+    camera: Camera,
     *,
     preset: WeightingPreset = LARGE_FOV,
     thomson: ThomsonWeight | None = None,
@@ -1021,7 +1031,8 @@ def render(
     volume
         The log₁₀ Q⊥ volume to integrate.
     camera
-        The orthographic plane-of-sky camera.
+        The camera: orthographic (parallel rays) or perspective (a finite observer, whose lines of
+        sight stop at the observer).
     preset
         The depth-weighting profile (default :data:`LARGE_FOV`). A preset may also anchor the
         intensity stretch on the disk (``stretch_radius``); :data:`SMALL_FOV` does, so its

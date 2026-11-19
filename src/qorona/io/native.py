@@ -109,7 +109,19 @@ class StructuredMesh:
 
 @dataclass
 class SolutionMetadata:
-    """Provenance and descriptive metadata for a solution."""
+    """Provenance and descriptive metadata for a solution.
+
+    ``length_unit`` is the physical length of one coordinate unit. The geometry reads coordinates
+    as solar radii either way. The unit matters only where a path length becomes metres, as in the
+    absolute white-light brightness. ``density_unit`` is the physical mass density of one stored
+    ``rho`` unit, or ``None`` when the reader does not know the conversion. A declared unit lets
+    the white-light render report absolute brightness. ``mean_molecular_weight`` is the ``μ`` of the
+    model's equation of state, ``p = 2 rho k T / (μ m_H)``, so the electron density is
+    ``rho / (μ m_p)``. A reader that declares ``density_unit`` also declares
+    ``mean_molecular_weight``; ``None`` falls back to
+    :data:`qorona.field.density.MEAN_MOLECULAR_WEIGHT` (1.27). ``category`` must equal the
+    reader's :attr:`~qorona.io.readers.base.SolutionReader.category`.
+    """
 
     model: str
     file_format: str
@@ -119,7 +131,9 @@ class SolutionMetadata:
     n_equations: int
     element_type: str
     category: str = "corona"
-    length_unit: str = "R_sun"
+    length_unit: u.UnitBase = u.R_sun
+    density_unit: u.UnitBase | None = None
+    mean_molecular_weight: float | None = None
     extra: dict[str, str] = field(default_factory=dict)
 
 

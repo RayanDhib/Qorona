@@ -1,28 +1,36 @@
-"""Plane-of-sky magnetic field-line render with limb-ring seeding and a B_r magnetogram disk.
+"""Magnetic field-line render with limb-ring seeding and a B_r magnetogram disk.
 
 The secondary, morphological product of the pipeline, not a line-of-sight integral. Seeds are
 traced both ways to the boundaries (the field-line tracer) and the resulting 3-D polylines are
-projected through the same orthographic plane-of-sky camera as the Q⊥ render and drawn over the
+projected through the same camera as the Q⊥ render (orthographic or perspective) and drawn over the
 photosphere disk.
 
 Two seeding strategies:
 
 - ``limb`` (the default eclipse-like look): the open fan is seeded on a ring around the **limb**,
-  the plane-of-sky great circle where the line of sight grazes the photosphere, so it radiates
-  cleanly from the disk edge; the front (observer-facing) hemisphere contributes only short closed
-  loops close to the Sun; the back interior is left unseeded. Produces a clean field-line fan.
+  so it radiates cleanly from the disk edge. The limb is the circle where the lines of sight graze
+  the photosphere (the plane-of-sky great circle for the orthographic camera). The observer-facing
+  cap of the sphere contributes only short closed loops close to the Sun. The back interior is left
+  unseeded. Produces a clean field-line fan.
 - ``uniform``: a golden-angle Fibonacci spiral over the whole inner sphere, every line, the honest
   analytical view.
 
 Two colour modes: ``rainbow`` (a distinct matte hue per line, golden-angle walk, for legibility)
 and ``polarity`` (open lines tinted by inner-foot ``B·r̂`` sign, closed loops
 neutral, physical). The disk is either a ``B_r`` magnetogram built from the data (sampled on the
-near hemisphere) or a flat occulter.
+observer-facing side) or a flat occulter.
 
 The rasteriser is dependency-free: an anti-aliased soft-disk splat onto an ``(H, W, 3)`` float
 canvas, composited far-layer → disk → near-layer so the disk occludes the field behind it without a
 z-buffer. Within a layer the coverage-weighted contributions are accumulated (order-independent),
 which for a line bundle reads better than a strict painter's overwrite.
+
+Each segment between consecutive vertices is drawn as a straight pixel line. With the perspective
+camera, a line can pass beside or behind the observer. A segment with an end that has no image
+position is dropped. A segment whose ends lie more than half the frame apart is dropped too. Under
+the ARC projection, such a segment passes close to the observer, and its straight pixel line would
+cross the frame in the wrong place. Under TAN, the rule bounds the sampling cost of segments that
+reach far outside the frame.
 """
 
 from __future__ import annotations
@@ -31,12 +39,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from astropy import units as u
 
 from qorona.accel import apply_workers
 from qorona.console import status
 from qorona.field.base import Field
-from qorona.geometry.camera import OrthographicCamera
+from qorona.geometry.camera import Camera, PerspectiveCamera
 from qorona.trace import (
     DEFAULT_TURN_GUARD,
     Endpoint,
@@ -115,7 +122,7 @@ class FieldLineImage:
 
 def render_field_lines(
     field: Field,
-    camera: OrthographicCamera,
+    camera: Camera,
     *,
     seeding: str = "limb",
     n_seeds: int = 1500,
@@ -145,15 +152,15 @@ def render_field_lines(
         The magnetic field to trace (a real :class:`~qorona.field.sampled.SampledField` or an
         analytic field).
     camera
-        The orthographic plane-of-sky camera (shared with the Q⊥ render).
+        The orthographic or perspective camera (shared with the Q⊥ render).
     seeding
         ``"limb"`` (front short loops + a limb ring; the eclipse-like look) or ``"uniform"``
         (a full-sphere Fibonacci spiral; every line).
     n_seeds
-        Fibonacci seed budget over the sphere: the whole set in ``uniform``; the near-hemisphere
-        source of the short front loops in ``limb``.
+        Fibonacci seed budget over the sphere: the whole set in ``uniform``; on the observer-facing
+        cap, the source of the short front loops in ``limb``.
     limb_seeds
-        Seeds around the limb great circle, the open fan (``limb`` seeding only).
+        Seeds around the limb circle, the open fan (``limb`` seeding only).
     front_loop_length
         Total arc length (R☉) below which a near-side closed loop counts as a short front loop
         (``limb`` seeding only).
@@ -207,11 +214,10 @@ def render_field_lines(
         keep = _keep_lines(lines, seeding, n_front, front_loop_length, show)
         kept_paths = [lines.paths[i] for i in np.nonzero(keep)[0]]
         kept_colours = _line_colours(colour, field, lines, keep, inner_radius, outer_radius)
-        shape = camera.pixels
         disk = (
-            _magnetogram_disk(shape, camera, field, inner_radius)
+            _magnetogram_disk(camera, field, inner_radius)
             if magnetogram
-            else _flat_disk(shape, camera, inner_radius)
+            else _flat_disk(camera, inner_radius)
         )
         image = _draw(
             kept_paths,
@@ -238,33 +244,22 @@ def render_field_lines(
 
 
 def _build_seeds(
-    seeding: str, n_seeds: int, limb_seeds: int, inner_radius: float, camera: OrthographicCamera
+    seeding: str, n_seeds: int, limb_seeds: int, inner_radius: float, camera: Camera
 ) -> tuple[np.ndarray, int]:
     """Return ``(seeds, n_front)`` for the chosen strategy.
 
-    ``n_front`` is the count of leading near-hemisphere seeds (the short-loop source) in ``limb``
-    seeding; for ``uniform`` it spans every seed and is unused downstream.
+    ``limb`` seeding stacks the Fibonacci seeds on the observer-facing cap (the short-loop source)
+    on top of ``limb_seeds`` seeds on the limb. The limb seeds are evenly spaced on the limb circle
+    of the inner sphere, nudged just inside the domain. Open lines rooted on the limb radiate around
+    the disk edge as the clean fan. ``n_front`` is the count of leading cap seeds. For ``uniform``,
+    it spans every seed and is unused downstream.
     """
     fibonacci = fibonacci_seeds(n_seeds, inner_radius)
     if seeding == "uniform":
         return fibonacci, fibonacci.shape[0]
-    look = camera._basis()[0]
-    front = fibonacci[fibonacci @ look > 0.0]  # observer-facing hemisphere
-    ring = _limb_ring(limb_seeds, inner_radius, camera)
+    front = fibonacci[camera.faces_observer(fibonacci)]
+    ring = camera.limb(inner_radius * (1.0 + _DOMAIN_MARGIN), limb_seeds)
     return np.vstack([front, ring]), front.shape[0]
-
-
-def _limb_ring(n_seeds: int, inner_radius: float, camera: OrthographicCamera) -> np.ndarray:
-    """Return ``(n_seeds, 3)`` seeds evenly spaced on the limb, the plane-of-sky great circle.
-
-    The limb is the circle on the inner sphere where the line of sight grazes the photosphere; it is
-    spanned by the camera's image-right and image-up axes. Open lines rooted here radiate outward
-    around the disk edge, giving the clean fan.
-    """
-    _, right, up = camera._basis()
-    phi = np.linspace(0.0, 2.0 * np.pi, n_seeds, endpoint=False)
-    ring = np.cos(phi)[:, None] * right + np.sin(phi)[:, None] * up
-    return ring * (inner_radius * (1.0 + _DOMAIN_MARGIN))
 
 
 def _keep_lines(
@@ -273,7 +268,7 @@ def _keep_lines(
     """Return the ``(n,)`` bool mask of lines to draw.
 
     ``uniform`` keeps every complete line (filtered by ``show``). ``limb`` keeps only short closed
-    loops from the near-hemisphere seeds and every complete limb-ring line, then applies ``show``.
+    loops from the observer-facing seeds and every complete limb-ring line, then applies ``show``.
     """
     base = _show_mask(lines, show)
     if seeding == "uniform":
@@ -377,7 +372,7 @@ def _clip_radius(points: np.ndarray, inner_radius: float, outer_radius: float) -
 def _draw(
     paths: list[np.ndarray],
     colours: np.ndarray,
-    camera: OrthographicCamera,
+    camera: Camera,
     *,
     disk_layer: tuple[np.ndarray, np.ndarray],
     outer_radius: float,
@@ -387,9 +382,9 @@ def _draw(
     """Project the field-line ``paths`` and draw them over the ``disk_layer`` into a uint8 image.
 
     Each path's vertices are projected once; consecutive vertices form segments carrying the line's
-    colour and a depth-faded alpha. Segments split into far (behind the plane of sky) and near
-    layers; the canvas is built far-layer → disk → near-layer so the disk occludes the field behind
-    it.
+    colour and a depth-faded alpha. Segments split into far (beyond their line of sight's
+    closest-approach point, ``s < 0``) and near layers. The canvas is built far-layer → disk →
+    near-layer, so the disk occludes the field behind it.
     """
     height, width = camera.pixels
     canvas = np.empty((height, width, 3), dtype=np.float64)
@@ -434,7 +429,7 @@ def _select(segments: _Segments, mask: np.ndarray | slice) -> _Segments:
 def _build_segments(
     paths: list[np.ndarray],
     colours: np.ndarray,
-    camera: OrthographicCamera,
+    camera: Camera,
     outer_radius: float,
     depth_fade: float,
 ) -> _Segments:
@@ -442,8 +437,9 @@ def _build_segments(
 
     Vertices of all kept paths are concatenated and projected in one call; a segment joins each
     vertex to the next within the same path (the last vertex of each path starts no segment). Paths
-    with fewer than two vertices contribute no segment and are dropped first. The depth-faded alpha
-    dims far-side segments by up to ``depth_fade``.
+    with fewer than two vertices contribute no segment and are dropped first. Segments that do not
+    draw as a straight pixel line are dropped next (:func:`_straight_segments`). The
+    depth-faded alpha dims far-side segments by up to ``depth_fade``.
     """
     kept = [(path, colour) for path, colour in zip(paths, colours, strict=True) if len(path) >= 2]
     if not kept:
@@ -458,6 +454,7 @@ def _build_segments(
     is_last = np.zeros(vertices.shape[0], dtype=bool)
     is_last[np.cumsum(counts) - 1] = True
     start = np.nonzero(~is_last)[0]
+    start = start[_straight_segments(camera, cols, rows, start)]
     end = start + 1
 
     mean_depth = 0.5 * (depth[start] + depth[end])
@@ -472,6 +469,27 @@ def _build_segments(
         alpha=alpha,
         depth=mean_depth,
     )
+
+
+def _straight_segments(
+    camera: Camera, cols: np.ndarray, rows: np.ndarray, start: np.ndarray
+) -> np.ndarray:
+    """Return the mask of the segments ``start → start + 1`` that draw as straight pixel lines.
+
+    A segment with an end that has no image position (``NaN`` from the projection) is dropped. With
+    the perspective camera, a segment whose ends are more than half the frame apart is dropped too.
+    Under ARC such a segment passes close to the observer, where the image of a straight segment is
+    far from a straight pixel line. TAN images a straight segment as a straight line, so there the
+    rule only bounds the sampling cost of segments that reach far outside the frame. The
+    orthographic projection is linear, so it keeps every finite segment.
+    """
+    end = start + 1
+    placed = np.isfinite(cols) & np.isfinite(rows)
+    straight = placed[start] & placed[end]
+    if isinstance(camera, PerspectiveCamera):
+        span = np.hypot(cols[end] - cols[start], rows[end] - rows[start])
+        straight &= span <= 0.5 * max(camera.pixels)  # a NaN span compares False
+    return straight
 
 
 def _rasterise(
@@ -560,38 +578,38 @@ def _splat_chunk(
 # --- Disk layers -------------------------------------------------------------------------------
 
 
-def _flat_disk(
-    shape: tuple[int, int], camera: OrthographicCamera, inner_radius: float
-) -> tuple[np.ndarray, np.ndarray]:
+def _flat_disk(camera: Camera, inner_radius: float) -> tuple[np.ndarray, np.ndarray]:
     """Return the premultiplied flat-occulter disk layer ``(C, A)``: a filled, 1 px-feathered
-    circle of radius ``inner_radius`` centred on the projected Sun centre."""
-    alpha = _disk_alpha(shape, camera, inner_radius)
+    image of the sphere of radius ``inner_radius``."""
+    alpha = _disk_alpha(camera, inner_radius)
     return alpha[:, :, None] * np.array(_FLAT_DISK_COLOUR), alpha
 
 
 def _magnetogram_disk(
-    shape: tuple[int, int], camera: OrthographicCamera, field: Field, inner_radius: float
+    camera: Camera, field: Field, inner_radius: float
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return the premultiplied magnetogram disk layer ``(C, A)``: the near-hemisphere ``B_r``.
+    """Return the premultiplied magnetogram disk layer ``(C, A)``: the near-side ``B_r``.
 
     For each disk pixel the near-side intersection of its line of sight with the inner sphere is
     found, ``B·r̂`` sampled there from the data, and mapped through a diverging red (outward) / white
     (quiet) / blue (inward) scale saturated at the |B_r| percentile :data:`_MAGNETOGRAM_PERCENTILE`.
     """
-    height, width = shape
-    look, right, up = camera._basis()
-    pixel_scale = camera.fov.to_value(u.R_sun) / width
-    alpha = _disk_alpha(shape, camera, inner_radius)
+    height, width = camera.pixels
+    alpha = _disk_alpha(camera, inner_radius)
     inside = alpha > 0.0
     if not inside.any():  # disk smaller than a pixel (very wide FOV / tiny inner radius)
         return np.zeros((height, width, 3)), alpha
 
-    rows, cols = np.mgrid[0:height, 0:width].astype(np.float64)
-    x = (cols[inside] - 0.5 * (width - 1)) * pixel_scale
-    y = (0.5 * (height - 1) - rows[inside]) * pixel_scale
-    rho = np.minimum(np.hypot(x, y), inner_radius * (1.0 - _DOMAIN_MARGIN))
-    depth = np.sqrt(inner_radius**2 - rho**2)  # near-side line-of-sight ∩ sphere
-    surface = x[:, None] * right + y[:, None] * up + depth[:, None] * look
+    # The lines of sight of the rows the disk covers. A ray with impact parameter rho meets the
+    # sphere's near side at s = +sqrt(R² - rho²). For the feathered edge pixels just outside the
+    # limb, rho is clamped.
+    covered = np.nonzero(inside.any(axis=1))[0]
+    first, last = int(covered[0]), int(covered[-1]) + 1
+    rays = camera.ray_batch(first * width, last * width)
+    on_disk = inside[first:last].reshape(-1)
+    rho = np.minimum(rays.impact[on_disk], inner_radius * (1.0 - _DOMAIN_MARGIN))
+    depth = np.sqrt(inner_radius**2 - rho**2)
+    surface = rays.origins[on_disk] + depth[:, None] * rays.directions[on_disk]
     norm = np.linalg.norm(surface, axis=1, keepdims=True)
     surface *= (inner_radius * (1.0 + _DOMAIN_MARGIN)) / norm
 
@@ -614,14 +632,16 @@ def _magnetogram_disk(
     return colour, alpha
 
 
-def _disk_alpha(
-    shape: tuple[int, int], camera: OrthographicCamera, inner_radius: float
-) -> np.ndarray:
-    """Return the ``(H, W)`` 1 px-feathered coverage of the photosphere disk on the plane of sky."""
-    height, width = shape
-    radius_px = inner_radius / (camera.fov.to_value(u.R_sun) / width)
+def _disk_alpha(camera: Camera, inner_radius: float) -> np.ndarray:
+    """Return the ``(H, W)`` 1 px-feathered image coverage of the sphere of ``inner_radius``.
+
+    The disk's edge is the camera's limb circle. The coverage ramps from 1 to 0 across one pixel
+    centred on it.
+    """
+    height, width = camera.pixels
+    col0, row0, radius_px = camera.limb_circle(inner_radius)
     rows, cols = np.mgrid[0:height, 0:width]
-    dist = np.hypot(cols - 0.5 * (width - 1), rows - 0.5 * (height - 1))
+    dist = np.hypot(cols - col0, rows - row0)
     return np.clip(radius_px + 0.5 - dist, 0.0, 1.0)
 
 

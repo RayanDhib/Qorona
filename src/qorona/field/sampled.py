@@ -127,8 +127,19 @@ class SampledField(Field):
         requested = (*b_components, density_name) if density_name is not None else b_components
         components = resampler.resample(solution, grid, requested, show_progress=show_progress)
         b_padded = pad_field(np.stack([components[name] for name in b_components], axis=-1))
+        mean_molecular_weight = solution.metadata.mean_molecular_weight
         density = (
-            DensityVolume.from_grid_values(grid, components[density_name])
+            DensityVolume.from_grid_values(
+                grid,
+                components[density_name],
+                density_unit=solution.metadata.density_unit,
+                length_unit=solution.metadata.length_unit,
+                **(
+                    {}
+                    if mean_molecular_weight is None
+                    else {"mean_molecular_weight": mean_molecular_weight}
+                ),
+            )
             if density_name is not None
             else None
         )

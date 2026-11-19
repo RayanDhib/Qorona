@@ -1,8 +1,17 @@
 # Supported models
 
 Qorona is model-agnostic: each model and file format sits behind a common reader
-interface, so the whole pipeline runs on any solution once a reader exists. The model is
-inferred from the file extension; `--model` overrides the inference when needed.
+interface. The model is inferred from the file extension; `--model` overrides the inference when
+needed.
+
+| Model | Category | Input |
+|-------|----------|-------|
+| [COCONUT](#coconut) | corona | COOLFluiD `.CFmesh` (also `.xz`-compressed), Tecplot `.plt` |
+| [MAS](#mas) | corona | HDF4, one file per variable |
+| [Icarus](#icarus) | heliosphere | VTK `.vtu` |
+
+The [category](../heliospheric.md#the-solution-category) selects the internal shell and the render
+defaults.
 
 ## COCONUT
 
@@ -32,21 +41,17 @@ is unavailable and the CLI says so with an install hint.
 ## Icarus
 
 Icarus is an inner-heliosphere MHD model built on MPI-AMRVAC. Qorona reads its VTK `.vtu`
-snapshots, the format the model's own tooling exports: one self-describing file per snapshot,
-with the fields and coordinates carried in the file. Point any command at the `.vtu`:
+snapshots. Point any command at the `.vtu`:
 
 ```bash
 qorona info data/icarus_snapshot.vtu
 ```
 
-Icarus is Qorona's first *heliospheric* solution, and the whole run adapts to that: the internal
-shell and the render defaults follow the solution's far-from-the-surface scale rather than the
-coronal constants. Only single-level grids (uniform or radially stretched) are read; an adaptively
-refined (AMR) file is rejected with a clear error. See
-[Heliospheric solutions](../heliospheric.md) for the category concept, the derived defaults, and the
-two canonical views.
+Icarus is a *heliospheric* solution. Only single-level grids are read; an adaptively refined (AMR)
+file is rejected. See [Heliospheric solutions](../heliospheric.md) for the derived defaults, the
+two canonical views, the Icarus run settings and the grid support.
 
 ## Adding a model
 
-A new model or file format is added by writing a single reader against the common interface;
-tracing, the Q⊥ volume, and rendering are untouched. A contributor guide is planned.
+A new model or file format is added by writing a single reader against the common interface.
+A contributor guide is planned.

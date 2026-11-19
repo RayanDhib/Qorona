@@ -118,6 +118,7 @@ def _hydrostatic_profile(
     u: float = LIMB_DARKENING,
     crossover: float = ASYMPTOTIC_CROSSOVER,
     samples: int = _PROFILE_SAMPLES,
+    observer_limit: np.ndarray | None = None,
 ) -> np.ndarray:
     """Line-of-sight brightness of a hydrostatic ``Nₑ ∝ 10^(exponent/r)`` corona at ``rho``.
 
@@ -129,27 +130,42 @@ def _hydrostatic_profile(
     spurious radial trend from mismatched limits (the untruncated integral would converge
     regardless: the single-electron coefficients fall off with the Sun's solid angle). Relative
     units, like the frames themselves.
+
+    ``observer_limit`` mirrors the other limit of a perspective frame. It is ``(n,)``, the
+    observer's position ``s`` on each ray (measured from the closest approach, positive toward the
+    observer), where the integral stops. ``None`` integrates the whole chord through the shell.
     """
     rho = np.atleast_1d(np.asarray(rho, dtype=np.float64))
     table = build_coefficient_table(r_inner, r_outer, u=u, crossover=crossover)
+
+    def half_line(extent: np.ndarray) -> np.ndarray:
+        """Integrate from the closest approach out to ``|s| = extent`` (one side of the ray)."""
+        s = extent[:, None] * np.linspace(0.0, 1.0, samples)[None, :]
+        radius = np.sqrt(rho[:, None] ** 2 + s**2)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            c_tan, c_pol = table.evaluate(radius)
+        sin_sq_chi = np.divide(
+            rho[:, None] ** 2, radius**2, out=np.zeros_like(radius), where=radius > 0.0
+        )
+        # The r_inner floor only guards the 10**x overflow at tiny radii; those samples sit inside
+        # the shell's inner boundary and are zeroed by the mask below.
+        density = 10.0 ** (exponent / np.maximum(radius, r_inner))
+        if component == "polarized":
+            integrand = density * c_pol * sin_sq_chi
+        else:
+            integrand = density * (2.0 * c_tan - c_pol * sin_sq_chi)
+        integrand = np.where(radius >= r_inner, integrand, 0.0)
+        return np.trapezoid(integrand, s, axis=1)
+
     s_max = np.sqrt(np.clip(r_outer**2 - rho**2, 0.0, None))
-    s = s_max[:, None] * np.linspace(0.0, 1.0, samples)[None, :]
-    radius = np.sqrt(rho[:, None] ** 2 + s**2)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        c_tan, c_pol = table.evaluate(radius)
-    sin_sq_chi = np.divide(
-        rho[:, None] ** 2, radius**2, out=np.zeros_like(radius), where=radius > 0.0
-    )
-    # The r_inner floor only guards the 10**x overflow at tiny radii; those samples sit inside the
-    # shell's inner boundary and are zeroed by the mask below.
-    density = 10.0 ** (exponent / np.maximum(radius, r_inner))
-    if component == "polarized":
-        integrand = density * c_pol * sin_sq_chi
-    else:
-        integrand = density * (2.0 * c_tan - c_pol * sin_sq_chi)
-    integrand = np.where(radius >= r_inner, integrand, 0.0)
-    # The integrand is even in s, so the half line doubled is the full line-of-sight integral.
-    return 2.0 * np.trapezoid(integrand, s, axis=1)
+    if observer_limit is None:
+        # The integrand is even in s, so the half line doubled is the full line-of-sight integral.
+        return 2.0 * half_line(s_max)
+    # The far side runs from -s_max to 0. The near side adds the stretch from 0 to the observer.
+    # When the observer is past the closest approach, the near side subtracts the stretch between
+    # the observer and 0 instead.
+    reach = np.clip(np.asarray(observer_limit, dtype=np.float64), -s_max, s_max)
+    return half_line(s_max) + np.sign(reach) * half_line(np.abs(reach))
 
 
 def newkirk_profile(
@@ -161,6 +177,7 @@ def newkirk_profile(
     u: float = LIMB_DARKENING,
     crossover: float = ASYMPTOTIC_CROSSOVER,
     samples: int = _PROFILE_SAMPLES,
+    observer_limit: np.ndarray | None = None,
 ) -> np.ndarray:
     """Line-of-sight brightness of the Newkirk background corona at impact parameters ``rho``.
 
@@ -180,6 +197,9 @@ def newkirk_profile(
         The limb darkening and coefficient crossover the data frame was built with.
     samples
         Quadrature samples along the half line of sight.
+    observer_limit
+        ``(n,)`` the perspective observer's position ``s`` on each ray, where the integral stops,
+        or ``None`` (the orthographic camera) for the whole chord.
 
     Returns
     -------
@@ -195,6 +215,7 @@ def newkirk_profile(
         u=u,
         crossover=crossover,
         samples=samples,
+        observer_limit=observer_limit,
     )
 
 
@@ -208,6 +229,8 @@ def newkirk_vignette(
     reference_radius: float,
     u: float = LIMB_DARKENING,
     crossover: float = ASYMPTOTIC_CROSSOVER,
+    observer_distance: float | None = None,
+    observer_limit: np.ndarray | None = None,
 ) -> np.ndarray:
     """Divide ``image`` by the Newkirk background corona's brightness at each pixel's radius.
 
@@ -234,20 +257,48 @@ def newkirk_vignette(
         Radius (R☉) of unit transmission.
     u, crossover
         The limb darkening and coefficient crossover the frame was built with.
+    observer_distance, observer_limit
+        A perspective frame's observer distance (R☉) and ``(H, W)`` per-pixel observer position
+        ``s``. Pass both or neither. With both, the model curve stops at the observer, like the
+        data. A ray within 90° of Sun centre has the observer beyond its closest approach
+        (``observer_limit >= 0``). A ray that looks farther away has the observer before its
+        closest approach. The same ``rho`` then has a shorter path, so each side gets its own curve.
 
     Returns
     -------
     numpy.ndarray
         ``(H, W)`` detrended frame.
     """
+    if (observer_distance is None) != (observer_limit is None):
+        raise ValueError("observer_distance and observer_limit go together; pass both or neither")
     nodes = np.linspace(0.0, float(np.max(impact)), _PROFILE_NODES)
-    profile = newkirk_profile(
-        nodes, component=component, r_inner=r_inner, r_outer=r_outer, u=u, crossover=crossover
-    )
+
+    def curve(limit: np.ndarray | None = None) -> np.ndarray:
+        return newkirk_profile(
+            nodes,
+            component=component,
+            r_inner=r_inner,
+            r_outer=r_outer,
+            u=u,
+            crossover=crossover,
+            observer_limit=limit,
+        )
+
+    if observer_distance is None or observer_limit is None:
+        profile = curve()
+        model = np.interp(impact, nodes, profile)
+    else:
+        chord = np.sqrt(np.clip(observer_distance**2 - nodes**2, 0.0, None))
+        profile = curve(chord)
+        beyond = curve(-chord)
+        model = np.where(
+            observer_limit >= 0.0,
+            np.interp(impact, nodes, profile),
+            np.interp(impact, nodes, beyond),
+        )
     reference = float(np.interp(min(reference_radius, nodes[-1]), nodes, profile))
     if reference <= 0.0:
         reference = float(profile.max()) if float(profile.max()) > 0.0 else 1.0
-    model = np.interp(impact, nodes, profile)
     with np.errstate(divide="ignore", invalid="ignore"):
         detrended = np.where(
             (model > 0.0) & (impact >= reference_radius), image * (reference / model), 0.0
@@ -488,10 +539,17 @@ def wow_enhance(
         raise ImportError(WOW_MISSING_HINT) from error
 
 
+#: The exponent of the PUNCH quicklook stretch (punchbowl ``data/visualize.py``).
+PUNCH_GAMMA = 1.0 / 2.2
+#: The percentile of the non-zero pixels that sets the top of the gamma stretch. PUNCH uses fixed
+#: limits for its own data; a model frame takes its limit from itself.
+PUNCH_UPPER_PERCENTILE = 99.0
+
+
 def stretch_frame(
     frame: np.ndarray,
     *,
-    scaling: Literal["linear", "log"] = "log",
+    scaling: Literal["linear", "log", "gamma"] = "log",
     percentiles: tuple[float, float] = (1.0, 99.5),
     valid: np.ndarray | None = None,
 ) -> np.ndarray:
@@ -501,8 +559,18 @@ def stretch_frame(
     for the flattened vignetted/MGN frames, logarithmic for the raw falloff, anchored on
     the positive pixels, or on the caller's ``valid`` corona mask for signed frames
     (whose non-valid pixels are blanked to 0 after the stretch).
+
+    ``"gamma"`` is the PUNCH quicklook stretch for the Level 3 treatment: from 0 to the
+    :data:`PUNCH_UPPER_PERCENTILE` of the non-zero pixels, raised to :data:`PUNCH_GAMMA`. It
+    ignores ``percentiles`` and ``valid``. Negative pixels show black.
     """
     arr = np.asarray(frame, dtype=float)
+    if scaling == "gamma":
+        signal = arr[np.isfinite(arr) & (arr != 0.0)]
+        upper = float(np.percentile(signal, PUNCH_UPPER_PERCENTILE)) if signal.size else 0.0
+        if upper <= 0.0:
+            return np.zeros(arr.shape)
+        return np.clip(np.nan_to_num(arr / upper), 0.0, 1.0) ** PUNCH_GAMMA
     flat = arr.reshape(-1)
     anchor = (flat > 0.0) if valid is None else np.asarray(valid, dtype=bool).reshape(-1)
     stretched = scale_intensity(flat[:, None], scaling, percentiles, anchor=anchor)[:, 0]
@@ -515,7 +583,7 @@ def save_pb_png(
     frame: np.ndarray,
     path: str | Path,
     *,
-    scaling: Literal["linear", "log"] = "log",
+    scaling: Literal["linear", "log", "gamma"] = "log",
     percentiles: tuple[float, float] = (1.0, 99.5),
     valid: np.ndarray | None = None,
 ) -> None:

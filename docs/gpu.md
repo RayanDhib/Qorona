@@ -16,13 +16,13 @@ qorona render ... --device cpu                      # force the CPU render path
   implementation and produce the same images.
 - `--precision mixed` (default) runs the field interpolation in float32 and everything else
   in float64, indistinguishable from the `float64` reference in the log-scaled image. `float32`
-  is an experimental fully-float32 paint variant. GPU-only knob; the CPU path always computes
+  is an experimental fully-float32 variant. GPU-only knob; the CPU path always computes
   in float64.
 - The render has the same two flags: its `--precision mixed` samples the volume in float32 and
   accumulates in float64 (`float64` is the all-double reference;
   [`validation/render_parity.py`](https://github.com/RayanDhib/Qorona/blob/main/validation/render_parity.py)
   characterizes the agreement).
-- Device memory adapts to free VRAM (the Q⊥ accumulation tiles itself), so the same command
+- Device memory adapts to free VRAM, so the same command
   runs on small cards and at very high resolutions alike.
 - The resolved backend and precision are stamped into the volume's provenance and the
   end-of-run summary.

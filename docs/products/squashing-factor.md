@@ -75,3 +75,14 @@ tune it.
 qorona render data/coconut_corona.qor -o data/composite.png \
     --fov 8 --longitude 317 --latitude 6.2 --occult composite
 ```
+
+## References
+
+- Mikić, Z., et al. 2018, *Nature Astronomy*, 2, 913. The line-of-sight rendering of the
+  squashing factor for eclipse comparison, and the large- and small-field-of-view depth
+  weightings used by `--preset`.
+  [doi:10.1038/s41550-018-0562-5](https://doi.org/10.1038/s41550-018-0562-5)
+- Titov, V. S. 2007, *The Astrophysical Journal*, 660, 863. The perpendicular squashing
+  factor Q⊥. [doi:10.1086/512671](https://doi.org/10.1086/512671)
+- Dhib, R., et al. 2026, *The Astrophysical Journal*. The Qorona method and its validation.
+  [doi:10.3847/1538-4357/aea841](https://doi.org/10.3847/1538-4357/aea841)

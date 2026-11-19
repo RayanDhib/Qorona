@@ -7,7 +7,8 @@ render backends and prints their agreement against the single-threaded NumPy ref
     (a) large-fov eclipse: the angular Gaussian and radial-power weights;
     (b) small-fov opaque at a fine step: scale-height weights and the in-integral body mask;
     (c) polarity hue: the nearest-cell polarity channel;
-    (d) Thomson K: the density gather and the radial coefficient table.
+    (d) Thomson K: the density gather and the radial coefficient table;
+    (e) perspective, observer inside the domain: per-ray directions and the observer limit.
 
 Report-only: prints max / p99 relative differences over finite pixels for the result arrays
 (signal, coverage, grayscale, image, polarity) and asserts nothing; the float64 column shows the
@@ -25,7 +26,7 @@ import numpy as np
 from astropy import units as u
 
 from qorona.field.density import DensityVolume
-from qorona.geometry.camera import OrthographicCamera
+from qorona.geometry.camera import Camera, OrthographicCamera, PerspectiveCamera
 from qorona.radiation.thomson import ThomsonWeight
 from qorona.render.los import LARGE_FOV, SMALL_FOV, _render_numpy, render
 from qorona.resample.grid import LogarithmicSpacing, SphericalGrid
@@ -34,6 +35,14 @@ from qorona.squashing.volume import QPerpVolume, _pack_volume
 _GRID = SphericalGrid(LogarithmicSpacing(1.0, 3.0), n_r=48, n_theta=72, n_phi=144)
 _CAMERA = OrthographicCamera.from_sub_observer(
     longitude=20.0, latitude=10.0, fov=6.5 * u.R_sun, pixels=(192, 192)
+)
+#: A perspective view from inside the 3 R_sun shell, so every line of sight stops at the observer.
+_INSIDE_CAMERA = PerspectiveCamera.from_sub_observer(
+    longitude=20.0,
+    latitude=10.0,
+    observer_distance=2.5 * u.R_sun,
+    fov=100.0 * u.deg,
+    pixels=(192, 192),
 )
 #: The fixed render knobs shared by every case (the defaults of :func:`qorona.render.los.render`).
 _COMMON: dict[str, Any] = {
@@ -112,21 +121,25 @@ def _compare(name: str, reference: Any, candidate: Any, threshold: float) -> str
 
 def main() -> None:
     volume = _synthetic_volume()
-    cases: list[tuple[str, dict[str, Any]]] = [
+    cases: list[tuple[str, Camera, dict[str, Any]]] = [
         (
             "(a) large-fov eclipse",
+            _CAMERA,
             {"preset": LARGE_FOV, "occult": "eclipse", "step": 0.02},
         ),
         (
             "(b) small-fov opaque",
+            _CAMERA,
             {"preset": SMALL_FOV, "occult": "opaque", "step": 0.005},
         ),
         (
             "(c) polarity hue",
+            _CAMERA,
             {"preset": LARGE_FOV, "occult": "eclipse", "step": 0.02, "polarity_mode": "hue"},
         ),
         (
             "(d) thomson K",
+            _CAMERA,
             {
                 "preset": LARGE_FOV,
                 "occult": "eclipse",
@@ -134,14 +147,19 @@ def main() -> None:
                 "thomson": _synthetic_thomson(),
             },
         ),
+        (
+            "(e) perspective inside",
+            _INSIDE_CAMERA,
+            {"preset": LARGE_FOV, "occult": "opaque", "step": 0.02, "polarity_mode": "hue"},
+        ),
     ]
-    for label, case in cases:
+    for label, camera, case in cases:
         case_kw = {**_COMMON, **case}
         print(label)
-        reference = _render_numpy(volume, _CAMERA, chunk_size=500_000, **case_kw)
-        cpu = render(volume, _CAMERA, device="cpu", **case_kw)
-        gpu64 = render(volume, _CAMERA, device="gpu", precision="float64", **case_kw)
-        mixed = render(volume, _CAMERA, device="gpu", precision="mixed", **case_kw)
+        reference = _render_numpy(volume, camera, chunk_size=500_000, **case_kw)
+        cpu = render(volume, camera, device="cpu", **case_kw)
+        gpu64 = render(volume, camera, device="gpu", precision="float64", **case_kw)
+        mixed = render(volume, camera, device="gpu", precision="mixed", **case_kw)
         print(_compare("numba-cpu", reference, cpu, 1e-9))
         print(_compare("cuda float64", reference, gpu64, 1e-6))
         print(_compare("cuda mixed", reference, mixed, 1e-4))

@@ -12,6 +12,10 @@ volume baked with one): it sets the observation time the file is registered at.
 
 ## FITS rasters
 
+```bash
+qorona render data/coconut_corona.qor -o data/earth.png --fov 8 --observer earth --export fits
+```
+
 `--export fits` writes the quantitative frame beside the PNG: `render` stores the
 LOS-averaged log₁₀ Q⊥ (float32), `wl` the display frame plus the raw pB/total frames as
 extensions. Drop the file into JHelioviewer and it registers at the correct scale,
@@ -27,6 +31,11 @@ analysis. The run's full provenance rides in the FITS header.
 
 ## Field lines as SunJSON
 
+```bash
+qorona export-lines data/coconut_corona.CFmesh.xz -o data/coconut_fieldlines.json \
+    --timestamp 2025-10-09T18:19:52 --frame carrington --seeds 40 80
+```
+
 SunJSON is the geometry format of JHelioviewer's Connection Layer: drop the `.json` onto a
 running JHelioviewer and the bundle appears in 3-D, at its timestamp on the timeline. Lines
 carry the polarity palette of the [field-line view](products/fieldlines.md) (open warm/cool
@@ -38,11 +47,6 @@ by inner-foot B_r sign, closed neutral grey) and an `open`/`closed` topology tag
 - `qorona export-lines`: a self-contained full trace on a uniform longitude/latitude seed
   grid (`--seeds N_THETA N_PHI`, default 100x100; `--seed-radius` moves the seed sphere);
   no camera involved.
-
-```bash
-qorona export-lines data/coconut_corona.CFmesh.xz -o data/coconut_fieldlines.json \
-    --timestamp 2025-10-09T18:19:52 --seeds 40 80
-```
 
 ## The solution frame
 

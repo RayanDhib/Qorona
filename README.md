@@ -49,8 +49,8 @@ details.
 
 The quickstart data, `coconut_corona.CFmesh.xz` (~165 MB, an example COCONUT solution), is a
 [release asset](https://github.com/RayanDhib/Qorona/releases/tag/v0.4.0): download it into `data/`.
-The pipeline splits at its natural cost seam: build the viewpoint-independent Q⊥ volume once,
-then render any number of viewpoints off it in seconds.
+Build the viewpoint-independent Q⊥ volume once, then render any number of viewpoints off it in
+seconds.
 
 ```bash
 # 1. Inspect a solution (model, mesh, variables, boundaries), no rendering.
@@ -70,19 +70,18 @@ qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 31
 
 ## How it works
 
-Four stages behind clean interfaces: read and resample the native solution onto an internal
+Four stages: read and resample the native solution onto an internal
 spherical grid; trace field lines and transport deviation vectors along them; assemble the
 squashing factor Q⊥ into a viewpoint-independent volume (cached to a dependency-free `.qor`);
-integrate log₁₀ Q⊥ along the line of sight on a plane-of-sky camera.
+integrate log₁₀ Q⊥ along the line of sight. The camera is orthographic (plane of sky) or
+perspective.
 
 ## Supported models
 
-Qorona is model-agnostic: each model and file format sits behind a common reader
-interface, so the whole pipeline runs on any solution once a reader exists. Currently supported:
 **COCONUT** ([COOLFluiD](https://github.com/andrealani/COOLFluiD) `.CFmesh`, Tecplot `.plt`),
 **[MAS](https://www.predsci.com/)** (HDF4), and **Icarus** (MPI-AMRVAC heliospheric `.vtu`;
-Verbeke et al. 2022; Baratashvili et al. 2025). A contributor guide for adding a reader is
-planned.
+Verbeke et al. 2022; Baratashvili et al. 2025). See
+[Supported models](https://rayandhib.github.io/Qorona/getting-started/supported-models/).
 
 ## Citing
 

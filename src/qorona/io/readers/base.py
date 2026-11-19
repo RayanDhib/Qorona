@@ -28,7 +28,8 @@ __all__ = [
 class SolutionReader(ABC):
     """Base class for model-specific solution readers.
 
-    Subclasses set the class attributes below and implement :meth:`read`.
+    Subclasses set the class attributes below and implement :meth:`read`. The physical units and
+    the composition of the solution go on its :class:`~qorona.io.native.SolutionMetadata`.
 
     Attributes
     ----------

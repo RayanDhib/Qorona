@@ -17,6 +17,8 @@ Two numerical details are load-bearing:
 - **The weighting is a relative shape.** Because the render forms a weight-*normalised* average, any
   constant prefactor on the weight cancels, so the single-electron prefactor (and any absolute
   electron-density calibration) is dropped; only the ``r``- and ``χ̄``-dependent shape is kept.
+  The absolute white-light brightness restores the prefactor once, at the end
+  (:func:`msb_prefactor`).
 
 The per-sample weight a render applies is the product ``Nₑ(point) · I(r, χ̄)`` with ``I = I_tot``
 for the ``"K"`` (total-brightness emphasis) mode and ``I = I_pol`` for the ``"pB"`` (polarized,
@@ -36,6 +38,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
+from astropy import constants, units
 
 from qorona.field.density import DensityVolume
 
@@ -47,6 +50,7 @@ __all__ = [
     "build_coefficient_table",
     "intensity_coefficients",
     "minnaert_coefficients",
+    "msb_prefactor",
 ]
 
 #: Scattering mode of the Thomson weight / brightness product.
@@ -142,6 +146,22 @@ def intensity_coefficients(
     c_tan = (1.0 - u) * c + u * d
     c_pol = (1.0 - u) * a + u * b
     return c_tan, c_pol
+
+
+def msb_prefactor(u: float = LIMB_DARKENING) -> float:
+    """Return the constant (m²) that turns an electron column weighted by these coefficients into
+    units of the mean solar brightness ``B☉``.
+
+    One electron scatters the polarized radiance ``(π r_e² / 2) L_c c_pol sin²χ``, with ``r_e`` the
+    classical electron radius and ``L_c`` the disk-centre radiance. Under linear limb darkening, the
+    disk's mean radiance is ``B☉ = L_c (1 - u/3)``. So
+    ``pB / B☉ = (π r_e² / 2) / (1 - u/3) · ∫ Nₑ c_pol sin²χ ds``, and the total brightness takes
+    the same constant. ``π r_e² / 2`` is ``3/16`` of the Thomson cross-section.
+    Far from the Sun, ``c_pol → (1 - u/3) (R☉/r)²``, so the constant reduces to the point-source
+    form ``(π r_e² / 2) (R☉/r)²``.
+    """
+    sigma_thomson = float(constants.sigma_T.to_value(units.m**2))
+    return 3.0 * sigma_thomson / 16.0 / (1.0 - u / 3.0)
 
 
 @dataclass(frozen=True)
