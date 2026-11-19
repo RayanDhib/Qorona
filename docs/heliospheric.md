@@ -11,7 +11,7 @@ Every command runs flag-free on a heliospheric solution. The examples use an Ica
 
 ```bash
 qorona info       data/icarus_snapshot.vtu
-qorona run        data/icarus_snapshot.vtu -o hcs_qperp.png
+qorona run        data/icarus_snapshot.vtu -o qperp_1au.png
 qorona build      data/icarus_snapshot.vtu -o icarus.qor
 qorona wl         data/icarus_snapshot.vtu -o wl.png
 qorona fieldlines data/icarus_snapshot.vtu -o lines.png
@@ -20,12 +20,20 @@ qorona qmap       icarus.qor -o hcs_map.png
 
 ## The two canonical views
 
-The default view is from 1 AU in the solar equatorial plane, as an Earth observer sees the Sun. It
-uses the [perspective camera](camera.md#two-cameras) with a field of view of 92.16 degrees, the
-width of a [PUNCH](punch.md) mosaic. Use this view to compare with wide-field heliospheric imagers:
+The default view is from 1 AU in the solar equatorial plane, at longitude 0 of the solution
+frame. It uses the [perspective camera](camera.md#two-cameras) with a field of view of 92.16
+degrees, the width of a [PUNCH](punch.md) mosaic:
 
 ```bash
 qorona wl data/icarus_snapshot.vtu -o wl_1au.png
+```
+
+For the view from Earth at the snapshot time, add `--observer earth` and the
+[run settings](#icarus-run-settings) of your run:
+
+```bash
+qorona wl data/icarus_snapshot.vtu -o wl_earth.png --observer earth \
+    --magnetogram-time 2025-09-10T00:04:00 --relaxation 0
 ```
 
 The top-down overview looks down from solar north, so the equatorial plane fills the frame. The
@@ -39,6 +47,9 @@ qorona run data/icarus_snapshot.vtu -o hcs_qperp.png --projection orthographic
 `--fov` needs `--projection orthographic`. Set the width of the default view with `--fov-deg`.
 
 ## Icarus run settings
+
+An Icarus snapshot is in the Icarus frame: a frame that turns with the Sun, with a sidereal period
+of 24.47 days. The run settings fix where Earth is in that frame at the snapshot time.
 
 Some features need the run settings of an Icarus snapshot: `--observer`, `--export fits`, and the
 SunJSON output of `fieldlines --export sunjson` and `export-lines`. Give `--par`, or

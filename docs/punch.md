@@ -30,6 +30,9 @@ qorona wl data/coconut_corona.CFmesh.xz -o coconut_nfi.png --instrument punch-nf
 python compare_punch.py coconut_nfi.fits PUNCH_L3_CNN_20251009181621_v0m.fits
 ```
 
+Expect one warning in this example: the NFI frame reaches past the 25 solar radii shell of the
+solution (see [The two frames](punch-details.md#the-two-frames)).
+
 | Flag | Use |
 |------|-----|
 | `--instrument` | The frame of the PUNCH file: `punch-mosaic` for PAM and CAM, `punch-nfi` for CNN. |

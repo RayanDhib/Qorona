@@ -15,8 +15,8 @@ qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 31
   sub-observer point.
 - `--roll`: rotation about the line of sight, in degrees counter-clockwise as the observer sees it.
   At the default 0 the image is solar-north-up.
-- `--fov` or `--fov-deg`: the field of view, the full width of the image (see
-  [Two cameras](#two-cameras)).
+- `--fov` (solar radii) or `--fov-deg` (degrees): the field of view, the full width of the image
+  (see [Two cameras](#two-cameras)).
 
 The angles are read in the solution's own heliographic frame. In a **Carrington** frame (a run
 driven by a Carrington synoptic map), `--longitude 317` is Carrington longitude 317. In a
@@ -96,11 +96,11 @@ The FITS export registers the image in helioprojective coordinates (Thompson 200
 
 | Flag | Camera | Unit | Default |
 |------|--------|------|---------|
-| `--projection orthographic\|perspective` | both | | corona orthographic, heliosphere perspective |
+| `--projection` (`orthographic` or `perspective`) | both | | corona orthographic, heliosphere perspective |
 | `--fov` | orthographic | solar radii | corona 12.5 (`wl` 10), heliosphere 2 x outer radius |
 | `--fov-deg` | perspective | degrees, below 180 | heliosphere 92.16; a coronal perspective view must set it |
 | `--observer-distance` | perspective | AU | 1, or from `--observer` |
-| `--instrument punch-mosaic\|punch-nfi` | perspective | | none; see [Comparing with PUNCH](punch.md) |
+| `--instrument` (`punch-mosaic` or `punch-nfi`) | perspective | | none; see [Comparing with PUNCH](punch.md) |
 
 Each width flag belongs to one camera. These flag combinations stop the run with an error message:
 

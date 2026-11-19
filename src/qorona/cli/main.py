@@ -469,35 +469,20 @@ _cache_options = _compose(
 
 
 def _camera_options(
-    default_dimension: int = _DEFAULT_DIMENSION, default_fov: float | None = None
+    default_dimension: int = _DEFAULT_DIMENSION,
+    default_fov: float | None = None,
+    *,
+    instrument_in_short_help: bool = False,
 ) -> Callable[[Callable], Callable]:
     """The shared camera option group; the defaults state a command's image and FOV defaults.
 
     A ``None`` ``default_fov`` means the coronal orthographic FOV is the locked constant, stated as
     such in the ``--fov`` help. A concrete ``default_fov`` (the ``wl`` product's wider frame)
-    states its own number.
+    states its own number. ``instrument_in_short_help`` lists ``--instrument`` in the short help
+    (the ``wl`` command, where the PUNCH frames are used); elsewhere it is in ``--help-all``.
     """
     coronal_fov = f"{default_fov:g}" if default_fov is not None else "12.5"
     return _compose(
-        option(
-            "--projection",
-            type=click.Choice(CAMERA_PROJECTIONS),
-            default=None,
-            section="Camera",
-            help="Camera: orthographic (parallel lines of sight, field of view in R_sun) or "
-            "perspective (an observer at a finite distance, field of view in degrees) "
-            "(default: corona orthographic, heliosphere perspective).",
-        ),
-        option(
-            "--instrument",
-            type=click.Choice(tuple(CAMERA_INSTRUMENTS)),
-            default=None,
-            section="Camera",
-            help="Instrument frame of the perspective camera, as in the PUNCH Level 3 headers: "
-            'punch-mosaic (ARC, 0.0225°/px, 4096x4096) or punch-nfi (TAN, 30"/px, 2048x2048). '
-            "Selects the perspective camera on any input; --fov-deg, --width and --height "
-            "override the frame.",
-        ),
         option(
             "--longitude",
             type=float,
@@ -536,6 +521,26 @@ def _camera_options(
             help="Perspective field of view (full width) in degrees, below 180: the angle for ARC, "
             "the plate scale times the width for TAN (default: heliosphere 92.16, the PUNCH "
             "mosaic width; a coronal perspective view needs it).",
+        ),
+        option(
+            "--projection",
+            type=click.Choice(CAMERA_PROJECTIONS),
+            default=None,
+            section="Camera",
+            help="Camera: orthographic (parallel lines of sight, field of view in R_sun) or "
+            "perspective (an observer at a finite distance, field of view in degrees) "
+            "(default: corona orthographic, heliosphere perspective).",
+        ),
+        option(
+            "--instrument",
+            type=click.Choice(tuple(CAMERA_INSTRUMENTS)),
+            default=None,
+            section="Camera",
+            advanced=not instrument_in_short_help,
+            help="Instrument frame of the perspective camera, as in the PUNCH Level 3 headers: "
+            'punch-mosaic (ARC, 0.0225°/px, 4096x4096) or punch-nfi (TAN, 30"/px, 2048x2048). '
+            "Selects the perspective camera on any input; --fov-deg, --width and --height "
+            "override the frame.",
         ),
         option(
             "--width",
@@ -1170,6 +1175,11 @@ def _volume_config(kw: dict[str, Any], workers: int | None) -> VolumeConfig:
     return VolumeConfig(**fields)
 
 
+def _observer_label(kw: dict[str, Any]) -> str:
+    """The flag that set the observer, as the messages name it: ``--punch-l3`` sets Earth itself."""
+    return "--punch-l3" if kw.get("punch_l3") else f"--observer {kw['observer']}"
+
+
 def _observer_gate(kw: dict[str, Any], timestamp: str | None) -> None:
     """Reject ``--observer`` calls that conflict with manual pointing or lack an epoch.
 
@@ -1189,14 +1199,15 @@ def _observer_gate(kw: dict[str, Any], timestamp: str | None) -> None:
             f"--observer {observer} derives the observer distance from the ephemeris; "
             "drop --observer-distance, or drop --observer to place the observer manually"
         )
+    label = _observer_label(kw)
     if timestamp is None and kw.get("frame") == ICARUS_FRAME:
         raise click.UsageError(
-            f"--observer {observer}: an Icarus snapshot is in the Icarus frame, which needs the "
-            "run settings; pass --magnetogram-time and --relaxation (or --par)"
+            f"{label}: an Icarus snapshot is in the Icarus frame, which needs the run settings; "
+            "pass --magnetogram-time and --relaxation (or --par)"
         )
     if timestamp is None:
         raise click.UsageError(
-            f"--observer {observer} needs an epoch; pass --timestamp (or bake the volume with one)"
+            f"{label} needs an epoch; pass --timestamp (or bake the volume with one)"
         )
 
 
@@ -1232,7 +1243,7 @@ _FRAME_EXPORTS = {"fits": "the FITS export", "sunjson": "the SunJSON export"}
 def _frame_consumers(kw: dict[str, Any], output_cfg: OutputConfig) -> list[str]:
     """Name the requested features that depend on the solution frame: ``--observer`` and the
     ``fits`` / ``sunjson`` exports."""
-    consumers = [f"--observer {kw['observer']}"] if kw.get("observer") else []
+    consumers = [_observer_label(kw)] if kw.get("observer") else []
     consumers += [name for fmt, name in _FRAME_EXPORTS.items() if fmt in output_cfg.export_formats]
     return consumers
 
@@ -1670,7 +1681,8 @@ def main() -> None:
     eclipse-like imagery. Build the viewpoint-independent volume once with `build`, then render any
     number of viewpoints cheaply with `render`; `run` does both in one shot, `qmap` slices a
     fixed-radius Q⊥ shell, `fieldlines` draws the field-line view, `export-lines` serialises traced
-    lines to SunJSON for JHelioviewer, and `info` inspects a file.
+    lines to SunJSON for JHelioviewer, `wl` renders the white-light and polarized brightness, and
+    `info` inspects a file.
     """
     # Silence numba CUDA low-occupancy warnings from the one-seed warm-up and partial final chunks.
     try:
@@ -2336,7 +2348,7 @@ _INGEST_ONLY_KEYS = (
 @_composition_option
 @_grid_options
 @_brightness_options
-@_camera_options(_WL_DEFAULT_DIMENSION, _WL_DEFAULT_FOV)
+@_camera_options(_WL_DEFAULT_DIMENSION, _WL_DEFAULT_FOV, instrument_in_short_help=True)
 @_annotate_options
 @_workers_option
 @_quiet_option
