@@ -57,8 +57,8 @@ Save this script as `compare_punch.py`. It needs only NumPy, Astropy and Matplot
 Usage:  python compare_punch.py MODEL.fits PUNCH.fits [pb|total]
 
 MODEL.fits comes from `qorona wl --punch-l3 --export fits` with the instrument of the PUNCH file.
-The script writes MODEL_vs_punch.png: PUNCH, the treated model and the untreated model with the
-same display, and below them the median brightness of each ring of elongation.
+The script writes MODEL_vs_punch.png: PUNCH and the treated model with the same display, and below
+them the median brightness of each ring of elongation.
 """
 
 import sys
@@ -86,7 +86,6 @@ else:
 layer = "PB" if component == "pb" else "TOTAL"
 with fits.open(model_path) as hdus:
     treated = hdus[layer].data.astype(float)
-    full = hdus[f"{layer}_FULL"].data.astype(float)
     wcs = WCS(hdus[layer].header)
     if hdus[layer].header.get("BUNIT") != "2.009e+07 W/(m2 sr)":
         sys.exit("The model frames are relative, not in MSB; they cannot be compared with PUNCH.")
@@ -106,7 +105,7 @@ def blocks(image):
         return np.where(count > n * n // 2, total / count, np.nan)
 
 
-images = {"PUNCH": blocks(punch), "treated": blocks(treated), "untreated": blocks(full)}
+images = {"PUNCH": blocks(punch), "model": blocks(treated)}
 
 # Elongation: the angle at the observer between Sun centre and the pixel.
 centres = np.arange(512) * n + (n - 1) / 2
@@ -130,12 +129,11 @@ def ring_medians(image):
 # The PUNCH quicklook display: gamma 1/2.2 from 0 to the 99th percentile of the PUNCH pixels.
 norm = PowerNorm(gamma=1 / 2.2, vmin=0, vmax=np.percentile(images["PUNCH"][seen], 99))
 name = "pB" if component == "pb" else "total brightness"
-figure = plt.figure(figsize=(17, 10.5))
-grid = figure.add_gridspec(2, 3, height_ratios=(1, 0.55), hspace=0.25, wspace=0.06)
+figure = plt.figure(figsize=(12, 9))
+grid = figure.add_gridspec(2, 2, height_ratios=(1, 0.55), hspace=0.25, wspace=0.06)
 titles = {
     "PUNCH": f"PUNCH L3 {product} {name}, {date}",
-    "treated": f"Model {name}, PUNCH L3 treatment",
-    "untreated": f"Model {name}, full K corona",
+    "model": f"Model {name}, PUNCH L3 treatment",
 }
 for column, key in enumerate(images):
     axes = figure.add_subplot(grid[0, column])
@@ -144,11 +142,10 @@ for column, key in enumerate(images):
     axes.set_axis_off()
 axes = figure.add_subplot(grid[1, :])
 middles = 0.5 * (edges[:-1] + edges[1:])
-styles = {"PUNCH": ("black", "-"), "treated": ("tab:red", "-"), "untreated": ("tab:red", "--")}
-for key, (color, line) in styles.items():
+for key, color in {"PUNCH": "black", "model": "tab:red"}.items():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # empty or negative rings are not drawn
-        axes.semilogy(middles, ring_medians(images[key]), color=color, ls=line, label=titles[key])
+        axes.semilogy(middles, ring_medians(images[key]), color=color, label=titles[key])
 axes.set_xlabel("elongation (degrees)")
 axes.set_ylabel(f"{name}, median of each ring (MSB)")
 axes.grid(True, which="both", alpha=0.3)
@@ -167,10 +164,9 @@ figure.savefig(output, dpi=100, bbox_inches="tight")
 print(output)
 ```
 
-The figure shows three images with the same display: PUNCH, the treated model (with the Level 3
-treatment) and the untreated model (the full K corona). Below them, a profile gives the median
-brightness in each ring of elongation. Compare the treated model with PUNCH. The untreated model
-shows what the treatment removes.
+The figure shows PUNCH and the model with the Level 3 treatment, with the same display. Below them,
+a profile gives the median brightness in each ring of elongation. The model without the treatment
+(the full K corona) is in the `PB_FULL` and `TOTAL_FULL` extensions of the FITS file.
 
 The profile uses rings of elongation: 1 degree for the mosaics, 0.25 degree for NFI. Elongation is
 the angle at the observer between the line to Sun centre and the line to the point. From Earth, a
