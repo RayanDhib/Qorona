@@ -1,10 +1,13 @@
 # Field lines
 
-A traced field-line view of the solution: a bundle of lines drawn in projection over the
-photosphere disk. The default look follows an eclipse photograph: the open fan seeded on the
-limb, short closed loops on the front face, lines coloured by the polarity of their inner
-foot, and the disk rendered as a B_r magnetogram from the data. Self-contained: it traces the
-field directly and does not use a built volume.
+A view of traced field lines over the solar disk. The default view looks like an eclipse
+photograph:
+
+- the open fan at the limb and short closed loops on the front;
+- lines coloured by the polarity of their inner foot;
+- a B_r magnetogram on the disk.
+
+`fieldlines` traces the solution file directly. It does not use a `.qor` volume.
 
 ![Field-line view of the COCONUT corona](../assets/fieldlines.png)
 
@@ -13,14 +16,17 @@ qorona fieldlines data/coconut_corona.CFmesh.xz -o data/fieldlines.png \
     --timestamp 2025-10-09T18:19:52 --fov 8 --longitude 317 --latitude 6.2 --seeds 1650
 ```
 
-## The flags that matter
+## Flags
 
-- `--seeding limb|uniform`: limb (front loops plus the open limb fan, the default) or a
-  uniform sphere; `--seeds` and `--limb-seeds` set the budgets.
-- `--colour polarity|rainbow`: line colour by inner-foot B_r sign (default) or per-line hue.
-- `--magnetogram / --no-magnetogram`: the B_r disk (default on).
-- `--show all|open|closed`: which lines to draw (default `all`).
-- `--depth-fade`: dim far-side lines by up to this fraction (default 0.4).
-- `--export sunjson`: also write exactly the drawn bundle as SunJSON beside the PNG (needs
-  `--timestamp`). See [Export to JHelioviewer](../jhelioviewer.md).
-- Camera flags are the same as the [squashing-factor render](squashing-factor.md).
+| Flag | Use | Default |
+|------|-----|---------|
+| `--seeding` | `limb` (front loops and the open fan at the limb) or `uniform` (a uniform sphere). | `limb` |
+| `--seeds` | The number of seeds: front loops (`limb`) or the full sphere (`uniform`). | 1500 |
+| `--limb-seeds` | The number of seeds around the limb, for the open fan. | 375 |
+| `--colour` | `polarity` (the sign of B_r at the inner foot) or `rainbow` (one hue for each line). | `polarity` |
+| `--magnetogram`, `--no-magnetogram` | Show or hide the B_r disk. | shown |
+| `--show` | `all`, `open` or `closed` lines. | `all` |
+| `--depth-fade` | Dim the far-side lines by up to this fraction. | 0.4 |
+| `--export sunjson` | Also write the drawn lines as SunJSON. See [Export to JHelioviewer](../jhelioviewer.md#field-lines-as-sunjson). | none |
+
+Camera flags: see [Camera and viewpoint](../camera.md).

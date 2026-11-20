@@ -58,7 +58,7 @@ qorona info data/coconut_corona.CFmesh.xz --timestamp 2025-10-09T18:19:52
 
 # 2. Build the viewpoint-independent Q⊥ volume once (the minutes-scale stage).
 qorona build data/coconut_corona.CFmesh.xz -o data/coconut_corona.qor \
-    --timestamp 2025-10-09T18:19:52 --outer-radius 8
+    --timestamp 2025-10-09T18:19:52 --frame carrington --outer-radius 8
 
 # 3. Render any number of viewpoints off that volume (seconds each).
 qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 317 --latitude 6.2
@@ -70,18 +70,17 @@ qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 31
 
 ## How it works
 
-Four stages: read and resample the native solution onto an internal
-spherical grid; trace field lines and transport deviation vectors along them; assemble the
-squashing factor Q⊥ into a viewpoint-independent volume (cached to a dependency-free `.qor`);
-integrate log₁₀ Q⊥ along the line of sight. The camera is orthographic (plane of sky) or
-perspective.
+1. Read the native solution and resample it onto an internal spherical grid.
+2. Trace the field lines and transport deviation vectors along them.
+3. Store the squashing factor Q⊥ in a volume that does not depend on the viewpoint (a `.qor` file).
+4. Integrate log₁₀ Q⊥ along the line of sight, with an orthographic or a perspective camera.
 
 ## Supported models
 
 **COCONUT** ([COOLFluiD](https://github.com/andrealani/COOLFluiD) `.CFmesh`, Tecplot `.plt`),
-**[MAS](https://www.predsci.com/)** (HDF4), and **Icarus** (MPI-AMRVAC heliospheric `.vtu`;
-Verbeke et al. 2022; Baratashvili et al. 2025). See
-[Supported models](https://rayandhib.github.io/Qorona/getting-started/supported-models/).
+**[MAS](https://www.predsci.com/)** (HDF4), and **Icarus** (MPI-AMRVAC heliospheric `.vtu`). See
+[Supported models](https://rayandhib.github.io/Qorona/getting-started/supported-models/) for the
+formats and the papers of each model.
 
 ## Citing
 

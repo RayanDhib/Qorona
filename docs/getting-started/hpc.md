@@ -2,43 +2,42 @@
 
 ## Install
 
-**With pip**, the released version into a plain virtual environment:
+Install Qorona from PyPI into a plain virtual environment:
 
 ```bash
-module purge            # optional; stops other modules leaking packages via PYTHONPATH
-module load python      # any Python >= 3.11, e.g. Python/3.12.3-GCCcore-13.3.0
+module purge            # optional: keeps packages of other modules out of PYTHONPATH
+module load python      # any Python >= 3.11, for example Python/3.12.3-GCCcore-13.3.0
 python -m venv ~/envs/qorona && source ~/envs/qorona/bin/activate
 pip install qorona
 ```
 
-**With conda**, the development version from source:
-
-```bash
-git clone https://github.com/RayanDhib/Qorona.git
-cd Qorona
-conda env create -f environment.yml
-conda activate qorona
-```
+For the development version, see [Installation](installation.md).
 
 ## Batch jobs
 
-Two flags are made for batch jobs: `--workers` pins the kernel threads to your allocation
-(numba otherwise takes every core it sees), and `--quiet` keeps job logs readable.
+| Flag | Use |
+|------|-----|
+| `--workers "$SLURM_CPUS_PER_TASK"` | Sets the number of threads to the cores of the job. Without it, numba uses all the cores it sees. |
+| `--quiet` | Removes the progress bars, so the job logs stay readable. |
 
 !!! note "One node, one task, many CPUs"
-    Qorona is shared-memory threaded (numba), not MPI: request a full node's cores with
-    `--cpus-per-task` and do not use `mpirun`.
+    Qorona uses shared-memory threads (numba), not MPI. Request the cores of one node with
+    `--cpus-per-task`. Do not use `mpirun`.
 
-On GPU nodes, load the site's CUDA module (e.g. `module load CUDA/12.4.0`) so numba finds the
-toolkit; `--device gpu` errors loudly if the GPU is unusable rather than silently falling back. See
-[GPU acceleration](../gpu.md) for the backend details and timings.
+On a GPU node, load the CUDA module of the site (for example `module load CUDA/12.4.0`), so that
+numba finds the toolkit. `--device gpu` stops with an error if the GPU is not usable. See
+[GPU acceleration](../gpu.md).
 
 ## SLURM templates
 
-Both templates live in
-[`hpc/`](https://github.com/RayanDhib/Qorona/tree/main/hpc) in the repository;
-replace the `<placeholders>` with your site's values. The `--cluster` line is only needed where
-one scheduler serves several clusters (e.g. VSC); drop it otherwise.
+The two templates are in [`hpc/`](https://github.com/RayanDhib/Qorona/tree/main/hpc) in the
+repository.
+
+1. Replace the `<placeholders>` with the values of your site.
+2. Keep the `--cluster` line only if one scheduler serves more than one cluster (for example VSC).
+3. Set `--time` from the [GPU acceleration](../gpu.md) times.
+4. If you use `--observer` or an export, add `--timestamp` and `--frame` to the build. See
+   [Solution time and frame](../time-and-frame.md).
 
 ### CPU node
 

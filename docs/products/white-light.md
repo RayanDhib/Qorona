@@ -1,11 +1,8 @@
 # White-light imaging
 
-Thomson-scattered brightness integrated over the solution's electron density. The default
-component is pB, the polarized brightness: the linearly polarized part of the white-light
-K-corona. This is a density product; no Q⊥ volume is built or used.
-
-The input is either a raw solution (read and resampled, as `build` would) or a built `.qor`
-volume, whose stored density is reused, skipping the resample:
+The Thomson-scattered brightness of the electrons of the solution: the white-light K corona. The
+default is pB, the polarized brightness. This product uses only the electron density. It does not
+build a Q⊥ volume.
 
 ![Polarized-brightness view of the COCONUT corona](../assets/white-light.png)
 
@@ -14,31 +11,39 @@ qorona wl data/coconut_corona.qor -o data/white-light.png \
     --longitude 317 --latitude 6.2
 ```
 
-## The flags that matter
+The input is a solution file or a `.qor` volume. A volume is faster, because it keeps the resampled
+density.
 
-- `--component polarized|total`: pB (the default) or the total white-light brightness.
-- `--vignette newkirk|adaptive|wow|none`: display treatment of the frame. Default `newkirk`, and
-  `adaptive` for COCONUT input.
-    - `newkirk` divides by the brightness of the smooth Newkirk background corona.
-    - `adaptive` fits the same curve family to the falloff of the image.
-    - `wow` whitens the wavelet spectrum of the raw frame (Wavelets Optimized Whitening).
-    - `none` keeps the raw falloff.
-- `--percentiles LOW HIGH`: display stretch (default `1 99.5`; use `0 100` for the full
-  untrimmed range).
-- `--mgn`: optional fine-structure enhancement (multi-scale Gaussian normalization), applied
-  last.
-- `--occult eclipse|none`: the occulter (default `eclipse`).
-- `--r-occult`: occulter radius in solar radii (default 1.02).
-- `--export npz`: also write the raw frames (pB and total) and their image coordinates beside the
-  PNG. The coordinates are in solar radii for the orthographic camera and in degrees for the
-  perspective camera.
-- `--export fits`: the display frame plus the raw pB/total frames as a WCS-registered
-  FITS (needs a timestamp). See [Export to JHelioviewer](../jhelioviewer.md).
-- `--width`, `--height`: image size in pixels (default 1024, as for `render`).
-- Camera flags are the same as for the [squashing-factor render](squashing-factor.md). On a
-  coronal solution, `wl` defaults to `--fov 10`.
+## Flags
 
-To compare with PUNCH images, see [Comparing with PUNCH](../punch.md).
+| Flag | Use | Default |
+|------|-----|---------|
+| `--component` | `polarized` (pB) or `total` brightness. | `polarized` |
+| `--vignette` | The display treatment of the brightness falloff. See [Display treatments](#display-treatments). | `adaptive` for COCONUT, else `newkirk` |
+| `--percentiles LOW HIGH` | The display stretch. `0 100` keeps the full range. | `1 99.5` |
+| `--mgn` | Fine-structure enhancement (multi-scale Gaussian normalization), applied last. | off |
+| `--occult` | `eclipse` or `none`. | `eclipse` |
+| `--r-occult` | The occulter radius, in solar radii. | 1.02 |
+| `--export npz` | Also write the raw pB and total frames and their image coordinates: solar radii for the orthographic camera, degrees for the perspective camera. | none |
+| `--export fits` | Also write the display frame and the raw frames as FITS. See [Export to JHelioviewer](../jhelioviewer.md#fits-images). | none |
+
+- Camera flags: see [Camera and viewpoint](../camera.md). On a coronal solution, `wl` uses
+  `--fov 10`.
+- To compare with PUNCH images, see [Comparing with PUNCH](../punch.md).
+
+## Display treatments
+
+| `--vignette` | Treatment |
+|--------------|-----------|
+| `newkirk` | Divides by the brightness of the smooth Newkirk background corona. |
+| `adaptive` | Fits the same curve family to the falloff of the image. |
+| `wow` | Whitens the wavelet spectrum of the raw frame (Wavelets Optimized Whitening). |
+| `none` | Keeps the raw falloff. |
+
+!!! note "Extra packages for `--vignette wow` and `--mgn`"
+    `--vignette wow` and `--mgn` need [sunkit-image](https://docs.sunpy.org/projects/sunkit-image/).
+    `wow` also needs [watroo](https://github.com/frederic-auchere/watroo). Install both with
+    `pip install sunkit-image watroo`. `watroo` is not on conda-forge.
 
 ## Brightness units
 
@@ -53,9 +58,3 @@ The electron density is `nₑ = ρ / (μ m_p)`, with `μ` the mean molecular wei
 - `--brightness-scale relative` gives relative frames on any input.
 - A `.qor` volume built by an earlier version of Qorona gives relative frames. Rebuild it to get
   MSB.
-
-!!! note "Extra packages for `--vignette wow` and `--mgn`"
-    These two treatments need packages that are not part of the default install: both need
-    [sunkit-image](https://docs.sunpy.org/projects/sunkit-image/), and WOW also needs
-    [watroo](https://github.com/frederic-auchere/watroo). Install them with
-    `pip install sunkit-image watroo` (`watroo` is not on conda-forge).

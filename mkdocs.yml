@@ -44,26 +44,30 @@ markdown_extensions:
   - toc:
       permalink: true
 
+validation:
+  anchors: warn
+
 nav:
   - Home: index.md
   - Getting started:
       - Installation: getting-started/installation.md
-      - Example data: getting-started/example-data.md
-      - First eclipse image: getting-started/first-eclipse-image.md
-      - Supported models: getting-started/supported-models.md
-      - HPC clusters: getting-started/hpc.md
+      - Quick start: getting-started/first-eclipse-image.md
   - Products:
       - Squashing-factor render: products/squashing-factor.md
       - Polarity view: products/polarity.md
       - White-light imaging: products/white-light.md
       - Q-maps: products/qmaps.md
       - Field lines: products/fieldlines.md
-  - How it runs:
-      - The Q⊥ volume: qperp-volume.md
+  - Guides:
       - Camera and viewpoint: camera.md
-      - GPU acceleration: gpu.md
+      - Solution time and frame: time-and-frame.md
+      - The Q⊥ volume: qperp-volume.md
       - Export to JHelioviewer: jhelioviewer.md
+      - GPU acceleration: gpu.md
+      - HPC clusters: getting-started/hpc.md
   - Heliosphere and PUNCH:
       - Heliospheric solutions: heliospheric.md
       - Comparing with PUNCH: punch.md
       - PUNCH comparison details: punch-details.md
+  - Reference:
+      - Supported models: getting-started/supported-models.md

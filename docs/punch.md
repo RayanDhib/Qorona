@@ -35,10 +35,10 @@ solution (see [The two frames](punch-details.md#the-two-frames)).
 
 | Flag | Use |
 |------|-----|
-| `--instrument` | The frame of the PUNCH file: `punch-mosaic` for PAM and CAM, `punch-nfi` for CNN. |
+| `--instrument` | The frame of the PUNCH file: `punch-mosaic` for PAM (polarized mosaic) and CAM (clear mosaic), `punch-nfi` for CNN (clear NFI image). |
 | `--punch-l3` | Subtract the background as PUNCH Level 3 does. The observer is Earth. |
 | `--export fits` | Write the FITS file that the comparison script reads. |
-| `--timestamp`, `--frame` | The solution time and frame of a coronal solution. See [The observer](punch-details.md#the-observer). |
+| `--timestamp`, `--frame` | The time and the frame of a coronal solution. See [Solution time and frame](time-and-frame.md). |
 | `--magnetogram-time`, `--relaxation` | The run settings of an Icarus snapshot, or `--par`. See [Icarus run settings](heliospheric.md#icarus-run-settings). |
 
 The model frames must be in mean solar brightness (MSB), the unit of PUNCH. See
@@ -167,16 +167,11 @@ figure.savefig(output, dpi=100, bbox_inches="tight")
 print(output)
 ```
 
-The figure shows:
+The figure shows three images with the same display: PUNCH, the treated model (with the Level 3
+treatment) and the untreated model (the full K corona). Below them, a profile gives the median
+brightness in each ring of elongation. Compare the treated model with PUNCH. The untreated model
+shows what the treatment removes.
 
-- **Three images with the same display:** PUNCH, the treated model and the untreated model (the
-  full K corona).
-- **A profile:** the median brightness in each ring of elongation (1 degree for the mosaics, 0.25
-  degree for NFI).
-
-Elongation is the angle at the observer between the line to Sun centre and the line to the point.
-From Earth, a line of sight at elongation ε passes the Sun at 215 × sin ε solar radii.
-
-- Compare the treated model with PUNCH. The untreated model shows what the treatment removes.
-- PUNCH Level 3 total brightness carries extra unpolarized light, so read a total-brightness
-  comparison with care. Prefer polarized brightness (pB) when you can.
+The profile uses rings of elongation: 1 degree for the mosaics, 0.25 degree for NFI. Elongation is
+the angle at the observer between the line to Sun centre and the line to the point. From Earth, a
+line of sight at elongation ε passes the Sun at 215 × sin ε solar radii.

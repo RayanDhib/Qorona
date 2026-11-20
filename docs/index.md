@@ -23,7 +23,7 @@ coronal MHD solution ──▶ read ──▶ resample ──▶ Q⊥ volume ─
 ![Synthetic eclipse render of the COCONUT corona](assets/eclipse.png)
 
 ??? note "How this image was made"
-    The [example solution](getting-started/example-data.md), built once and rendered once:
+    The example solution of the [quick start](getting-started/first-eclipse-image.md), built once and rendered once:
 
     ```bash
     qorona build data/coconut_corona.CFmesh.xz -o data/coconut_corona.qor \
@@ -32,19 +32,10 @@ coronal MHD solution ──▶ read ──▶ resample ──▶ Q⊥ volume ─
         --fov 8 --longitude 317 --latitude 6.2
     ```
 
-**Get started** with the [installation](getting-started/installation.md), grab the
-[example data](getting-started/example-data.md), and make your
-[first eclipse image](getting-started/first-eclipse-image.md).
-
-**Products**: the [squashing-factor render](products/squashing-factor.md), the
-[polarity view](products/polarity.md), [white-light imaging](products/white-light.md),
-[Q-maps](products/qmaps.md), and [field lines](products/fieldlines.md), each with the exact
-command that produced its figure.
-
-**How it runs**: [the Q⊥ volume](qperp-volume.md) (build once, render many),
-[camera and viewpoint](camera.md), [GPU acceleration](gpu.md),
-[export to JHelioviewer](jhelioviewer.md), and, on clusters, the
-[HPC guide](getting-started/hpc.md).
-
-**Heliosphere and PUNCH**: [heliospheric solutions](heliospheric.md) and
-[comparing with PUNCH](punch.md).
+| | |
+|---|---|
+| **Get started** | [Installation](getting-started/installation.md), [Quick start](getting-started/first-eclipse-image.md) |
+| **Products** | [Squashing-factor render](products/squashing-factor.md), [polarity view](products/polarity.md), [white-light imaging](products/white-light.md), [Q-maps](products/qmaps.md), [field lines](products/fieldlines.md). Each page gives the command that made its figure. |
+| **Guides** | [Camera and viewpoint](camera.md), [solution time and frame](time-and-frame.md), [the Q⊥ volume](qperp-volume.md), [export to JHelioviewer](jhelioviewer.md), [GPU acceleration](gpu.md), [HPC clusters](getting-started/hpc.md) |
+| **Heliosphere and PUNCH** | [Heliospheric solutions](heliospheric.md), [comparing with PUNCH](punch.md) |
+| **Reference** | [Supported models](getting-started/supported-models.md) |

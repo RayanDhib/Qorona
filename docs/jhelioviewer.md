@@ -1,33 +1,36 @@
 # Export to JHelioviewer
 
-Qorona output drops into [JHelioviewer](https://www.jhelioviewer.org) for viewing and overlay
-on observed imagery, through two registered routes: WCS-registered FITS for the image
-products, and SunJSON geometry for field lines. Both need a timestamp (`--timestamp`, or a
-volume baked with one): it sets the observation time the file is registered at.
+Qorona writes two file types that [JHelioviewer](https://www.jhelioviewer.org) places at the
+correct time and position:
 
-| Route | Commands | JHelioviewer layer |
-|-------|----------|--------------------|
-| FITS raster | `render --export fits`, `wl --export fits` | image layer, WCS-registered |
+| Export | Commands | JHelioviewer layer |
+|--------|----------|--------------------|
+| FITS image | `render --export fits`, `wl --export fits` | Image layer |
 | SunJSON field lines | `fieldlines --export sunjson`, `export-lines` | Connection Layer, 3-D lines |
 
-## FITS rasters
+Both need the [solution time](time-and-frame.md). Without `--frame`, Qorona assumes a Carrington
+frame and warns.
+
+## FITS images
 
 ```bash
 qorona render data/coconut_corona.qor -o data/earth.png --fov 8 --observer earth --export fits
 ```
 
-`--export fits` writes the quantitative frame beside the PNG: `render` stores the
-LOS-averaged log₁₀ Q⊥ (float32), `wl` the display frame plus the raw pB/total frames as
-extensions. Drop the file into JHelioviewer and it registers at the correct scale,
-orientation, position, and time; `sunpy.map.Map` reads the same registration for scripted
-analysis. The run's full provenance rides in the FITS header.
+`--export fits` writes a FITS file beside the PNG:
 
-- `--observer earth` points the camera from the real Earth viewpoint at the timestamp, so
-  the overlay matches Earth-based observations exactly (any named observer works the same
-  way; see [Camera](camera.md)).
-- The disk: with the default eclipse occulter it stays NaN, transparent in JHelioviewer, so
-  real disk imagery shows through; `render --occult composite` fills it with the near-side
-  surface Q instead.
+- `render`: the line-of-sight average of log₁₀ Q⊥ (float32).
+- `wl`: the display frame, and the raw pB and total frames as extensions.
+
+The FITS file registers the image in helioprojective coordinates (Thompson 2006), with the observer
+distance of the camera. JHelioviewer shows it at the correct scale, orientation, position and time.
+`sunpy.map.Map` reads the same registration. The FITS header holds the full provenance of the run.
+
+- `--observer earth` puts the camera at Earth at the solution time. The image then overlays
+  observations from Earth. All [named observers](camera.md#use-a-real-observer) work the same way.
+- With the default `eclipse` occulter, the disk is NaN, which is transparent in JHelioviewer. Real
+  disk images show through. `render --occult composite` fills the disk with the near-side surface
+  Q⊥.
 
 ## Field lines as SunJSON
 
@@ -36,23 +39,20 @@ qorona export-lines data/coconut_corona.CFmesh.xz -o data/coconut_fieldlines.jso
     --timestamp 2025-10-09T18:19:52 --frame carrington --seeds 40 80
 ```
 
-SunJSON is the geometry format of JHelioviewer's Connection Layer: drop the `.json` onto a
-running JHelioviewer and the bundle appears in 3-D, at its timestamp on the timeline. Lines
-carry the polarity palette of the [field-line view](products/fieldlines.md) (open warm/cool
-by inner-foot B_r sign, closed neutral grey) and an `open`/`closed` topology tag.
+SunJSON is the geometry format of the JHelioviewer Connection Layer. Drop the `.json` file onto
+JHelioviewer: the lines show in 3-D, at their time on the timeline.
 
-- `qorona fieldlines ... --export sunjson`: exactly the drawn bundle beside the PNG, with
-  the same seeding, selection (`--show`), and colours as the image, the eclipse look
-  included.
-- `qorona export-lines`: a self-contained full trace on a uniform longitude/latitude seed
-  grid (`--seeds N_THETA N_PHI`, default 100x100; `--seed-radius` moves the seed sphere);
-  no camera involved.
+- The lines use the colours of the [field-line view](products/fieldlines.md): open lines warm or
+  cool by the sign of B_r at the inner foot, closed lines grey.
+- Each line has an `open` or `closed` tag.
 
-## The solution frame
+| Command | Lines |
+|---------|-------|
+| `fieldlines ... --export sunjson` | The lines of the image, with the same seeds, selection (`--show`) and colours. |
+| `export-lines` | A full trace from a uniform longitude-latitude grid of seeds, with no camera. `--seeds N_THETA N_PHI` sets the grid (default 100 x 100). `--seed-radius` moves the seed sphere. |
 
-Both routes write positions in Carrington coordinates, which is what JHelioviewer expects, and
-both start from the solution's own frame: the FITS observer and the SunJSON longitudes are
-shifted by the declared frame's offset (`--frame`, see [Camera](camera.md)), zero for a
-Carrington frame and L0 for a Stonyhurst one. The frame is therefore part of the registration:
-exported under the wrong one, a product lands up to 360 degrees off in longitude, and nothing in
-the file reveals it. Without a declaration Qorona falls back to Carrington and warns.
+## Positions in Carrington coordinates
+
+Both exports write positions in Carrington coordinates, as JHelioviewer expects. Qorona converts them
+from the declared frame of the solution. A wrong `--frame` moves the export by up to 360 degrees in
+longitude. See [Solution time and frame](time-and-frame.md).
