@@ -1,0 +1,11 @@
+# Environment for tools/build_euv_tables.py, the maintainer script that builds the EUV response
+# tables. It is separate from the Qorona environment because fiasco and aiapy need Python 3.12.
+name: qorona-tables
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - fiasco==0.9.0
+      - aiapy==0.12.1

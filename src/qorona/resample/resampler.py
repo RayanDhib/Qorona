@@ -166,6 +166,8 @@ class KnnMlsResampler(Resampler):
         Source cell count at which the stencil equals ``n_neighbors``. Calibrated to the standard
         COCONUT corona mesh; a mesh with ``N`` times more cells uses about ``N * n_neighbors``
         neighbours, holding the physical support fixed. Coarser meshes floor to ``n_neighbors``.
+        ``None`` keeps the stencil at ``n_neighbors`` on every mesh, which keeps steep radial
+        profiles (the transition region of a refined mesh) sharp.
     ridge
         Tikhonov regularization added to each node's normal-equations diagonal (relative to its
         largest entry), keeping one-sided boundary and near-degenerate stencils solvable and
@@ -178,7 +180,7 @@ class KnnMlsResampler(Resampler):
         self,
         *,
         n_neighbors: int = 48,
-        reference_cell_count: int = 2_000_000,
+        reference_cell_count: int | None = 2_000_000,
         ridge: float = 1.0e-8,
         chunk_size: int = 500_000,
     ) -> None:
@@ -187,7 +189,7 @@ class KnnMlsResampler(Resampler):
                 f"n_neighbors must exceed the four linear unknowns (1 + 3 gradient), "
                 f"got {n_neighbors}"
             )
-        if reference_cell_count <= 0:
+        if reference_cell_count is not None and reference_cell_count <= 0:
             raise ValueError(f"reference_cell_count must be positive, got {reference_cell_count}")
         self.n_neighbors = n_neighbors
         self.reference_cell_count = reference_cell_count
@@ -197,7 +199,10 @@ class KnnMlsResampler(Resampler):
     def _effective_neighbors(self, n_cells: int) -> int:
         """Stencil size for a mesh of ``n_cells`` cells: ``n_neighbors`` scaled by the cell count
         past ``reference_cell_count``, floored at ``n_neighbors`` and capped at the cell count, so
-        the fit support stays a fixed physical size as the mesh refines."""
+        the fit support stays a fixed physical size as the mesh refines. Without a
+        ``reference_cell_count`` the stencil is ``n_neighbors``, capped at the cell count."""
+        if self.reference_cell_count is None:
+            return min(self.n_neighbors, n_cells)
         scaled = round(self.n_neighbors * n_cells / self.reference_cell_count)
         return max(self.n_neighbors, min(scaled, n_cells))
 

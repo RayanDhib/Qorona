@@ -13,10 +13,11 @@ license-files = ["LICENSE"]
 authors = [{ name = "Rayan Dhib" }]
 dependencies = [
     # The default install is the complete Qorona: every runtime dependency needed to use every
-    # feature. Four of these carry graceful runtime fallbacks and can be dropped for a leaner
+    # feature. Five of these carry graceful runtime fallbacks and can be dropped for a leaner
     # footprint via ``pip install --no-deps`` plus the core set (an off-road choice, never the
     # default): numba (→ pure-NumPy path, no GPU), pillow (→ on-image stamp skipped),
-    # matplotlib (→ bare-raster Q-map), and pyhdf (→ MAS HDF4 input off, install hint shown).
+    # matplotlib (→ bare-raster Q-map), pyhdf (→ MAS HDF4 input off, install hint shown), and
+    # h5py (→ MAS HDF5 input off, install hint shown).
     "numpy>=1.24",
     "scipy>=1.10",
     "astropy>=6.0",
@@ -30,6 +31,7 @@ dependencies = [
     "pillow>=10.0",
     "matplotlib>=3.8",
     "pyhdf>=0.11",
+    "h5py>=3.8",
 ]
 
 [project.urls]
@@ -46,6 +48,9 @@ docs = ["mkdocs-material>=9,<10"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"qorona.radiation" = ["tables/*.npz"]
 
 [tool.pytest.ini_options]
 # The numba CUDA dispatcher's low-occupancy warning fires on the deliberate one-seed kernel
@@ -82,6 +87,8 @@ module = [
     "sunkit_image.*",
     "pyhdf",
     "pyhdf.*",
+    "h5py",
+    "h5py.*",
 ]
 ignore_missing_imports = true
 

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from astropy.io import fits
 
     from qorona.radiation.brightness import BrightnessResult
+    from qorona.radiation.euv import EuvResult
     from qorona.radiation.punch_l3 import PunchL3Result
     from qorona.render.los import RenderResult
 
@@ -327,3 +328,49 @@ def write_brightness_fits(
             ext_header["BUNIT"] = ("1", "relative brightness, arbitrary units")
         hdus.append(fits.ImageHDU(_flipped(image), ext_header, name=name))
     fits.HDUList(hdus).writeto(path, overwrite=True)
+
+
+def write_euv_fits(
+    result: EuvResult,
+    channel: str,
+    path: Path,
+    provenance: dict[str, Any],
+    *,
+    display_range: tuple[float, float] | None = None,
+) -> None:
+    """Write one EUV channel's physical frame as a WCS-registered FITS image.
+
+    The data is the frame in the channel unit per second and native instrument pixel (``BUNIT``
+    ``DN/s`` or ``ph/s``), float32. The header names the channel (``DETECTOR``, ``WAVELNTH``), the
+    native pixel the values refer to (``NATPIXEL``), the transition-region broadening temperature
+    the emission was corrected for (``TRTEMP``), and the run provenance. Raises
+    :class:`ValueError` when the provenance carries no timestamp.
+    """
+    from astropy.io import fits
+
+    timestamp = _required_timestamp(provenance)
+    frame = result.frames[channel]
+    table = result.tables[channel]
+    header = camera_wcs_header(
+        provenance["camera"], timestamp, frame.shape, frame=_provenance_frame(provenance)
+    )
+    _identity_cards(header, provenance, detector=table.channel.name.upper())
+    _citation_cards(header)
+    header["WAVELNTH"] = (table.channel.band, "[Angstrom] nominal wavelength of the channel")
+    header["WAVEUNIT"] = "angstrom"
+    header["BTYPE"] = (
+        f"{table.channel.instrument} {table.channel.band} intensity",
+        "synthetic, optically thin",
+    )
+    header["BUNIT"] = (f"{table.channel.unit}/s", "per native instrument pixel")
+    native = float(np.sqrt(table.native_pixel_sr) * 180.0 / np.pi * 3600.0)
+    header["NATPIXEL"] = (round(native, 5), "[arcsec] native pixel the values refer to")
+    header["TRTEMP"] = (
+        result.tr_temperature if result.tr_temperature is not None else "none",
+        "[K] transition-region broadening correction",
+    )
+    if display_range is not None:
+        header["DISPMIN"] = (float(display_range[0]), "log display range of the PNG, low")
+        header["DISPMAX"] = (float(display_range[1]), "log display range of the PNG, high")
+    _provenance_cards(header, provenance)
+    fits.HDUList([fits.PrimaryHDU(_flipped(frame), header)]).writeto(path, overwrite=True)

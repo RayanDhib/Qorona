@@ -5,7 +5,7 @@ correct time and position:
 
 | Export | Commands | JHelioviewer layer |
 |--------|----------|--------------------|
-| FITS image | `render --export fits`, `wl --export fits` | Image layer |
+| FITS image | `render --export fits`, `wl --export fits`, `euv --export fits` | Image layer |
 | SunJSON field lines | `fieldlines --export sunjson`, `export-lines` | Connection Layer, 3-D lines |
 
 Both need the [solution time](time-and-frame.md). Without `--frame`, Qorona assumes a Carrington
@@ -21,6 +21,8 @@ qorona render data/coconut_corona.qor -o data/earth.png --fov 8 --observer earth
 
 - `render`: the line-of-sight average of log₁₀ Q⊥ (float32).
 - `wl`: the display frame, and the raw pB and total frames as extensions.
+- `euv`: the frame in the unit of the channel (float32). See
+  [EUV imaging](products/euv.md#exported-values).
 
 The FITS file registers the image in helioprojective coordinates (Thompson 2006), with the observer
 distance of the camera. JHelioviewer shows it at the correct scale, orientation, position and time.

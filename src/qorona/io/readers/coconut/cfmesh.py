@@ -32,6 +32,7 @@ from qorona.io.readers.coconut.normalization import (
     DENSITY_UNIT,
     LENGTH_UNIT,
     MEAN_MOLECULAR_WEIGHT,
+    PRESSURE_UNIT,
 )
 from qorona.io.textio import open_solution_text
 
@@ -139,6 +140,7 @@ class CFmeshReader(SolutionReader):
             density_unit=DENSITY_UNIT,
             length_unit=LENGTH_UNIT,
             mean_molecular_weight=MEAN_MOLECULAR_WEIGHT,
+            pressure_unit=PRESSURE_UNIT,
             dimension=int(header["!NB_DIM"]),
             n_equations=n_equations,
             element_type=header.get("!ELEM_TYPES", "Prism"),

@@ -5,7 +5,7 @@ Qorona finds the model from the file extension. `--model` overrides it.
 | Model | Category | Input |
 |-------|----------|-------|
 | [COCONUT](#coconut) | corona | COOLFluiD `.CFmesh` (also `.xz`-compressed), Tecplot `.plt` |
-| [MAS](#mas) | corona | HDF4, one file per variable |
+| [MAS](#mas) | corona | HDF4 or HDF5, one file per variable |
 | [Icarus](#icarus) | heliosphere | VTK `.vtu` |
 
 The [category](../heliospheric.md#the-solution-category) sets the defaults that depend on scale.
@@ -23,8 +23,8 @@ qorona info data/coconut_corona.CFmesh.xz --timestamp 2025-10-09T18:19:52
 
 ## MAS
 
-[MAS](https://www.predsci.com/) (Predictive Science) writes one HDF4 file for each variable
-(`rho002.hdf`, `br002.hdf` and more). Give any file of the set. Qorona finds the other variables.
+[MAS](https://www.predsci.com/) (Predictive Science) writes one HDF4 or HDF5 file for each
+variable (`rho002.hdf`, `br002.hdf` and more, or `.h5`). Give any file of the set. Qorona finds the other variables.
 
 ```bash
 qorona info br002.hdf
@@ -33,8 +33,11 @@ qorona info br002.hdf
 - The file name must contain a MAS variable token: `rho`, `br`, `bt`, `bp`, `vr`, `vt`, `vp`, `t`
   or `p`.
 - Public MAS solutions are on [MHDweb](https://www.predsci.com/mhdweb/data_access.php).
-- MAS input needs pyhdf, which is part of the default install. If pyhdf is missing, the CLI tells
-  you how to install it.
+- For [EUV imaging](../products/euv.md), keep the temperature (`t`) or pressure (`p`) file with
+  the others. If the `omas` log of the run is in the same folder, Qorona reads the
+  transition-region temperature of the run from it.
+- MAS input needs pyhdf (HDF4) or h5py (HDF5), which are part of the default install. If one is
+  missing, the CLI tells you how to install it.
 
 ## Icarus
 

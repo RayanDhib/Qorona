@@ -22,3 +22,6 @@ site/
 
 # Example solution data (downloaded; see README)
 data/
+
+# The EUV response tables are package data, not generated artifacts.
+!src/qorona/radiation/tables/*.npz

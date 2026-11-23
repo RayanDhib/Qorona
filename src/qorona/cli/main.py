@@ -48,6 +48,9 @@ from qorona.config import (
     CLOSED_TREATMENTS,
     DEVICE_MODES,
     DISPLAY_MODES,
+    EUV_DEFAULT_DIMENSION,
+    EUV_N_R,
+    EUV_OUTER_RADIUS,
     EXPORT_FORMATS,
     FIELDLINE_COLOUR,
     FIELDLINE_SEEDING,
@@ -68,6 +71,7 @@ from qorona.config import (
     WEIGHTING_PRESETS,
     BrightnessConfig,
     CameraConfig,
+    EuvConfig,
     ExportConfig,
     FieldLinesConfig,
     GridConfig,
@@ -85,7 +89,9 @@ from qorona.console import console, print_step, print_success, print_warning
 from qorona.io.fieldlines_export import write_fieldlines_json
 from qorona.io.output import (
     export_brightness,
+    export_euv,
     write_brightness,
+    write_euv,
     write_fieldlines,
     write_outputs,
     write_qmap,
@@ -93,6 +99,7 @@ from qorona.io.output import (
 from qorona.io.readers import category_of, resolve_model
 from qorona.io.readers.icarus import read_icarus_par, snapshot_time
 from qorona.radiation.punch_l3 import PunchL3Result
+from qorona.radiation.response import ABUNDANCE_SETS, CHANNELS
 
 #: Default image dimension used only when exactly one of ``--width`` / ``--height`` is supplied; the
 #: full default ``pixels`` otherwise lives once on :class:`~qorona.config.CameraConfig`.
@@ -238,77 +245,107 @@ _icarus_options = _compose(
         "delta_phi. --magnetogram-time and --relaxation override it.",
     ),
 )
-_grid_options = _compose(
-    option(
-        "--n-r",
-        type=int,
-        default=None,
-        section="Field grid",
-        advanced=True,
-        help="Radial field-grid nodes (default 192).",
-    ),
-    option(
-        "--n-theta",
-        type=int,
-        default=None,
-        section="Field grid",
-        advanced=True,
-        help="Colatitude field-grid nodes (default 180).",
-    ),
-    option(
-        "--n-phi",
-        type=int,
-        default=None,
-        section="Field grid",
-        advanced=True,
-        help="Azimuth field-grid nodes, even (default 360).",
-    ),
-    option(
-        "--inner-radius",
-        type=float,
-        default=None,
-        section="Field grid",
-        advanced=True,
-        help="Inner shell radius in R_sun (default: the category shell; corona 1.0, "
-        "heliosphere the native inner boundary).",
-    ),
-    option(
-        "--outer-radius",
-        type=float,
-        default=None,
-        section="Field grid",
-        help="Outer shell radius in R_sun (default: the category shell; corona 12.5, "
-        "heliosphere the native outer boundary).",
-    ),
-    option(
-        "--spacing",
-        type=click.Choice(SPACING_LAWS),
-        default=None,
-        section="Field grid",
-        advanced=True,
-        help="Radial spacing law (default logarithmic).",
-    ),
-    option(
-        "--resampler",
-        type=click.Choice(RESAMPLERS),
-        default=None,
-        section="Field grid",
-        advanced=True,
-        help="Cell→grid resampler (default auto: structured for structured-grid inputs, "
-        "knn-mls otherwise).",
-    ),
-    option(
-        "--mls-k",
-        "n_neighbors",
-        type=int,
-        default=None,
-        section="Field grid",
-        advanced=True,
-        help=(
-            "k-NN MLS neighbour count for resampling (default 48, scales up on finer meshes; "
-            "lower is sharper but noisier)."
+
+
+def _grid_option_group(
+    section: str,
+    *,
+    nodes: str,
+    n_r: int,
+    outer_radius: str,
+    resample_target: str,
+) -> Callable[[Callable], Callable]:
+    """The grid option group: node counts, shell, spacing and resampler, under ``section``.
+
+    The field grid and the EUV plasma grid share these flags; ``nodes`` names the grid in the
+    node-count help, ``n_r`` is the radial default and ``outer_radius`` the outer-radius default
+    as the help states it. ``resample_target`` names what the k-NN MLS stencil resamples.
+    """
+    return _compose(
+        option(
+            "--n-r",
+            type=int,
+            default=None,
+            section=section,
+            advanced=True,
+            help=f"Radial {nodes} nodes (default {n_r}).",
         ),
-    ),
+        option(
+            "--n-theta",
+            type=int,
+            default=None,
+            section=section,
+            advanced=True,
+            help=f"Colatitude {nodes} nodes (default 180).",
+        ),
+        option(
+            "--n-phi",
+            type=int,
+            default=None,
+            section=section,
+            advanced=True,
+            help=f"Azimuth {nodes} nodes, even (default 360).",
+        ),
+        option(
+            "--inner-radius",
+            type=float,
+            default=None,
+            section=section,
+            advanced=True,
+            help="Inner shell radius in R_sun (default: the category shell; corona 1.0, "
+            "heliosphere the native inner boundary).",
+        ),
+        option(
+            "--outer-radius",
+            type=float,
+            default=None,
+            section=section,
+            help=f"Outer shell radius in R_sun (default: {outer_radius}).",
+        ),
+        option(
+            "--spacing",
+            type=click.Choice(SPACING_LAWS),
+            default=None,
+            section=section,
+            advanced=True,
+            help="Radial spacing law (default logarithmic).",
+        ),
+        option(
+            "--resampler",
+            type=click.Choice(RESAMPLERS),
+            default=None,
+            section=section,
+            advanced=True,
+            help="Cell→grid resampler (default auto: structured for structured-grid inputs, "
+            "knn-mls otherwise).",
+        ),
+        option(
+            "--mls-k",
+            "n_neighbors",
+            type=int,
+            default=None,
+            section=section,
+            advanced=True,
+            help=f"k-NN MLS neighbour count for resampling {resample_target}.",
+        ),
+    )
+
+
+_grid_options = _grid_option_group(
+    "Field grid",
+    nodes="field-grid",
+    n_r=192,
+    outer_radius="the category shell; corona 12.5, heliosphere the native outer boundary",
+    resample_target=("(default 48, scales up on finer meshes; lower is sharper but noisier)"),
+)
+#: The EUV plasma grid: the same flags with the EUV defaults. Its stencil stays at --mls-k on
+#: every mesh, which keeps the transition region of a refined mesh sharp.
+_plasma_grid_options = _grid_option_group(
+    "EUV grid",
+    nodes="EUV-grid",
+    n_r=EUV_N_R,
+    outer_radius=f"{EUV_OUTER_RADIUS:g}, or further to cover the camera's field",
+    resample_target="the density and temperature (default 48 on every mesh)",
 )
 
 
@@ -473,16 +510,71 @@ def _camera_options(
     default_fov: float | None = None,
     *,
     instrument_in_short_help: bool = False,
+    perspective_only: bool = False,
 ) -> Callable[[Callable], Callable]:
     """The shared camera option group; the defaults state a command's image and FOV defaults.
 
     A ``None`` ``default_fov`` means the coronal orthographic FOV is the locked constant, stated as
     such in the ``--fov`` help. A concrete ``default_fov`` (the ``wl`` product's wider frame)
     states its own number. ``instrument_in_short_help`` lists ``--instrument`` in the short help
-    (the ``wl`` command, where the PUNCH frames are used); elsewhere it is in ``--help-all``.
+    (the ``wl`` and ``euv`` commands); elsewhere it is in ``--help-all``. ``perspective_only``
+    leaves out ``--projection`` and ``--fov`` (the ``euv`` command, whose camera is always the
+    perspective camera framed by the instrument).
     """
     coronal_fov = f"{default_fov:g}" if default_fov is not None else "12.5"
-    return _compose(
+    fov_deg_default = (
+        "the field of view of the channels' instrument"
+        if perspective_only
+        else "heliosphere 92.16, the PUNCH mosaic width; a coronal perspective view needs it"
+    )
+    options = _camera_option_list(
+        default_dimension, coronal_fov, fov_deg_default, instrument_in_short_help
+    )
+    if perspective_only:
+        options = [entry for name, entry in options if name not in ("projection", "fov")]
+    else:
+        options = [entry for _, entry in options]
+    return _compose(*options)
+
+
+def _camera_option_list(
+    default_dimension: int,
+    coronal_fov: str,
+    fov_deg_default: str,
+    instrument_in_short_help: bool,
+) -> list[Any]:
+    """The camera options as ``(name, option)`` pairs, in help order."""
+    return list(
+        zip(
+            (
+                "longitude",
+                "latitude",
+                "roll",
+                "fov",
+                "fov_deg",
+                "projection",
+                "instrument",
+                "width",
+                "height",
+                "observer",
+                "observer_distance",
+            ),
+            _camera_option_decorators(
+                default_dimension, coronal_fov, fov_deg_default, instrument_in_short_help
+            ),
+            strict=True,
+        )
+    )
+
+
+def _camera_option_decorators(
+    default_dimension: int,
+    coronal_fov: str,
+    fov_deg_default: str,
+    instrument_in_short_help: bool,
+) -> tuple[Callable[[Callable], Callable], ...]:
+    """The camera option decorators, in help order (see :func:`_camera_option_list`)."""
+    return (
         option(
             "--longitude",
             type=float,
@@ -519,8 +611,7 @@ def _camera_options(
             default=None,
             section="Camera",
             help="Perspective field of view (full width) in degrees, below 180: the angle for ARC, "
-            "the plate scale times the width for TAN (default: heliosphere 92.16, the PUNCH "
-            "mosaic width; a coronal perspective view needs it).",
+            f"the plate scale times the width for TAN (default: {fov_deg_default}).",
         ),
         option(
             "--projection",
@@ -537,10 +628,12 @@ def _camera_options(
             default=None,
             section="Camera",
             advanced=not instrument_in_short_help,
-            help="Instrument frame of the perspective camera, as in the PUNCH Level 3 headers: "
-            'punch-mosaic (ARC, 0.0225°/px, 4096x4096) or punch-nfi (TAN, 30"/px, 2048x2048). '
-            "Selects the perspective camera on any input; --fov-deg, --width and --height "
-            "override the frame.",
+            help="Instrument frame of the perspective camera, as in the instrument's FITS "
+            'headers: punch-mosaic (ARC, 0.0225°/px, 4096x4096), punch-nfi (TAN, 30"/px, '
+            '2048x2048), aia (TAN, 0.6"/px, 4096x4096), euvi-a (TAN, 1.588"/px, 2048x2048), '
+            'euvi-b (TAN, 1.59"/px, 2048x2048) or eui-fsi (TAN, 4.44"/px, 3040x3072), '
+            "centred on the Sun. Selects the perspective "
+            "camera on any input; --fov-deg, --width and --height override the frame.",
         ),
         option(
             "--width",
@@ -563,7 +656,8 @@ def _camera_options(
             section="Camera",
             help="Named observer: derive the sub-observer longitude/latitude and the observer "
             "distance from its ephemeris at the timestamp, in the solution frame (--frame). "
-            "earth resolves offline; stereo-a, solo and psp query JPL Horizons (network).",
+            "earth resolves offline; stereo-a, stereo-b, solo and psp query JPL Horizons "
+            "(network).",
         ),
         option(
             "--observer-distance",
@@ -994,6 +1088,115 @@ _brightness_options = _compose(
         "Earth.",
     ),
 )
+
+
+def _parse_tr_temperature(
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> float | str | None:
+    """``--tr-temperature``: a temperature in K, or ``none`` to render without the correction."""
+    if value is None:
+        return None
+    if value.strip().lower() == "none":
+        return "none"
+    try:
+        temperature = float(value)
+    except ValueError:
+        raise click.BadParameter(f"expected a temperature in K or 'none', got {value!r}") from None
+    if not temperature > 0.0:
+        raise click.BadParameter(f"the temperature must be > 0 K, got {value}")
+    return temperature
+
+
+def _parse_range(
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> tuple[float, float] | str | None:
+    """``--range``: ``LO,HI`` in the channel unit, or ``auto``."""
+    if value is None:
+        return None
+    if value.strip().lower() == "auto":
+        return "auto"
+    try:
+        low, high = (float(part) for part in value.split(","))
+    except ValueError:
+        raise click.BadParameter(f"expected LO,HI or auto, got {value!r}") from None
+    if not 0.0 < low < high:
+        raise click.BadParameter(f"the range needs 0 < LO < HI, got {value}")
+    return low, high
+
+
+_euv_options = _compose(
+    option(
+        "--channel",
+        "channels",
+        default="aia-193",
+        section="EUV",
+        help="Channel, or a comma list of channels of one instrument (one image each): "
+        "aia-94, aia-131, aia-171, aia-193, aia-211, aia-335; euvi-a-171, euvi-a-195, euvi-a-284 "
+        "and the same for euvi-b; eui-fsi-174 (default aia-193).",
+    ),
+    option(
+        "--tr-temperature",
+        default=None,
+        callback=_parse_tr_temperature,
+        section="EUV",
+        help="The run's transition-region broadening temperature Tc in K (for example 2e5): "
+        "the emission is divided by the broadening factor. Read from the run log of a MAS run "
+        "when present; needed when the solution includes the transition region. 'none' renders "
+        "without the correction.",
+    ),
+    option(
+        "--abundances",
+        type=click.Choice(ABUNDANCE_SETS),
+        default=None,
+        section="EUV",
+        help="Element abundances of the response tables (default coronal-2021).",
+    ),
+    option(
+        "--range",
+        "display_range",
+        default=None,
+        callback=_parse_range,
+        section="EUV",
+        help="Display range 'LO,HI' of the log image, in the channel unit per second and native "
+        "pixel, or 'auto' for the 0.5-99.9 percentiles (default: a fixed range per channel).",
+    ),
+    option(
+        "--colorbar/--no-colorbar",
+        "colorbar",
+        default=None,
+        section="EUV",
+        help="Add a colour bar with the unit beside the image (default on).",
+    ),
+    option(
+        "--absorption/--no-absorption",
+        "absorption",
+        default=None,
+        section="EUV",
+        advanced=True,
+        help="Foreground absorption by H I, He I and He II photoionization (default on).",
+    ),
+    option(
+        "--step",
+        type=float,
+        default=None,
+        section="EUV",
+        advanced=True,
+        help="Line-of-sight sample spacing in R_sun (default 0.001).",
+    ),
+    option(
+        "--export",
+        "export_formats",
+        type=click.Choice(("npz", "fits")),
+        multiple=True,
+        section="Output",
+        advanced=True,
+        help="Also write the physical frame of each channel beside its PNG; repeatable. npz: "
+        "the frame and the image axes in degrees. fits: the frame, WCS-registered (needs a "
+        "timestamp).",
+    ),
+)
+
+
 _workers_option = option(
     "--workers",
     type=int,
@@ -1527,6 +1730,47 @@ def _brightness_config(kw: dict[str, Any], workers: int | None) -> BrightnessCon
     return BrightnessConfig(**fields)
 
 
+def _euv_config(kw: dict[str, Any], workers: int | None) -> EuvConfig:
+    """The EUV config from the flags; a bad channel list is a usage error."""
+    fields = _present(kw, "abundances", "step", "absorption", "colorbar")
+    fields["channels"] = tuple(
+        name.strip().lower() for name in str(kw["channels"]).split(",") if name.strip()
+    )
+    tr_temperature = kw.get("tr_temperature")
+    if tr_temperature == "none":
+        fields["tr_correction"] = False
+    elif tr_temperature is not None:
+        fields["tr_temperature"] = tr_temperature
+    display_range = kw.get("display_range")
+    if display_range == "auto":
+        fields["auto_range"] = True
+    elif display_range is not None:
+        fields["display_range"] = display_range
+    if workers is not None:
+        fields["workers"] = workers
+    try:
+        return EuvConfig(**fields)
+    except ValueError as error:
+        raise click.UsageError(str(error)) from error
+
+
+def _plasma_grid_config(kw: dict[str, Any]) -> GridConfig:
+    """The EUV plasma grid from the flags, with the EUV radial defaults."""
+    fields = _present(
+        kw,
+        "n_r",
+        "n_theta",
+        "n_phi",
+        "inner_radius",
+        "outer_radius",
+        "spacing",
+        "resampler",
+        "n_neighbors",
+    )
+    fields.setdefault("n_r", EUV_N_R)
+    return GridConfig(**fields)
+
+
 def _punch_l3_gate(kw: dict[str, Any]) -> None:
     """Check the flags of the PUNCH Level 3 treatment and set its fixed choices.
 
@@ -1681,8 +1925,8 @@ def main() -> None:
     eclipse-like imagery. Build the viewpoint-independent volume once with `build`, then render any
     number of viewpoints cheaply with `render`; `run` does both in one shot, `qmap` slices a
     fixed-radius Q⊥ shell, `fieldlines` draws the field-line view, `export-lines` serialises traced
-    lines to SunJSON for JHelioviewer, `wl` renders the white-light and polarized brightness, and
-    `info` inspects a file.
+    lines to SunJSON for JHelioviewer, `wl` renders the white-light and polarized brightness, `euv`
+    renders synthetic EUV images in instrument units, and `info` inspects a file.
     """
     # Silence numba CUDA low-occupancy warnings from the one-seed warm-up and partial final chunks.
     try:
@@ -2523,11 +2767,120 @@ def wl(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **
     )
 
 
+@main.command()
+@click.argument("input_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "-o",
+    "--output",
+    "output_path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    callback=_writable_output,
+    help="Destination image (.png); several channels write one image each, <stem>_<channel>.png.",
+)
+@_euv_options
+@_input_options
+@_composition_option
+@_plasma_grid_options
+@_camera_options(EUV_DEFAULT_DIMENSION, instrument_in_short_help=True, perspective_only=True)
+@_annotate_options
+@_workers_option
+@_quiet_option
+def euv(input_path: Path, output_path: Path, workers: int | None, quiet: bool, **kw: Any) -> None:
+    """Render synthetic EUV images of a coronal solution in instrument units.
+
+    INPUT is a raw coronal solution with a density and a temperature or pressure (COCONUT, or MAS
+    with its t or p file). The optically thin emission of every channel is integrated along each
+    line of sight, with the foreground absorption, and written per native instrument pixel: AIA
+    and EUI in DN/s, EUVI in detected photons/s. Instrument degradation and the point-spread
+    function are not applied.
+
+    The camera is the instrument's: its field of view at 1024x1024 by default (--instrument for
+    the native frame), and, with a timestamp, the observer is the channels' spacecraft. A solution
+    that includes the transition region needs the run's broadening temperature
+    (--tr-temperature).
+    """
+    kw["input_path"] = input_path
+    show_progress = not quiet
+    if zipfile.is_zipfile(input_path):
+        raise click.ClickException(
+            "euv reads a raw solution: it needs the temperature, which a .qor volume does not hold"
+        )
+    euv_cfg = _euv_config(kw, workers)
+    output_cfg = _output_config(kw, output_path)
+    if _solution_category(input_path, kw) == "heliosphere":
+        raise click.ClickException(
+            "euv needs a coronal solution; a heliospheric solution starts far above the EUV corona"
+        )
+    channel = CHANNELS[euv_cfg.channels[0]]
+    pointing = ("observer", "longitude", "latitude", "observer_distance")
+    if kw.get("timestamp") and all(kw.get(key) is None for key in pointing):
+        kw["observer"] = channel.observer
+    if kw.get("instrument") is None and kw.get("fov_deg") is None:
+        kw["fov_deg"] = CAMERA_INSTRUMENTS[channel.frame].fov_deg
+    kw["projection"] = "perspective"
+    if "fits" in output_cfg.export_formats and kw.get("timestamp") is None:
+        raise click.ClickException(
+            "--export fits needs a timestamp for DATE-OBS and the observer ephemeris; "
+            "pass --timestamp"
+        )
+    frame = _solution_frame(kw)
+    _frame_gate(frame, _frame_consumers(kw, output_cfg))
+    camera_cfg = _camera_config(
+        kw,
+        category="corona",
+        default_dimension=EUV_DEFAULT_DIMENSION,
+        timestamp=kw.get("timestamp"),
+        frame=frame,
+    )
+
+    names = ", ".join(euv_cfg.channels)
+    print_step(f"Rendering synthetic EUV ({names}) from [bold]{input_path.name}[/bold]")
+    timings: dict[str, float] = {}
+    start = time.perf_counter()
+    input_cfg = _input_config(kw)
+    try:
+        plasma, grid_cfg = pipeline.build_plasma(
+            input_cfg,
+            _plasma_grid_config(kw),
+            euv_cfg=euv_cfg,
+            field_radius=pipeline.euv_field_radius(camera_cfg, euv_cfg),
+            show_progress=show_progress,
+            timings=timings,
+        )
+        inner, outer = float(plasma.grid.radii[0]), float(plasma.grid.radii[-1])
+        camera_cfg = pipeline.resolve_euv_camera(camera_cfg, euv_cfg, inner, outer)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+    timings["field"] = time.perf_counter() - start
+
+    start = time.perf_counter()
+    result = pipeline.render_euv(plasma, euv_cfg, camera_cfg, show_progress=show_progress)
+    timings["euv"] = time.perf_counter() - start
+
+    provenance = pipeline.euv_provenance(
+        input_cfg, grid_cfg, euv_cfg, camera_cfg, output_cfg, result
+    )
+    written = write_euv(result, euv_cfg, output_cfg, provenance)
+    written += export_euv(result, output_cfg, provenance)
+    print_success(f"Wrote [bold]{written[0]}[/bold]")
+    _print_summary(provenance, timings, written=written, header="euv")
+
+
 # --- The end-of-run summary --------------------------------------------------------------------
 
 #: Timing keys that are whole pipeline stages (and therefore sum to the footer total); every other
 #: key is a sub-stage breakdown displayed inline on its stage's line.
-_TOP_LEVEL_TIMINGS = ("field", "build", "render", "fieldlines", "export", "brightness", "qmap")
+_TOP_LEVEL_TIMINGS = (
+    "field",
+    "build",
+    "render",
+    "fieldlines",
+    "export",
+    "brightness",
+    "qmap",
+    "euv",
+)
 
 
 def _input_line(prov: dict[str, Any]) -> str:
@@ -2710,6 +3063,41 @@ def _brightness_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
     return " · ".join(parts)
 
 
+def _plasma_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
+    """The summary's plasma row: the grid, the resampler, μ and where T came from."""
+    pla = prov["plasma"]
+    resampler = str(pla["resampler"])
+    if resampler == "knn-mls":
+        resampler += f" (k {pla['n_neighbors']})"
+    parts = [
+        f"{pla['n_r']}x{pla['n_theta']}x{pla['n_phi']} · "
+        f"r ∈ [{float(pla['inner_radius']):g}, {float(pla['outer_radius']):g}] R☉ · "
+        f"{pla['spacing']} · {resampler}",
+        f"μ {float(pla['mean_molecular_weight']):g} · T from {pla['temperature_source']}",
+    ]
+    if pla.get("floored_cells"):
+        parts.append(f"{int(pla['floored_cells'])} cells floored")
+    parts += [f"{name} {timings[name]:.0f} s" for name in ("read", "resample") if name in timings]
+    return " · ".join(parts)
+
+
+def _euv_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
+    """The summary's EUV row: the recipe, the TR correction and the level of each frame."""
+    euv = prov["euv"]
+    recipe = euv.get("recipe", {})
+    tr_temperature = euv.get("tr_temperature")
+    parts = [
+        f"{euv['abundances']} · CHIANTI {recipe.get('chianti_version', '?')}",
+        "no TR correction" if tr_temperature is None else f"TR Tc {float(tr_temperature):.3g} K",
+        "absorption" if euv["absorption"] else "no absorption",
+    ]
+    for name, frame in euv.get("frames", {}).items():
+        parts.append(f"{name} median {float(frame['median']):.3g} {frame['unit']}")
+    if "euv" in timings:
+        parts.append(f"render {timings['euv']:.1f} s")
+    return " · ".join(parts)
+
+
 def _qmap_line(prov: dict[str, Any], timings: dict[str, float]) -> str:
     qm = prov["qmap"]
     parts = [
@@ -2774,6 +3162,10 @@ def _print_summary(
         table.add_row("Render", _render_line(provenance, timings))
     if "brightness" in provenance:
         table.add_row("Brightness", _brightness_line(provenance, timings))
+    if "plasma" in provenance:
+        table.add_row("Plasma", _plasma_line(provenance, timings))
+    if "euv" in provenance:
+        table.add_row("EUV", _euv_line(provenance, timings))
     table.add_row("Output", _output_line(written, volume_path))
 
     # The footer total sums the top-level stages only; the sub-stage entries (read/resample within

@@ -27,8 +27,8 @@ from qorona.config.schema import (
 
 #: Named observers accepted by ``--observer``: Earth resolves offline, the spacecraft query JPL
 #: Horizons by body id.
-OBSERVERS = ("earth", "stereo-a", "solo", "psp")
-_HORIZONS_IDS = {"stereo-a": "-234", "solo": "-144", "psp": "-96"}
+OBSERVERS = ("earth", "stereo-a", "stereo-b", "solo", "psp")
+_HORIZONS_IDS = {"stereo-a": "-234", "stereo-b": "-235", "solo": "-144", "psp": "-96"}
 
 #: Earth's drift through the Icarus frame, in degrees per hour. The frame turns with a sidereal
 #: period of 24.47 days, and Icarus moves Earth at the mean rate of a 365.24-day year.

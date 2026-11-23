@@ -119,7 +119,11 @@ class SolutionMetadata:
     model's equation of state, ``p = 2 rho k T / (μ m_H)``, so the electron density is
     ``rho / (μ m_p)``. A reader that declares ``density_unit`` also declares
     ``mean_molecular_weight``; ``None`` falls back to
-    :data:`qorona.field.density.MEAN_MOLECULAR_WEIGHT` (1.27). ``category`` must equal the
+    :data:`qorona.field.density.MEAN_MOLECULAR_WEIGHT` (1.27). ``pressure_unit`` is the physical
+    pressure of one stored ``p`` unit and ``temperature_unit`` the temperature of one stored ``t``
+    unit, or ``None`` when the reader does not know them; the EUV render needs one of the two to
+    find the temperature. ``tr_temperature`` is the temperature (K) below which the run broadens
+    its transition region, when the files record it, else ``None``. ``category`` must equal the
     reader's :attr:`~qorona.io.readers.base.SolutionReader.category`.
     """
 
@@ -134,6 +138,9 @@ class SolutionMetadata:
     length_unit: u.UnitBase = u.R_sun
     density_unit: u.UnitBase | None = None
     mean_molecular_weight: float | None = None
+    pressure_unit: u.UnitBase | None = None
+    temperature_unit: u.UnitBase | None = None
+    tr_temperature: float | None = None
     extra: dict[str, str] = field(default_factory=dict)
 
 

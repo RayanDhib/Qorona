@@ -32,6 +32,12 @@
   max-height: none;
 }
 
+/* Flag tables: keep each flag in the first column on one line, so that column takes the width
+   of its longest flag and the text column wraps instead. */
+.md-typeset td:first-child > code {
+  white-space: nowrap;
+}
+
 /* Left-nav section labels: the brand blue, set apart from the page links. */
 .md-nav--primary .md-nav__item--section > .md-nav__link {
   font-weight: 700;

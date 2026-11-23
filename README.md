@@ -78,7 +78,7 @@ qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 31
 ## Supported models
 
 **COCONUT** ([COOLFluiD](https://github.com/andrealani/COOLFluiD) `.CFmesh`, Tecplot `.plt`),
-**[MAS](https://www.predsci.com/)** (HDF4), and **Icarus** (MPI-AMRVAC heliospheric `.vtu`). See
+**[MAS](https://www.predsci.com/)** (HDF4, HDF5), and **Icarus** (MPI-AMRVAC heliospheric `.vtu`). See
 [Supported models](https://rayandhib.github.io/Qorona/getting-started/supported-models/) for the
 formats and the papers of each model.
 

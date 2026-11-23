@@ -103,6 +103,15 @@ HELIO_FOV_FACTOR = 2.0
 STEP_PER_FOV = 1250.0
 WL_OCCULT_FACTOR = 1.02
 HELIO_QMAP_FACTOR = 3.0
+#: The EUV plasma grid: from the coronal inner radius to EUV_OUTER_RADIUS (R_sun), logarithmic,
+#: with EUV_N_R radial nodes (a 2 Mm base cell) and the field grid's angular nodes. Collisional
+#: EUV emission beyond 3 R_sun is negligible next to the disk.
+EUV_OUTER_RADIUS = 3.0
+EUV_N_R = 384
+#: The EUV line-of-sight step (R_sun): 0.7 Mm, a third of the plasma grid's base cell.
+EUV_STEP = 0.001
+#: The image size (pixels) of the EUV render when no instrument frame sets it.
+EUV_DEFAULT_DIMENSION = 1024
 
 
 def _require(condition: bool, message: str) -> None:
@@ -539,12 +548,22 @@ class CameraInstrument:
     reference_pixel: tuple[float, float]
 
 
-#: The instrument frames behind the CLI's ``--instrument``, from PUNCH Level 3 FITS headers. The
-#: mosaics of the Wide Field Imagers and the Narrow Field Imager (NFI) use ``HPLN-ARC``, 0.0225 deg
-#: per pixel, 4096 x 4096, and ``CRPIX`` 2048.0. The NFI images use ``HPLN-AZP`` with
-#: ``PV2_1 = 0`` (which is TAN), 30 arcsec per pixel, 2048 x 2048, and ``CRPIX`` 1024.5. FITS
-#: counts ``CRPIX`` from 1 with rows from the bottom, so the 0-based top-down reference pixel is
-#: ``(CRPIX1 - 1, height - CRPIX2)``.
+#: The instrument frames behind the CLI's ``--instrument``, from the instruments' FITS headers.
+#: FITS counts ``CRPIX`` from 1 with rows from the bottom, so the 0-based top-down reference pixel
+#: is ``(CRPIX1 - 1, height - CRPIX2)``.
+#:
+#: - PUNCH Level 3: the mosaics of the Wide Field Imagers and the Narrow Field Imager (NFI) use
+#:   ``HPLN-ARC``, 0.0225 deg per pixel, 4096 x 4096, and ``CRPIX`` 2048.0. The NFI images use
+#:   ``HPLN-AZP`` with ``PV2_1 = 0`` (which is TAN), 30 arcsec per pixel, 2048 x 2048, and
+#:   ``CRPIX`` 1024.5.
+#: - SDO/AIA: ``HPLN-TAN``, 4096 x 4096, 0.6 arcsec per pixel (the Level 1.5 scale).
+#: - STEREO/EUVI: ``HPLN-TAN``, 2048 x 2048, 1.58777 arcsec per pixel on EUVI-A and 1.59 on
+#:   EUVI-B.
+#: - Solar Orbiter EUI Full Sun Imager (FSI), Level 2: ``HPLN-TAN``, 3040 x 3072 (width x height),
+#:   4.44012 arcsec per pixel.
+#:
+#: The EUV frames are centred on the Sun; the instruments' own images are off-centre by their
+#: pointing.
 CAMERA_INSTRUMENTS: dict[str, CameraInstrument] = {
     "punch-mosaic": CameraInstrument(
         fov_deg=4096 * 0.0225,
@@ -557,6 +576,30 @@ CAMERA_INSTRUMENTS: dict[str, CameraInstrument] = {
         pixels=(2048, 2048),
         projection_code="tan",
         reference_pixel=(1023.5, 1023.5),
+    ),
+    "aia": CameraInstrument(
+        fov_deg=4096 * 0.6 / 3600.0,
+        pixels=(4096, 4096),
+        projection_code="tan",
+        reference_pixel=(2047.5, 2047.5),
+    ),
+    "euvi-a": CameraInstrument(
+        fov_deg=2048 * 1.58777 / 3600.0,
+        pixels=(2048, 2048),
+        projection_code="tan",
+        reference_pixel=(1023.5, 1023.5),
+    ),
+    "euvi-b": CameraInstrument(
+        fov_deg=2048 * 1.59 / 3600.0,
+        pixels=(2048, 2048),
+        projection_code="tan",
+        reference_pixel=(1023.5, 1023.5),
+    ),
+    "eui-fsi": CameraInstrument(
+        fov_deg=3040 * 4.44012 / 3600.0,
+        pixels=(3072, 3040),
+        projection_code="tan",
+        reference_pixel=(1519.5, 1535.5),
     ),
 }
 
@@ -983,6 +1026,86 @@ class BrightnessConfig:
             "brightness_scale": self.brightness_scale,
             "workers": self.workers,
             "punch_l3": self.punch_l3,
+        }
+
+
+@dataclass(frozen=True)
+class EuvConfig:
+    """The synthetic EUV render: channels, atomic recipe, line-of-sight knobs, and display.
+
+    ``channels`` names the channels of one instrument (for example ``("aia-171", "aia-193")``);
+    they share one march. ``abundances`` picks the response tables' abundance set. ``step`` is
+    the line-of-sight step (R☉) and ``absorption`` the foreground absorption by H I, He I and
+    He II. ``tr_temperature`` is the run's transition-region broadening temperature (K): the
+    emission is divided by its broadening factor. ``tr_correction`` off renders without the
+    correction. With the correction on, a solution that includes the transition region needs a
+    known ``tr_temperature`` (from this field or from the solution's own record).
+
+    The display is ``log₁₀`` of the channel unit on a fixed range: the channel's default, the
+    ``display_range`` ``(low, high)`` in the channel unit, or, with ``auto_range``, the 0.5 and
+    99.9 percentiles of the frame. ``colorbar`` adds a colour bar beside the image.
+    """
+
+    channels: tuple[str, ...]
+    abundances: str = "coronal-2021"
+    step: float = EUV_STEP
+    absorption: bool = True
+    tr_temperature: float | None = None
+    tr_correction: bool = True
+    display_range: tuple[float, float] | None = None
+    auto_range: bool = False
+    colorbar: bool = True
+    workers: int | None = None
+
+    def __post_init__(self) -> None:
+        from qorona.radiation.response import ABUNDANCE_SETS, CHANNELS
+
+        object.__setattr__(self, "channels", tuple(self.channels))
+        _require(len(self.channels) > 0, "name at least one EUV channel")
+        for channel in self.channels:
+            _one_of(channel, tuple(CHANNELS), "EUV channel")
+        _require(
+            len(set(self.channels)) == len(self.channels),
+            f"give each EUV channel only once, got {', '.join(self.channels)}",
+        )
+        observers = {CHANNELS[channel].observer for channel in self.channels}
+        _require(
+            len(observers) == 1,
+            f"the channels {', '.join(self.channels)} belong to different instruments; "
+            "render each instrument separately",
+        )
+        _one_of(self.abundances, ABUNDANCE_SETS, "abundance set")
+        _require(self.step > 0.0, f"step must be > 0 R_sun, got {self.step}")
+        _require(
+            self.tr_temperature is None or self.tr_temperature > 0.0,
+            f"the transition-region broadening temperature must be > 0 K, got "
+            f"{self.tr_temperature}",
+        )
+        if self.display_range is not None:
+            low, high = (float(v) for v in self.display_range)
+            object.__setattr__(self, "display_range", (low, high))
+            _require(
+                0.0 < low < high,
+                f"the display range needs 0 < low < high, got {self.display_range}",
+            )
+            _require(not self.auto_range, "choose either a display range or the auto range")
+        _require(
+            self.workers is None or self.workers >= 1,
+            f"workers must be None or >= 1, got {self.workers}",
+        )
+
+    def to_provenance(self) -> dict[str, object]:
+        return {
+            "channels": list(self.channels),
+            "abundances": self.abundances,
+            "step": self.step,
+            "absorption": self.absorption,
+            "tr_temperature": self.tr_temperature,
+            "tr_correction": self.tr_correction,
+            "display_range": (list(self.display_range) if self.display_range is not None else None),
+            "auto_range": self.auto_range,
+            "colorbar": self.colorbar,
+            "workers": self.workers,
         }
 
 

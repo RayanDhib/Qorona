@@ -28,6 +28,7 @@ from qorona.io.readers.coconut.normalization import (
     DENSITY_UNIT,
     LENGTH_UNIT,
     MEAN_MOLECULAR_WEIGHT,
+    PRESSURE_UNIT,
 )
 
 #: Fraction of the radial span within which a node counts as on the inner/outer shell.
@@ -90,6 +91,7 @@ class CoconutTecplotReader(SolutionReader):
             density_unit=DENSITY_UNIT,
             length_unit=LENGTH_UNIT,
             mean_molecular_weight=MEAN_MOLECULAR_WEIGHT,
+            pressure_unit=PRESSURE_UNIT,
             dimension=3,
             n_equations=len(parsed.cell),
             element_type="Prism",

@@ -35,7 +35,7 @@ coronal MHD solution ──▶ read ──▶ resample ──▶ Q⊥ volume ─
 | | |
 |---|---|
 | **Get started** | [Installation](getting-started/installation.md), [Quick start](getting-started/first-eclipse-image.md) |
-| **Products** | [Squashing-factor render](products/squashing-factor.md), [polarity view](products/polarity.md), [white-light imaging](products/white-light.md), [Q-maps](products/qmaps.md), [field lines](products/fieldlines.md). Each page gives the command that made its figure. |
+| **Products** | [Squashing-factor render](products/squashing-factor.md), [polarity view](products/polarity.md), [white-light imaging](products/white-light.md), [EUV imaging](products/euv.md), [Q-maps](products/qmaps.md), [field lines](products/fieldlines.md). Each page gives the command that made its figure. |
 | **Guides** | [Camera and viewpoint](camera.md), [solution time and frame](time-and-frame.md), [the Q⊥ volume](qperp-volume.md), [export to JHelioviewer](jhelioviewer.md), [GPU acceleration](gpu.md), [HPC clusters](getting-started/hpc.md) |
 | **Heliosphere and PUNCH** | [Heliospheric solutions](heliospheric.md), [comparing with PUNCH](punch.md) |
 | **Reference** | [Supported models](getting-started/supported-models.md) |

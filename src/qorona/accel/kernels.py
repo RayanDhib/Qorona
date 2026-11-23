@@ -1399,3 +1399,166 @@ def brightness_batch_jit(
         k_tan[i] = tan_sum
         k_pol[i] = pol_sum
     return k_tan, k_pol
+
+
+# --- EUV kernel --------------------------------------------------------------------------------
+# The synthetic EUV image integrates nₑ² K_b(T, nₑ) e^(-τ_b) along each ray, on the same camera
+# and s-march as the brightness render. The plasma payload holds log₁₀ nₑ and log₁₀ T, sampled
+# trilinearly. The response K_b is bilinear in log K on uniform (log T, log nₑ) axes. The march
+# runs from the observer inward, so the optical depth τ_b of the foreground (n_H κ_b(T) ds) is
+# known when each sample's emission is added. Rays that meet the body stop at its front surface.
+
+
+@njit(cache=True)
+def _trilinear_pair(payload: np.ndarray, c0: float, c1: float, c2: float) -> tuple[float, float]:
+    """Trilinear sample of the two channels of a padded payload at padded index ``(c0, c1, c2)``."""
+    i = np.int64(math.floor(c0))
+    j = np.int64(math.floor(c1))
+    k = np.int64(math.floor(c2))
+    wr = c0 - i
+    wt = c1 - j
+    wp = c2 - k
+    out0 = 0.0
+    out1 = 0.0
+    for di in range(2):
+        a = wr if di == 1 else 1.0 - wr
+        for dj in range(2):
+            b = wt if dj == 1 else 1.0 - wt
+            for dk in range(2):
+                c = wp if dk == 1 else 1.0 - wp
+                weight = a * b * c
+                out0 += weight * payload[i + di, j + dj, k + dk, 0]
+                out1 += weight * payload[i + di, j + dj, k + dk, 1]
+    return out0, out1
+
+
+@njit(cache=True)
+def _axis_cell(value: float, start: float, inv_step: float, n: int) -> tuple[np.int64, float]:
+    """Lower cell index and weight on a uniform axis, with ``value`` clamped to the axis."""
+    position = (value - start) * inv_step
+    if position < 0.0:
+        position = 0.0
+    elif position > n - 1.0:
+        position = n - 1.0
+    index = np.int64(math.floor(position))
+    if index > n - 2:
+        index = np.int64(n - 2)
+    return index, position - index
+
+
+@njit(parallel=True, cache=True)
+def euv_batch_jit(
+    origins: np.ndarray,
+    directions: np.ndarray,
+    impact: np.ndarray,
+    observer_limit: np.ndarray,
+    s_grid: np.ndarray,
+    payload: np.ndarray,
+    pg: JitGrid,
+    r_body: float,
+    log_t0: float,
+    inv_dlog_t: float,
+    log_ne0: float,
+    inv_dlog_ne: float,
+    log_k: np.ndarray,
+    kappa: np.ndarray,
+    hydrogen_per_electron: np.ndarray,
+    absorb: bool,
+    ds_cm: float,
+) -> np.ndarray:
+    """Integrate ``nₑ² K_b e^(-τ_b) ds`` for every channel ``b`` along a batch of rays.
+
+    One ray per ``prange`` lane, marching ``s_grid`` from its largest ``s`` (the observer side)
+    down. ``directions`` and ``observer_limit`` with a single row apply to every ray. A sample
+    counts when it is inside the shell, in front of the observer (``s <= observer_limit``), and
+    not behind the body: a ray with ``impact < r_body`` stops at ``s = sqrt(r_body² - impact²)``.
+    The deepest sample of such a ray weighs the path length from its cell top down to that point,
+    so the sum does not jump where the surface point crosses the sample grid.
+
+    Parameters
+    ----------
+    log_k
+        ``(n_ch, n_t, n_ne)`` ``log₁₀ K`` per channel on the shared axes.
+    kappa
+        ``(n_ch, n_t)`` absorption cross-section per hydrogen nucleus (cm²).
+    hydrogen_per_electron
+        ``(n_ch,)`` ``n_H / nₑ`` of each channel's abundance set.
+    absorb
+        Whether the foreground absorption applies.
+    ds_cm
+        The step length in cm.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(n_rays, n_ch)`` intensities per steradian in the channel units.
+    """
+    n_rays = origins.shape[0]
+    n_steps = s_grid.shape[0]
+    n_ch = log_k.shape[0]
+    n_t = log_k.shape[1]
+    n_ne = log_k.shape[2]
+    out = np.zeros((n_rays, n_ch))
+
+    r_inner = pg.r_inner
+    r_outer = pg.r_outer
+    theta_step = math.pi / pg.n_theta
+    phi_step = _TWO_PI / pg.n_phi
+    ds = s_grid[1] - s_grid[0]
+    stride = np.int64(1) if directions.shape[0] > 1 else np.int64(0)
+    for i in prange(n_rays):
+        ox = origins[i, 0]
+        oy = origins[i, 1]
+        oz = origins[i, 2]
+        j = np.int64(i) * stride
+        lx = directions[j, 0]
+        ly = directions[j, 1]
+        lz = directions[j, 2]
+        s_observer = observer_limit[j]
+        rho = impact[i]
+        s_surface = math.sqrt(r_body * r_body - rho * rho) if rho < r_body else -math.inf
+
+        tau = np.zeros(n_ch)
+        acc = np.zeros(n_ch)
+        for step in range(n_steps - 1, -1, -1):
+            s = s_grid[step]
+            if s > s_observer:
+                continue
+            if s < s_surface:
+                break
+            r = math.sqrt(rho * rho + s * s)
+            if r < r_inner or r > r_outer:
+                continue
+            r_point, theta, phi = _spherical(ox + s * lx, oy + s * ly, oz + s * lz)
+            if r_point < r_inner:
+                r_point = r_inner
+            elif r_point > r_outer:
+                r_point = r_outer
+            parameter, _ = _radial_parameter_and_derivative(
+                r_point, pg.spacing_code, r_inner, r_outer, pg.exponent
+            )
+            log_ne, log_t = _trilinear_pair(
+                payload,
+                parameter * (pg.n_r - 1) + GHOST,
+                theta / theta_step - 0.5 + GHOST,
+                phi / phi_step + GHOST,
+            )
+            length = ds_cm
+            if s - ds < s_surface:
+                length = ds_cm * (s + 0.5 * ds - s_surface) / ds
+            ne = 10.0**log_ne
+            ti, wt = _axis_cell(log_t, log_t0, inv_dlog_t, n_t)
+            ni, wn = _axis_cell(log_ne, log_ne0, inv_dlog_ne, n_ne)
+            emits = log_t >= log_t0
+            for c in range(n_ch):
+                if emits:
+                    lk = (1.0 - wt) * (
+                        (1.0 - wn) * log_k[c, ti, ni] + wn * log_k[c, ti, ni + 1]
+                    ) + wt * ((1.0 - wn) * log_k[c, ti + 1, ni] + wn * log_k[c, ti + 1, ni + 1])
+                    acc[c] += ne * ne * 10.0**lk * math.exp(-tau[c]) * length
+                if absorb:
+                    kap = (1.0 - wt) * kappa[c, ti] + wt * kappa[c, ti + 1]
+                    tau[c] += hydrogen_per_electron[c] * ne * kap * length
+        for c in range(n_ch):
+            out[i, c] = acc[c]
+    return out

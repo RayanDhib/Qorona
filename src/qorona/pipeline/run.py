@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 import zipfile
 from dataclasses import replace
@@ -31,6 +32,7 @@ from qorona import __version__
 from qorona.config import (
     BrightnessConfig,
     CameraConfig,
+    EuvConfig,
     ExportConfig,
     FieldLinesConfig,
     GridConfig,
@@ -52,6 +54,7 @@ from qorona.config.schema import (
     CORONAL_SHELL,
     CORONAL_STEP,
     CORONAL_WL_R_OCCULT,
+    EUV_OUTER_RADIUS,
     HELIO_FOV_FACTOR,
     HELIO_LATITUDE,
     HELIO_PERSPECTIVE_LATITUDE,
@@ -63,6 +66,7 @@ from qorona.console import progress_bar
 from qorona.ephemeris import derive_cr, derive_jd, sub_observer_point, utc_time
 from qorona.field.base import Field
 from qorona.field.density import DensityVolume
+from qorona.field.plasma import TRANSITION_REGION_TEMPERATURE, PlasmaVolume, decode_plasma
 from qorona.field.sampled import SampledField
 from qorona.geometry.camera import Camera, OrthographicCamera, PerspectiveCamera, check_arc_reach
 from qorona.io import NativeSolution, read_solution
@@ -70,6 +74,9 @@ from qorona.io.readers import category_of, resolve_model
 from qorona.radiation import punch_l3
 from qorona.radiation.brightness import BrightnessResult
 from qorona.radiation.brightness import render_brightness as _brightness_los
+from qorona.radiation.euv import EuvResult
+from qorona.radiation.euv import render_euv as _euv_los
+from qorona.radiation.response import CHANNELS
 from qorona.render.fieldlines import FieldLineImage, render_field_lines
 from qorona.render.los import LARGE_FOV, LOG_FLOOR, SMALL_FOV, RenderResult, WeightingPreset, render
 from qorona.render.shell import QMap
@@ -850,6 +857,263 @@ def render_punch_l3(
         frames=int(offsets.size),
         background_pixels=small,
     )
+
+
+# --- Synthetic EUV ------------------------------------------------------------------------------
+
+
+def build_plasma(
+    input_cfg: InputConfig,
+    grid_cfg: GridConfig,
+    *,
+    euv_cfg: EuvConfig | None = None,
+    field_radius: float | None = None,
+    show_progress: bool = True,
+    timings: dict[str, float] | None = None,
+) -> tuple[PlasmaVolume, GridConfig]:
+    """Read a coronal solution and resample its electron density and temperature for EUV.
+
+    The plasma grid is ``grid_cfg``, with a ``None`` inner radius resolved to the coronal shell
+    and a ``None`` outer radius to :data:`~qorona.config.schema.EUV_OUTER_RADIUS`, or further when
+    the camera's ``field_radius`` (:func:`euv_field_radius`) reaches past it (:func:`_euv_shell`).
+    The k-NN MLS resampler keeps its stencil at ``grid_cfg.n_neighbors`` on every mesh
+    (no scaling with the cell count), which keeps the transition region of a refined mesh sharp.
+    A set ``input_cfg.mean_molecular_weight`` replaces the μ that the reader declares. With an
+    ``euv_cfg``, the transition-region check of :func:`resolve_tr_temperature` runs on the decode,
+    before the resample, so a missing broadening temperature fails fast. When a ``timings`` dict
+    is supplied, the ``"read"`` and ``"resample"`` durations (seconds) are recorded into it.
+
+    Returns
+    -------
+    plasma
+        The plasma volume.
+    grid_cfg
+        The plasma grid config with its shell and resampler resolved.
+
+    Raises
+    ------
+    ValueError
+        If the solution is heliospheric (its inner boundary is far above the EUV corona), or if
+        the transition-region check fails.
+    """
+    reader_kwargs: dict[str, object] = {}
+    if input_cfg.variables is not None:
+        reader_kwargs["variables"] = input_cfg.variables
+    start = time.perf_counter()
+    solution = read_solution(
+        input_cfg.path, model=input_cfg.model, show_progress=show_progress, **reader_kwargs
+    )
+    if timings is not None:
+        timings["read"] = time.perf_counter() - start
+    if solution.metadata.category == "heliosphere":
+        inner = solution.boundaries["inner"].mean_radius.to_value(u.R_sun)
+        raise ValueError(
+            f"the EUV render needs a coronal solution; this {solution.metadata.model.upper()} "
+            f"solution starts at {inner:.3g} R_sun, far above the EUV corona"
+        )
+    if input_cfg.mean_molecular_weight is not None:
+        solution.metadata.mean_molecular_weight = input_cfg.mean_molecular_weight
+    decoded = decode_plasma(solution)
+    if euv_cfg is not None:
+        _tr_temperature(decoded.transition_region, solution.metadata.tr_temperature, euv_cfg)
+    if grid_cfg.outer_radius is None:
+        grid_cfg = _euv_shell(grid_cfg, solution, field_radius)
+    grid_cfg = _resolve_grid(grid_cfg, solution)
+    resampler_name = _resolve_resampler(grid_cfg.resampler, solution)
+    resampler: Resampler
+    if resampler_name == "knn-mls":
+        resampler = KnnMlsResampler(n_neighbors=grid_cfg.n_neighbors, reference_cell_count=None)
+    else:
+        resampler = _RESAMPLERS[resampler_name]()
+    start = time.perf_counter()
+    plasma = PlasmaVolume.from_solution(
+        solution, _field_grid(grid_cfg), resampler, decoded=decoded, show_progress=show_progress
+    )
+    if timings is not None:
+        timings["resample"] = time.perf_counter() - start
+    return plasma, replace(grid_cfg, resampler=resampler_name)
+
+
+def _euv_shell(
+    grid_cfg: GridConfig, solution: NativeSolution, field_radius: float | None
+) -> GridConfig:
+    """The default outer radius of the EUV plasma grid: the EUV shell, or the camera's field.
+
+    Without a ``field_radius`` beyond :data:`~qorona.config.schema.EUV_OUTER_RADIUS`, the outer
+    radius is that constant. Otherwise it is ``field_radius`` rounded up to the next 0.5 R☉, at most
+    the solution's outer boundary, so the image has no edge where the grid stops. A logarithmic
+    grid then scales ``n_r`` with the log of the shell, so its radial spacing (and its base cell)
+    stays that of ``n_r`` nodes out to the constant.
+    """
+    if field_radius is None or field_radius <= EUV_OUTER_RADIUS:
+        return replace(grid_cfg, outer_radius=EUV_OUTER_RADIUS)
+    boundary = solution.boundaries["outer"].mean_radius.to_value(u.R_sun)
+    outer = max(EUV_OUTER_RADIUS, min(math.ceil(2.0 * field_radius) / 2.0, float(boundary)))
+    n_r = grid_cfg.n_r
+    if grid_cfg.spacing == "logarithmic":
+        inner = grid_cfg.inner_radius if grid_cfg.inner_radius is not None else CORONAL_SHELL[0]
+        n_r = math.ceil(n_r * math.log(outer / inner) / math.log(EUV_OUTER_RADIUS / inner))
+    return replace(grid_cfg, outer_radius=outer, n_r=n_r)
+
+
+def euv_field_radius(camera_cfg: CameraConfig, euv_cfg: EuvConfig) -> float:
+    """The largest distance (R☉) from Sun centre that the EUV camera's field reaches.
+
+    This is the impact parameter of the ray through the farthest image corner, for the camera as
+    :func:`resolve_euv_camera` resolves it. The plasma grid uses it to cover the whole field
+    (:func:`build_plasma`).
+    """
+    camera = _camera(resolve_euv_camera(camera_cfg, euv_cfg, CORONAL_SHELL[0], EUV_OUTER_RADIUS))
+    height, width = camera.pixels
+    corners = (0, width - 1, (height - 1) * width, height * width - 1)
+    return max(float(camera.ray_batch(i, i + 1).packed()[2][0]) for i in corners)
+
+
+def resolve_tr_temperature(plasma: PlasmaVolume, euv_cfg: EuvConfig) -> float | None:
+    """The transition-region broadening temperature (K) that the EUV response is corrected for.
+
+    The config's value wins, then the solution's own record. ``None`` applies no correction:
+    the correction is off, or the solution has no transition region and no known temperature.
+
+    Raises
+    ------
+    ValueError
+        If the correction is on and the solution includes the transition region, but no
+        broadening temperature is known.
+    """
+    return _tr_temperature(plasma.transition_region, plasma.tr_temperature, euv_cfg)
+
+
+def _tr_temperature(
+    transition_region: bool, recorded: float | None, euv_cfg: EuvConfig
+) -> float | None:
+    """The rule of :func:`resolve_tr_temperature`, on the solution's own facts."""
+    if not euv_cfg.tr_correction:
+        return None
+    tr_temperature = euv_cfg.tr_temperature if euv_cfg.tr_temperature is not None else recorded
+    if tr_temperature is None and transition_region:
+        raise ValueError(
+            f"this solution includes the transition region (its base is below "
+            f"{TRANSITION_REGION_TEMPERATURE:.0e} K). Models broaden that layer artificially below "
+            "a temperature Tc set in the run's configuration, which makes its EUV emission far "
+            "too bright unless it is corrected. Pass the run's Tc with --tr-temperature (for "
+            "example --tr-temperature 2e5), or --tr-temperature none to render without the "
+            "correction"
+        )
+    return tr_temperature
+
+
+def resolve_euv_camera(
+    camera_cfg: CameraConfig, euv_cfg: EuvConfig, inner: float, outer: float
+) -> CameraConfig:
+    """Resolve the EUV camera: perspective, framed by the channels' instrument by default.
+
+    A ``None`` angular width and projection code take the instrument frame's
+    (:data:`~qorona.config.schema.CAMERA_INSTRUMENTS`); the rest resolves as for any coronal
+    perspective view (:func:`_resolve_camera`).
+
+    Raises
+    ------
+    ValueError
+        For the orthographic camera, or a width in R☉: the value of one native instrument pixel
+        is a solid angle seen from a finite distance.
+    """
+    if camera_cfg.projection == "orthographic" or camera_cfg.fov is not None:
+        raise ValueError(
+            "the EUV render uses the perspective camera, because one instrument pixel is a solid "
+            "angle seen from the observer; drop --projection orthographic and --fov, and set the "
+            "width with --fov-deg or --instrument"
+        )
+    frame = CAMERA_INSTRUMENTS[CHANNELS[euv_cfg.channels[0]].frame]
+    camera_cfg = replace(
+        camera_cfg,
+        projection="perspective",
+        fov_deg=camera_cfg.fov_deg if camera_cfg.fov_deg is not None else frame.fov_deg,
+        projection_code=camera_cfg.projection_code or frame.projection_code,
+    )
+    return _resolve_camera(camera_cfg, "corona", inner, outer)
+
+
+def render_euv(
+    plasma: PlasmaVolume,
+    euv_cfg: EuvConfig,
+    camera_cfg: CameraConfig,
+    *,
+    show_progress: bool = True,
+) -> EuvResult:
+    """Render synthetic EUV frames of a plasma volume from one viewpoint.
+
+    Resolves the camera (:func:`resolve_euv_camera`) and the broadening temperature
+    (:func:`resolve_tr_temperature`), then integrates the emission of every channel along each
+    line of sight in one march.
+
+    Returns
+    -------
+    EuvResult
+        One frame per channel, in the channel unit per second and native pixel.
+    """
+    inner, outer = float(plasma.grid.radii[0]), float(plasma.grid.radii[-1])
+    camera_cfg = resolve_euv_camera(camera_cfg, euv_cfg, inner, outer)
+    return _euv_los(
+        plasma,
+        _camera(camera_cfg),
+        euv_cfg.channels,
+        abundances=euv_cfg.abundances,
+        step=euv_cfg.step,
+        absorption=euv_cfg.absorption,
+        tr_temperature=resolve_tr_temperature(plasma, euv_cfg),
+        workers=euv_cfg.workers,
+        show_progress=show_progress,
+    )
+
+
+def euv_provenance(
+    input_cfg: InputConfig,
+    grid_cfg: GridConfig,
+    euv_cfg: EuvConfig,
+    camera_cfg: CameraConfig,
+    output_cfg: OutputConfig,
+    result: EuvResult,
+) -> dict[str, Any]:
+    """Assemble the EUV render's provenance: input, plasma grid, recipe, camera and output.
+
+    The EUV block carries the configuration, the broadening temperature that was applied, the
+    atomic recipe of the response tables (CHIANTI version, abundance file, ionization
+    equilibrium, response files), the instrument effects left out, and the level of each frame.
+    """
+    first = next(iter(result.tables.values()))
+    recipe = first.provenance
+    frames = {}
+    for name, frame in result.frames.items():
+        positive = frame[np.isfinite(frame) & (frame > 0.0)]
+        median, high = np.percentile(positive, [50.0, 99.0]) if positive.size else (0.0, 0.0)
+        frames[name] = {"unit": result.unit(name), "median": float(median), "p99": float(high)}
+    return {
+        "format": "qorona-euv-v1",
+        "version": __version__,
+        "input": _input_provenance(input_cfg),
+        "plasma": {**grid_cfg.to_provenance(), **result.plasma},
+        "euv": {
+            **euv_cfg.to_provenance(),
+            "instrument": first.channel.instrument,
+            "tr_temperature": result.tr_temperature,
+            "recipe": {
+                "chianti_version": recipe.get("chianti_version"),
+                "abundance_file": recipe.get("abundance_file"),
+                "ionization_equilibrium": recipe.get("ionization_equilibrium"),
+                "n_h_over_n_e": recipe.get("n_h_over_n_e"),
+                "continuum": recipe.get("continuum"),
+                "responses": {
+                    name: table.provenance.get("response", {}).get("file")
+                    for name, table in result.tables.items()
+                },
+            },
+            "instrument_effects": "none (no degradation, no point-spread function)",
+            "frames": frames,
+        },
+        "camera": camera_cfg.to_provenance(),
+        "output": output_cfg.to_provenance(),
+    }
 
 
 def run(cfg: RunConfig, *, show_progress: bool = True) -> RenderResult:

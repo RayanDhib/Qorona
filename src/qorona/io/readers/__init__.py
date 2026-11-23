@@ -14,12 +14,13 @@ from qorona.io.native import NativeSolution
 from qorona.io.readers.base import SolutionReader
 from qorona.io.readers.coconut import CFmeshReader, CoconutTecplotReader
 from qorona.io.readers.icarus import IcarusVtuReader
-from qorona.io.readers.mas import MasHdfReader
+from qorona.io.readers.mas import MasHdf5Reader, MasHdfReader
 
 _READERS: list[type[SolutionReader]] = [
     CFmeshReader,
     CoconutTecplotReader,
     MasHdfReader,
+    MasHdf5Reader,
     IcarusVtuReader,
 ]
 

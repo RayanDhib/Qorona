@@ -56,6 +56,7 @@ nav:
       - Squashing-factor render: products/squashing-factor.md
       - Polarity view: products/polarity.md
       - White-light imaging: products/white-light.md
+      - EUV imaging: products/euv.md
       - Q-maps: products/qmaps.md
       - Field lines: products/fieldlines.md
   - Guides:

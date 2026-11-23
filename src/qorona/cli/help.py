@@ -21,6 +21,7 @@ SECTION_ORDER = (
     "Input",
     "Icarus input",
     "Field grid",
+    "EUV grid",
     "Volume",
     "Cache",
     "Camera",
@@ -29,6 +30,7 @@ SECTION_ORDER = (
     "Field lines",
     "Export",
     "Brightness",
+    "EUV",
     "Output",
     "Execution",
 )
