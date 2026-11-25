@@ -53,10 +53,9 @@ qorona euv data/coconut_corona.CFmesh.xz -o data/euv.png \
     --channel aia-94,aia-131,aia-171,aia-193,aia-211,aia-335
 ```
 
-These commands use `--range auto`, which fits the display range to each image. The example
-solution is hotter and less dense than the real corona, so its values are far below the observed
-AIA values. With the default display range, its image is black, and `euv` tells you to try
-`--range auto`.
+These commands use `--range auto`, which fits the display range to each image. The values of the
+example solution are far below the observed AIA values. With the default display range, its image
+is black, and `euv` tells you to try `--range auto`.
 
 The input is a coronal solution file with a density, and a temperature or a pressure. A `.qor`
 volume does not keep the temperature, so `euv` does not accept it.
