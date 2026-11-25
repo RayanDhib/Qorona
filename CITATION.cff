@@ -10,7 +10,11 @@ abstract: >-
   solar eclipse. Each coronal model and file format sits behind a single reader interface,
   so the whole pipeline runs on any solution once a reader exists; a field-line painting
   volume builder decouples interior resolution from cost, and the engine is validated
-  against an analytic dipole whose Q-perp is known in closed form.
+  against an analytic dipole whose Q-perp is known in closed form. Besides the
+  squashing-factor image, Qorona renders white-light and polarized-brightness images,
+  synthetic EUV images in the channels of SDO/AIA, STEREO/EUVI and Solar Orbiter/EUI,
+  field-line views and fixed-radius Q-perp maps, and writes WCS-registered FITS files for
+  comparison with observations. It reads COCONUT, MAS and Icarus solutions.
 authors:
   - family-names: Dhib
     given-names: Rayan
