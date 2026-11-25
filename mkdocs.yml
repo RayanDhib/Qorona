@@ -41,6 +41,9 @@ markdown_extensions:
   - attr_list
   - pymdownx.superfences
   - pymdownx.details
+  - pymdownx.snippets:
+      base_path: [docs]
+      check_paths: true
   - toc:
       permalink: true
 
