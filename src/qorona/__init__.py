@@ -8,6 +8,6 @@ field lines and Q-maps. The supported models are COCONUT (``.CFmesh`` and Tecplo
 
 from qorona.io import NativeSolution, read_solution
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = ["NativeSolution", "__version__", "read_solution"]
