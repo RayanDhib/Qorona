@@ -93,8 +93,8 @@ If you use Qorona, please cite both the software and its accompanying paper.
 
 > Dhib, R., Ben Ameur, F., Baratashvili, T., Jeong, H.-J., Wang, H., Noraz, Q., Schmieder, B.,
 > Lani, A., & Poedts, S. *Qorona: Open, Model-Agnostic Line-of-Sight Rendering of the
-> Perpendicular Squashing Factor for Eclipse-like Coronal Imaging*. The Astrophysical Journal
-> (2026). [doi:10.3847/1538-4357/aea841](https://doi.org/10.3847/1538-4357/aea841)
+> Perpendicular Squashing Factor for Eclipse-like Coronal Imaging*. The Astrophysical Journal,
+> 1010, 152 (2026). [doi:10.3847/1538-4357/aea841](https://doi.org/10.3847/1538-4357/aea841)
 
 ```bibtex
 @article{dhib2026qorona,
@@ -105,6 +105,9 @@ If you use Qorona, please cite both the software and its accompanying paper.
              Perpendicular Squashing Factor for Eclipse-like Coronal Imaging}},
   journal = {The Astrophysical Journal},
   year    = {2026},
+  volume  = {1010},
+  number  = {2},
+  pages   = {152},
   doi     = {10.3847/1538-4357/aea841}
 }
 ```

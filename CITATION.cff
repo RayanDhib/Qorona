@@ -53,5 +53,8 @@ preferred-citation:
     - family-names: Poedts
       given-names: Stefaan
   journal: "The Astrophysical Journal"
+  volume: 1010
+  issue: 2
+  start: 152
   year: 2026
   doi: 10.3847/1538-4357/aea841
