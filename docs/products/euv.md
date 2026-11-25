@@ -193,9 +193,10 @@ instrument records it. It does not include these effects:
 ## The comparison script
 
 Save this script as `compare_euv.py`. It needs the packages that Qorona installs, with sunpy 6.0
-or later. To correct an AIA image for degradation, it also needs `aiapy` (`pip install aiapy`).
-Without `aiapy`, the script does not correct the image, and it says so in the terminal and on
-the figure.
+or later. If `aiapy` is installed (`pip install aiapy`), the script corrects an AIA image for
+degradation by itself. For this, `aiapy` downloads a calibration table, which needs an internet
+connection. Without `aiapy`, the script does not correct the image, and it says so in the
+terminal and on the figure.
 
 ```python
 """Compare a Qorona EUV frame with an observed EUV image.
@@ -206,8 +207,8 @@ MODEL.fits comes from `qorona euv --export fits`. OBSERVED.fits is an image of t
 AIA Level 1, EUVI Level 1 from secchi_prep, or EUI/FSI Level 2. The script puts the observed image
 in the unit of the model for each second, corrects AIA for degradation if aiapy is installed, and
 averages it onto the pixels of the model frame. It writes MODEL_vs_observed.png: the two images,
-each on its own display, the ratio model / observed, and the median of each ring of distance from
-Sun centre. It also prints the median ratio on the disk and in bands off the limb.
+each on its own display with its colour bar, and the median of each ring of distance from Sun
+centre. It also prints the median ratio model / observed on the disk and in bands off the limb.
 """
 
 import sys
@@ -219,7 +220,7 @@ import numpy as np
 import sunpy.map
 from astropy.coordinates import SkyCoord
 from matplotlib import pyplot as plt
-from matplotlib.colors import LogNorm, Normalize
+from matplotlib.colors import LogNorm
 from sunpy.coordinates.screens import SphericalScreen
 
 model_path, observed_path = Path(sys.argv[1]), Path(sys.argv[2])
@@ -246,7 +247,7 @@ if observed.instrument.upper().startswith("AIA"):
     try:
         from aiapy.calibrate import correct_degradation
     except ImportError:
-        notes.append("AIA not corrected for degradation: install aiapy")
+        notes.append("AIA not corrected for degradation: install aiapy.")
         print(f"warning: {notes[-1]}")
     else:
         observed = correct_degradation(observed)
@@ -255,8 +256,8 @@ else:
     observed_unit = str(observed.meta.get("bunit", "")).lower().replace(" ", "")
     if not observed_unit.endswith(("/s", "s-1", "/sec")):
         sys.exit(
-            f"The observed image is in '{observed_unit}', not for each second. Use EUVI Level 1 from "
-            "secchi_prep (photons per second) or EUI/FSI Level 2 (DN/s)."
+            f"The observed image is in '{observed_unit}', not for each second. "
+            "Use EUVI Level 1 from secchi_prep (photons per second) or EUI/FSI Level 2 (DN/s)."
         )
     per_second = observed.data
 observed = sunpy.map.Map(per_second.astype(float), observed.meta)
@@ -303,32 +304,26 @@ if np.isfinite(edge):
     lines.append(f"compared out to {edge:.2f} R_sun")
 print("\n".join(lines))
 
-# Each image on its own display, 0.5 to 99.9 percent, so that both show their structure. The ratio
-# map and the profile compare the levels.
+# Each image on its own display, 0.5 to 99.9 percent, with its colour bar, so that both show their
+# structure. The profile compares the levels.
 unit = model.meta["bunit"]
-figure = plt.figure(figsize=(15, 9))
-grid = figure.add_gridspec(2, 3, height_ratios=(1, 0.6), hspace=0.25, wspace=0.08)
+figure = plt.figure(figsize=(13, 10))
+grid = figure.add_gridspec(2, 2, height_ratios=(1, 0.6), hspace=0.25, wspace=0.15)
 date = observed.date.isot[:19]
-panels = {}
-for title, data in (
-    (f"Observed {channel}, {date}", observed_data),
-    (f"Model {channel}", model_data),
+for column, (title, data) in enumerate(
+    ((f"Observed {channel}, {date}", observed_data), (f"Model {channel}", model_data))
 ):
     low, high = np.percentile(data[valid], [0.5, 99.9])
-    panels[f"{title}\nown display, {low:.3g} to {high:.3g} {unit}"] = (
-        np.where(valid, data, np.nan),
-        LogNorm(vmin=low, vmax=high, clip=True),
-        observed.cmap,
-    )
-limit = np.nanmax(np.abs(np.nanpercentile(log_ratio, [1, 99])))
-panels["log10 (model / observed)"] = (log_ratio, Normalize(-limit, limit), "RdBu_r")
-for column, (title, (image, norm, cmap)) in enumerate(panels.items()):
     axes = figure.add_subplot(grid[0, column])
-    shown = axes.imshow(image, norm=norm, cmap=cmap, origin="lower")
+    shown = axes.imshow(
+        np.where(valid, data, np.nan),
+        norm=LogNorm(vmin=low, vmax=high, clip=True),
+        cmap=observed.cmap,
+        origin="lower",
+    )
     axes.set_title(title, fontsize=10)
     axes.set_axis_off()
-    if column == 2:
-        figure.colorbar(shown, ax=axes, fraction=0.046, pad=0.02)
+    figure.colorbar(shown, ax=axes, fraction=0.046, pad=0.02, label=unit)
 
 # The median of each ring.
 edges = np.arange(0.0, impact[valid].max() + step, step)
@@ -360,9 +355,9 @@ print(output)
 
 - The script writes the figure `MODEL_vs_observed.png` beside `MODEL.fits`, and prints its path.
 - The figure shows the observed image and the synthetic image ("Model"), each with its own display
-  range, so the two images compare shapes, not brightness. To compare the brightness, the
-  figure has a map of log₁₀ (model / observed) and a profile: the median of each ring of 0.02
-  solar radius, for each image.
+  range and colour bar, so the two images compare shapes, not brightness. To compare the
+  brightness, the figure has a profile: the median of each ring of 0.02 solar radius, for each
+  image.
 - The script prints the median ratio model / observed on the disk and in three bands off the
   limb: 1.0 to 1.1, 1.1 to 1.3 and 1.3 to 2.0 solar radii. It does not print a band with fewer
   than 100 pixels to compare.
