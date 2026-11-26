@@ -8,7 +8,7 @@ fine structure seen at a total solar eclipse.
 ![Synthetic eclipse render of the COCONUT corona](../assets/eclipse.png)
 
 ```bash
-qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 317 --latitude 6.2
+qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --observer earth
 ```
 
 ## Flags
@@ -34,7 +34,7 @@ structure at the surface.
 
 ```bash
 qorona render data/coconut_corona.qor -o data/near-limb.png \
-    --fov 3 --longitude 317 --latitude 6.2 --preset small-fov --step 0.002 --occult opaque
+    --fov 3 --observer earth --preset small-fov --step 0.002 --occult opaque
 ```
 
 !!! warning "Use a fine step for a small field of view"
@@ -59,7 +59,7 @@ comparison uses the near-limb settings:
 
 ```bash
 qorona render data/coconut_corona.qor -o data/occult-<mode>.png \
-    --fov 3 --longitude 317 --latitude 6.2 --preset small-fov --step 0.002 --occult <mode>
+    --fov 3 --observer earth --preset small-fov --step 0.002 --occult <mode>
 ```
 
 The `composite` mode on a whole-corona view:
@@ -68,7 +68,7 @@ The `composite` mode on a whole-corona view:
 
 ```bash
 qorona render data/coconut_corona.qor -o data/composite.png \
-    --fov 8 --longitude 317 --latitude 6.2 --occult composite
+    --fov 8 --observer earth --occult composite
 ```
 
 ## References

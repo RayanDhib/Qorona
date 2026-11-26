@@ -43,16 +43,16 @@ for each solution. For a quicker first look, add `--quality fast`.
 ## 4. Render
 
 ```bash
-qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 317 --latitude 6.2
+qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --observer earth
 ```
 
 ![Synthetic eclipse render of the COCONUT corona](../assets/eclipse.png)
 
-A render takes seconds. Render the same volume from as many viewpoints as you want. For the view
-from Earth at the solution time:
+`--observer earth` puts the camera at Earth at the solution time. A render takes seconds. Render
+the same volume from as many viewpoints as you want, for example from STEREO-A:
 
 ```bash
-qorona render data/coconut_corona.qor -o data/earth.png --fov 8 --observer earth
+qorona render data/coconut_corona.qor -o data/stereo-a.png --fov 8 --observer stereo-a
 ```
 
 [Camera and viewpoint](../camera.md) gives all the camera flags.
@@ -67,7 +67,7 @@ qorona render data/coconut_corona.qor -o data/earth.png --fov 8 --observer earth
 ```bash
 qorona run data/coconut_corona.CFmesh.xz -o data/eclipse.png \
     --timestamp 2025-10-09T18:19:52 --frame carrington --outer-radius 8 \
-    --fov 8 --longitude 317 --latitude 6.2 --save-volume data/coconut_corona.qor
+    --fov 8 --observer earth --save-volume data/coconut_corona.qor
 ```
 
 ## Next

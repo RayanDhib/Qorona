@@ -6,7 +6,7 @@ The squashing-factor render, coloured by magnetic polarity.
 
 ```bash
 qorona render data/coconut_corona.qor -o data/polarity.png \
-    --fov 8 --longitude 317 --latitude 6.2 --polarity-mode hue
+    --fov 8 --observer earth --polarity-mode hue
 ```
 
 | Colour | Field along the line of sight |

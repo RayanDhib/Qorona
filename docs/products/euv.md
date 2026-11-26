@@ -65,6 +65,9 @@ volume does not keep the temperature, so `euv` does not accept it.
 | Flag | Use | Default |
 |------|-----|---------|
 | `--channel` | The channel: `aia-94`, `aia-131`, `aia-171`, `aia-193`, `aia-211`, `aia-335`, `euvi-a-171`, `euvi-a-195`, `euvi-a-284` (the same for `euvi-b`) or `eui-fsi-174`. A comma list of channels of one instrument writes one image for each channel. | `aia-193` |
+| `--timestamp` | The time of the solution, in UTC. With it, the camera is at the spacecraft of the channel at that time. See [Solution time and frame](../time-and-frame.md). | none |
+| `--frame` | The frame of the input solution: `carrington` or `stonyhurst`. See [Carrington or Stonyhurst](../time-and-frame.md#carrington-or-stonyhurst). | `carrington`, with a warning |
+| `--observer` | The spacecraft that views the solution: `earth`, `stereo-a`, `stereo-b`, `solo` or `psp`. See [Use a real observer](../camera.md#use-a-real-observer). | set automatically |
 | `--tr-temperature` | The broadening temperature Tc of the run, in K, or `none`. See [Transition region](#transition-region). | from the run log, if there is one |
 | `--abundances` | The element abundances of the response tables: `coronal-2021` or `schmelz-2012`. | `coronal-2021` |
 | `--range LO,HI` | The display range of the log image, in the channel unit. `auto` uses the 0.5 and 99.9 percentiles of the image. | a fixed range for each channel |
@@ -77,11 +80,8 @@ volume does not keep the temperature, so `euv` does not accept it.
 - Camera flags: see [Camera and viewpoint](../camera.md). `euv` uses the perspective camera only.
   The default field of view is the field of the instrument, at 1024 × 1024 pixels.
   `--instrument aia`, `euvi-a`, `euvi-b` or `eui-fsi` gives the native frame of the instrument.
-- If you give `--timestamp` and no `--observer`, `--longitude`, `--latitude` or
-  `--observer-distance`, the observer is the spacecraft of the channel: `earth` for AIA,
-  `stereo-a` or `stereo-b` for EUVI, `solo` for EUI/FSI. See
-  [Use a real observer](../camera.md#use-a-real-observer) and
-  [Solution time and frame](../time-and-frame.md).
+- `euv` sets `--observer` automatically to the spacecraft of the channel: `earth` for AIA,
+  `stereo-a` or `stereo-b` for EUVI, `solo` for EUI/FSI. This needs `--timestamp`.
 - `qorona euv --help-all` lists all the flags, including the flags of the internal grid
   (`--outer-radius`, `--n-r` and others). See [Method](#method).
 

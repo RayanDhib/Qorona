@@ -7,8 +7,7 @@ build a Q⊥ volume.
 ![Polarized-brightness view of the COCONUT corona](../assets/white-light.png)
 
 ```bash
-qorona wl data/coconut_corona.qor -o data/white-light.png \
-    --longitude 317 --latitude 6.2
+qorona wl data/coconut_corona.qor -o data/white-light.png --observer earth
 ```
 
 The input is a solution file or a `.qor` volume. A volume is faster, because it keeps the resampled

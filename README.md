@@ -61,7 +61,7 @@ qorona build data/coconut_corona.CFmesh.xz -o data/coconut_corona.qor \
     --timestamp 2025-10-09T18:19:52 --frame carrington --outer-radius 8
 
 # 3. Render any number of viewpoints off that volume (seconds each).
-qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --longitude 317 --latitude 6.2
+qorona render data/coconut_corona.qor -o data/eclipse.png --fov 8 --observer earth
 ```
 
 <p align="center">
