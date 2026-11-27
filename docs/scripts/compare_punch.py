@@ -33,6 +33,9 @@ layer = "PB" if component == "pb" else "TOTAL"
 with fits.open(model_path) as hdus:
     treated = hdus[layer].data.astype(float)
     wcs = WCS(hdus[layer].header)
+    # Qorona writes the name of the model in INSTRUME: ICARUS, COCONUT or MAS.
+    source = hdus[layer].header.get("INSTRUME", "UNKNOWN")
+    model_name = {"ICARUS": "Icarus", "UNKNOWN": "Model"}.get(source, source)
     if hdus[layer].header.get("BUNIT") != "2.009e+07 W/(m2 sr)":
         sys.exit("The model frames are relative, not in MSB; they cannot be compared with PUNCH.")
 if punch.shape != treated.shape:
@@ -79,7 +82,7 @@ figure = plt.figure(figsize=(12, 9))
 grid = figure.add_gridspec(2, 2, height_ratios=(1, 0.55), hspace=0.25, wspace=0.06)
 titles = {
     "PUNCH": f"PUNCH L3 {product} {name}, {date}",
-    "model": f"Model {name}, PUNCH L3 treatment",
+    "model": f"{model_name} {name}, PUNCH L3 treatment",
 }
 for column, key in enumerate(images):
     axes = figure.add_subplot(grid[0, column])
